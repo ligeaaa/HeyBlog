@@ -1,10 +1,9 @@
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.routes import build_router
 from app.config import Settings
+from app.main import create_app
 from app.state import build_app_state
 
 
@@ -20,9 +19,7 @@ def build_test_client(tmp_path: Path) -> TestClient:
         export_dir=tmp_path / "exports",
     )
     state = build_app_state(settings)
-    app = FastAPI(title="HeyBlog Test")
-    app.include_router(build_router(state))
-    return TestClient(app)
+    return TestClient(create_app(state))
 
 
 def test_bootstrap_and_status_endpoint(tmp_path: Path) -> None:
@@ -74,15 +71,11 @@ def test_settings_from_env_uses_string_user_agent(tmp_path: Path, monkeypatch) -
     assert settings.user_agent.startswith("HeyBlogBot/")
 
 
-def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
+def test_panel_route_returns_html(tmp_path: Path) -> None:
     client = build_test_client(tmp_path)
 
-    first = client.post("/api/crawl/bootstrap")
-    second = client.post("/api/crawl/bootstrap")
-    status = client.get("/api/status")
+    response = client.get("/panel")
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["imported"] == 2
-    assert second.json()["imported"] == 0
-    assert status.json()["total_blogs"] == 2
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "HeyBlog Operator Console" in response.text

@@ -25,6 +25,8 @@ python -m uvicorn app.main:app --reload
 The API will be available at `http://127.0.0.1:8000`, with interactive docs at
 `/docs`.
 
+The embedded operator panel is available at `http://127.0.0.1:8000/panel`.
+
 ## Seed Blogs
 
 The initial seed list in `seed.csv` contains:
