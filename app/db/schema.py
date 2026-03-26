@@ -1,3 +1,5 @@
+"""Define and initialize the SQLite schema for crawler data."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -47,5 +49,6 @@ CREATE TABLE IF NOT EXISTS crawl_logs (
 
 
 def init_db(connection: sqlite3.Connection) -> None:
+    """Create database tables when they do not already exist."""
     connection.executescript(SCHEMA_SQL)
     connection.commit()

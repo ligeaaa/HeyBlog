@@ -1,13 +1,21 @@
+"""Build API-facing statistics views from repository aggregates."""
+
 from __future__ import annotations
+
+from typing import Any
 
 from app.db.repository import Repository
 
 
 class StatsService:
+    """Provide lightweight status and stats dictionaries for API handlers."""
+
     def __init__(self, repository: Repository) -> None:
+        """Create service with repository dependency."""
         self.repository = repository
 
-    def status(self) -> dict:
+    def status(self) -> dict[str, Any]:
+        """Return status counters expected by the operator panel."""
         stats = self.repository.stats()
         return {
             "is_running": False,
@@ -19,5 +27,6 @@ class StatsService:
             "total_edges": stats["total_edges"],
         }
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
+        """Return full repository statistics payload."""
         return self.repository.stats()

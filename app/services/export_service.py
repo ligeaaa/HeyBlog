@@ -1,25 +1,32 @@
+"""Write crawler graph exports in CSV and JSON formats."""
+
 from __future__ import annotations
 
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 from app.db.repository import Repository
 
 
 class ExportService:
+    """Persist graph snapshots for downstream analysis tools."""
+
     def __init__(self, repository: Repository, export_dir: Path) -> None:
+        """Create an exporter bound to a repository and output folder."""
         self.repository = repository
         self.export_dir = export_dir
 
     def write_exports(self) -> dict[str, str]:
+        """Write nodes/edges CSV and combined graph JSON files."""
         self.export_dir.mkdir(parents=True, exist_ok=True)
         nodes_path = self.export_dir / "nodes.csv"
         edges_path = self.export_dir / "edges.csv"
         graph_path = self.export_dir / "graph.json"
 
-        blogs = self.repository.list_blogs()
-        edges = self.repository.list_edges()
+        blogs: list[dict[str, Any]] = self.repository.list_blogs()
+        edges: list[dict[str, Any]] = self.repository.list_edges()
 
         with nodes_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(blogs[0].keys()) if blogs else ["id"])

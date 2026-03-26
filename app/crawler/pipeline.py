@@ -1,7 +1,10 @@
+"""Orchestrate seed loading, crawl execution, and graph persistence."""
+
 from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings
 from app.crawler.discovery import discover_friend_links_pages
@@ -14,7 +17,10 @@ from app.services.export_service import ExportService
 
 
 class CrawlPipeline:
+    """Coordinate one-shot crawl batches and seed bootstrapping."""
+
     def __init__(self, settings: Settings, repository: Repository) -> None:
+        """Initialize dependencies required for crawl operations."""
         self.settings = settings
         self.repository = repository
         self.fetcher = Fetcher(
@@ -23,7 +29,8 @@ class CrawlPipeline:
         )
         self.export_service = ExportService(repository, settings.export_dir)
 
-    def bootstrap_seeds(self, seed_path: Path | None = None) -> dict:
+    def bootstrap_seeds(self, seed_path: Path | None = None) -> dict[str, Any]:
+        """Import seed URLs from CSV into the blogs table."""
         path = seed_path or self.settings.seed_path
         created = 0
         with path.open("r", encoding="utf-8") as handle:
@@ -48,7 +55,8 @@ class CrawlPipeline:
         )
         return {"seed_path": str(path), "imported": created}
 
-    def run_once(self, max_nodes: int | None = None) -> dict:
+    def run_once(self, max_nodes: int | None = None) -> dict[str, Any]:
+        """Run one crawl loop and export resulting graph snapshots."""
         processed = 0
         discovered = 0
         failed = 0
@@ -60,7 +68,7 @@ class CrawlPipeline:
                 break
             processed += 1
             try:
-                discovered += self._crawl_blog(blog)
+                discovered += self._crawl_blog(dict(blog))
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 self.repository.mark_blog_result(
@@ -84,11 +92,12 @@ class CrawlPipeline:
             "exports": exports,
         }
 
-    def _crawl_blog(self, blog: dict) -> int:
-        homepage = self.fetcher.fetch(blog["url"])
+    def _crawl_blog(self, blog: dict[str, Any]) -> int:
+        """Crawl one blog and persist outgoing blog links."""
+        homepage = self.fetcher.fetch(str(blog["url"]))
         candidate_pages = discover_friend_links_pages(homepage.url, homepage.text)
         discovered_count = 0
-        seen_normalized = set()
+        seen_normalized: set[str] = set()
 
         for page_url in candidate_pages:
             try:
@@ -96,7 +105,7 @@ class CrawlPipeline:
             except Exception:  # noqa: BLE001
                 continue
             for link in extract_candidate_links(page.url, page.text):
-                if not is_blog_candidate(link.url, blog["domain"]):
+                if not is_blog_candidate(link.url, str(blog["domain"])):
                     continue
                 normalized = normalize_url(link.url)
                 if normalized.normalized_url in seen_normalized:

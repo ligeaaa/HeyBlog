@@ -1,20 +1,27 @@
+"""Provide repository operations for blogs, edges, and crawl logs."""
+
 from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from typing import Iterator
 
 from app.db.schema import init_db
 
 
 def now_iso() -> str:
+    """Return the current UTC timestamp in ISO-8601 format."""
     return datetime.now(UTC).isoformat()
 
 
 class Repository:
+    """Encapsulate all persistence operations against SQLite."""
+
     def __init__(self, db_path: Path) -> None:
+        """Initialize the repository and ensure schema availability."""
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
@@ -22,6 +29,7 @@ class Repository:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a managed SQLite connection with row factory enabled."""
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         try:
@@ -32,6 +40,7 @@ class Repository:
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
     ) -> None:
+        """Insert one crawler log entry."""
         with self.connect() as connection:
             connection.execute(
                 """
@@ -51,6 +60,7 @@ class Repository:
         depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
+        """Insert a blog if absent and return its id with insertion status."""
         timestamp = now_iso()
         with self.connect() as connection:
             existing = connection.execute(
@@ -74,6 +84,7 @@ class Repository:
             return int(cursor.lastrowid), True
 
     def pending_blog_count(self) -> int:
+        """Count blogs waiting to be crawled."""
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM blogs WHERE crawl_status = 'WAITING'"
@@ -81,6 +92,7 @@ class Repository:
             return int(row["count"])
 
     def get_next_waiting_blog(self, max_depth: int) -> sqlite3.Row | None:
+        """Fetch and reserve the next waiting blog up to the provided depth."""
         with self.connect() as connection:
             row = connection.execute(
                 """
@@ -113,6 +125,7 @@ class Repository:
         status_code: int | None,
         friend_links_count: int,
     ) -> None:
+        """Store crawl result metadata for one blog."""
         with self.connect() as connection:
             connection.execute(
                 """
@@ -140,6 +153,7 @@ class Repository:
         link_url_raw: str,
         link_text: str | None,
     ) -> None:
+        """Insert an edge between two blogs if it does not yet exist."""
         with self.connect() as connection:
             connection.execute(
                 """
@@ -152,7 +166,8 @@ class Repository:
             )
             connection.commit()
 
-    def list_blogs(self) -> list[dict]:
+    def list_blogs(self) -> list[dict[str, Any]]:
+        """Return all blog rows ordered by id."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -165,7 +180,8 @@ class Repository:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def get_blog(self, blog_id: int) -> dict | None:
+    def get_blog(self, blog_id: int) -> dict[str, Any] | None:
+        """Return one blog by id or None when absent."""
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT * FROM blogs WHERE id = ?",
@@ -173,7 +189,8 @@ class Repository:
             ).fetchone()
             return dict(row) if row else None
 
-    def list_edges(self) -> list[dict]:
+    def list_edges(self) -> list[dict[str, Any]]:
+        """Return all stored graph edges ordered by id."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -184,7 +201,8 @@ class Repository:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def list_logs(self, limit: int = 100) -> list[dict]:
+    def list_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return latest crawl log rows up to the given limit."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -197,7 +215,8 @@ class Repository:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
+        """Return aggregate crawler statistics across blogs and edges."""
         with self.connect() as connection:
             status_rows = connection.execute(
                 """
@@ -206,7 +225,9 @@ class Repository:
                 GROUP BY crawl_status
                 """
             ).fetchall()
-            status_counts = {row["crawl_status"]: row["count"] for row in status_rows}
+            status_counts: dict[str, int] = {
+                str(row["crawl_status"]): int(row["count"]) for row in status_rows
+            }
             summary = connection.execute(
                 """
                 SELECT
