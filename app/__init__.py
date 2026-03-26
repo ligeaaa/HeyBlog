@@ -1,0 +1,1 @@
+"""HeyBlog application package."""

@@ -1,0 +1,11 @@
+services:
+  heyblog:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      HEYBLOG_DB_PATH: /app/data/heyblog.sqlite
+      HEYBLOG_SEED_PATH: /app/seed.csv
+      HEYBLOG_EXPORT_DIR: /app/data/exports
+    volumes:
+      - ./data:/app/data
