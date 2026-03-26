@@ -1,3 +1,5 @@
+"""Filter extracted links to keep only likely external blogs."""
+
 from __future__ import annotations
 
 from urllib.parse import urlparse
@@ -23,6 +25,7 @@ PATH_BLOCKLIST = {
 
 
 def is_blog_candidate(url: str, source_domain: str) -> bool:
+    """Return True when a link should be treated as a blog candidate."""
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
     if not parsed.scheme.startswith("http"):

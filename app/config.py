@@ -1,3 +1,5 @@
+"""Define runtime settings and environment-based loading."""
+
 from __future__ import annotations
 
 import os
@@ -13,6 +15,8 @@ DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG = 50
 
 @dataclass(slots=True)
 class Settings:
+    """Configuration values for crawler, storage, and exports."""
+
     db_path: Path
     seed_path: Path
     export_dir: Path
@@ -24,6 +28,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """Build settings from environment variables with sensible defaults."""
         root = Path.cwd()
         db_path = Path(os.getenv("HEYBLOG_DB_PATH", root / "data" / "heyblog.sqlite"))
         seed_path = Path(os.getenv("HEYBLOG_SEED_PATH", root / "seed.csv"))
