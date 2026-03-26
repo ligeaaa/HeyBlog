@@ -1,3 +1,5 @@
+"""Extract candidate hyperlinks from crawled HTML pages."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,11 +10,14 @@ from bs4 import BeautifulSoup
 
 @dataclass(slots=True)
 class ExtractedLink:
+    """Represent one extracted anchor link."""
+
     url: str
     text: str
 
 
 def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
+    """Parse HTML and return normalized absolute links."""
     soup = BeautifulSoup(html, "html.parser")
     links: list[ExtractedLink] = []
     for anchor in soup.find_all("a", href=True):

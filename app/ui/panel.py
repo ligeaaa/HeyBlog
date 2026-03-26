@@ -1,3 +1,5 @@
+"""Serve the in-app operator HTML panel."""
+
 from __future__ import annotations
 
 from fastapi.responses import HTMLResponse
@@ -100,4 +102,5 @@ PANEL_HTML = """<!DOCTYPE html>
 
 
 def panel_response() -> HTMLResponse:
+    """Return the static operator panel HTML response."""
     return HTMLResponse(PANEL_HTML)

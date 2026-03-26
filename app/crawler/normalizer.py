@@ -1,3 +1,5 @@
+"""Normalize and sanitize URLs before persistence and deduplication."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,12 +19,15 @@ TRACKING_PARAMS = {
 
 @dataclass(slots=True)
 class NormalizedUrl:
+    """Normalized URL values derived from one raw input URL."""
+
     original_url: str
     normalized_url: str
     domain: str
 
 
 def normalize_url(url: str) -> NormalizedUrl:
+    """Normalize scheme, host casing, path and remove tracking params."""
     parsed = urlparse(url.strip())
     scheme = parsed.scheme or "https"
     netloc = parsed.netloc.lower()

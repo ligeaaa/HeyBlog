@@ -1,5 +1,8 @@
+"""Integration tests for API endpoints and settings bootstrap."""
+
 from pathlib import Path
 
+from _pytest.monkeypatch import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -8,6 +11,7 @@ from app.state import build_app_state
 
 
 def build_test_client(tmp_path: Path) -> TestClient:
+    """Create a test client backed by an isolated temporary database."""
     seed_path = tmp_path / "seed.csv"
     seed_path.write_text(
         "url\nhttps://blog.elykia.cn/\nhttps://www.qladgk.com/\n",
@@ -23,6 +27,7 @@ def build_test_client(tmp_path: Path) -> TestClient:
 
 
 def test_bootstrap_and_status_endpoint(tmp_path: Path) -> None:
+    """Verify bootstrap import count and status counters."""
     client = build_test_client(tmp_path)
 
     bootstrap = client.post("/api/crawl/bootstrap")
@@ -37,6 +42,7 @@ def test_bootstrap_and_status_endpoint(tmp_path: Path) -> None:
 
 
 def test_graph_endpoint_returns_nodes_and_edges(tmp_path: Path) -> None:
+    """Verify graph endpoint returns seeded nodes and no edges initially."""
     client = build_test_client(tmp_path)
     client.post("/api/crawl/bootstrap")
 
@@ -48,6 +54,7 @@ def test_graph_endpoint_returns_nodes_and_edges(tmp_path: Path) -> None:
 
 
 def test_bootstrap_counts_only_new_rows_on_repeat(tmp_path: Path) -> None:
+    """Verify repeated bootstrap only imports new seed rows."""
     client = build_test_client(tmp_path)
 
     first = client.post("/api/crawl/bootstrap")
@@ -59,7 +66,10 @@ def test_bootstrap_counts_only_new_rows_on_repeat(tmp_path: Path) -> None:
     assert second.json()["imported"] == 0
 
 
-def test_settings_from_env_uses_string_user_agent(tmp_path: Path, monkeypatch) -> None:
+def test_settings_from_env_uses_string_user_agent(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Verify environment loading always resolves user_agent as a string."""
     monkeypatch.delenv("HEYBLOG_USER_AGENT", raising=False)
     monkeypatch.setenv("HEYBLOG_DB_PATH", str(tmp_path / "db.sqlite"))
     monkeypatch.setenv("HEYBLOG_SEED_PATH", str(tmp_path / "seed.csv"))
@@ -72,6 +82,7 @@ def test_settings_from_env_uses_string_user_agent(tmp_path: Path, monkeypatch) -
 
 
 def test_panel_route_returns_html(tmp_path: Path) -> None:
+    """Verify the operator panel endpoint serves HTML content."""
     client = build_test_client(tmp_path)
 
     response = client.get("/panel")

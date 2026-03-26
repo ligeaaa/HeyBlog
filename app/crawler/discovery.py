@@ -1,3 +1,5 @@
+"""Discover likely friend-link pages from a blog homepage."""
+
 from __future__ import annotations
 
 from urllib.parse import urljoin
@@ -10,6 +12,7 @@ PATH_HINTS = ("/links", "/friends", "/friend-links", "/blogroll")
 
 
 def discover_friend_links_pages(base_url: str, html: str) -> list[str]:
+    """Infer friend-link page URLs from anchors and fallback path hints."""
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[str] = []
     for anchor in soup.find_all("a", href=True):
@@ -26,7 +29,7 @@ def discover_friend_links_pages(base_url: str, html: str) -> list[str]:
         candidates.extend(urljoin(base_url, hint) for hint in PATH_HINTS)
 
     deduped: list[str] = []
-    seen = set()
+    seen: set[str] = set()
     for candidate in candidates:
         if candidate not in seen:
             deduped.append(candidate)
