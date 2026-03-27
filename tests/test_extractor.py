@@ -1,0 +1,53 @@
+"""Unit tests for section-aware candidate extraction."""
+
+from app.crawler.extractor import extract_candidate_links
+
+
+def test_extractor_prefers_friend_link_section_over_navigation() -> None:
+    """Extraction should prefer the scored friend-link section over the global nav."""
+    html = """
+    <html>
+      <body>
+        <nav>
+          <a href="https://github.com/example">GitHub</a>
+          <a href="/about">About</a>
+        </nav>
+        <section class="friend-links">
+          <h2>友情链接</h2>
+          <ul>
+            <li><a href="https://friend-one.example/">Friend One</a></li>
+            <li><a href="https://friend-two.example/">Friend Two</a></li>
+            <li><a href="https://friend-three.example/">Friend Three</a></li>
+          </ul>
+        </section>
+      </body>
+    </html>
+    """
+
+    links = extract_candidate_links("https://blog.example.com/", html)
+    urls = {link.url for link in links}
+
+    assert "https://friend-one.example/" in urls
+    assert "https://friend-two.example/" in urls
+    assert "https://github.com/example" not in urls
+
+
+def test_extractor_whole_page_fallback_requires_high_page_confidence() -> None:
+    """Whole-page fallback should require strong page-level confidence."""
+    html = """
+    <html>
+      <body>
+        <div>
+          <a href="https://friend.example/">Friend</a>
+          <a href="https://other.example/">Other</a>
+          <a href="https://third.example/">Third</a>
+        </div>
+      </body>
+    </html>
+    """
+
+    low_confidence = extract_candidate_links("https://blog.example.com/", html, page_confidence=1.0)
+    high_confidence = extract_candidate_links("https://blog.example.com/", html, page_confidence=3.5)
+
+    assert low_confidence == []
+    assert len(high_confidence) == 3
