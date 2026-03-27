@@ -35,3 +35,12 @@ def discover_friend_links_pages(base_url: str, html: str) -> list[str]:
             deduped.append(candidate)
             seen.add(candidate)
     return deduped
+
+"""
+1. 现在的逻辑是直接找a标签，然后判断是否在KEYWORDS和PATH_HINTS中。这样子有许多问题：例如可能找不到一些友链界面，或者错误的将其它链接判断为友链接。
+2. 因此需要：
+    a. 更准确的找友链界面方法
+    b. 在友链界面中更准确的找友链方法
+    c. 对找到的友链进行判断是否是友链，或者添加一定的过滤原则，例如屏蔽掉特定链接，或者.gov等后缀
+3. 研究怎么引入大语言模型，直接MCP，我觉得这是现阶段最方便最鲁棒的做法
+"""
