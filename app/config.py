@@ -10,7 +10,15 @@ DEFAULT_USER_AGENT = "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_NODES_PER_RUN = 10
 DEFAULT_MAX_DEPTH = 2
-DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG = 50
+DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
+
+
+def _parse_csv_env(name: str) -> tuple[str, ...]:
+    """Parse comma-separated environment values into a tuple."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 @dataclass(slots=True)
@@ -24,7 +32,11 @@ class Settings:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
     max_depth: int = DEFAULT_MAX_DEPTH
-    max_outgoing_links_per_blog: int = DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG
+    max_path_probes_per_blog: int = DEFAULT_MAX_PATH_PROBES_PER_BLOG
+    friend_link_domain_blocklist: tuple[str, ...] = ()
+    friend_link_tld_blocklist: tuple[str, ...] = ()
+    friend_link_exact_url_blocklist: tuple[str, ...] = ()
+    friend_link_prefix_blocklist: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -48,10 +60,14 @@ class Settings:
                 os.getenv("HEYBLOG_MAX_NODES_PER_RUN", str(DEFAULT_MAX_NODES_PER_RUN))
             ),
             max_depth=int(os.getenv("HEYBLOG_MAX_DEPTH", str(DEFAULT_MAX_DEPTH))),
-            max_outgoing_links_per_blog=int(
+            max_path_probes_per_blog=int(
                 os.getenv(
-                    "HEYBLOG_MAX_OUTGOING_LINKS_PER_BLOG",
-                    str(DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG),
+                    "HEYBLOG_MAX_PATH_PROBES_PER_BLOG",
+                    str(DEFAULT_MAX_PATH_PROBES_PER_BLOG),
                 )
             ),
+            friend_link_domain_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST"),
+            friend_link_tld_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST"),
+            friend_link_exact_url_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST"),
+            friend_link_prefix_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST"),
         )
