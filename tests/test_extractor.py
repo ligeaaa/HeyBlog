@@ -33,7 +33,7 @@ def test_extractor_prefers_friend_link_section_over_navigation() -> None:
 
 
 def test_extractor_whole_page_fallback_requires_high_page_confidence() -> None:
-    """Whole-page fallback should require strong page-level confidence."""
+    """Whole-page fallback should still return links when no section is detected."""
     html = """
     <html>
       <body>
@@ -46,8 +46,6 @@ def test_extractor_whole_page_fallback_requires_high_page_confidence() -> None:
     </html>
     """
 
-    low_confidence = extract_candidate_links("https://blog.example.com/", html, page_confidence=1.0)
-    high_confidence = extract_candidate_links("https://blog.example.com/", html, page_confidence=3.5)
+    links = extract_candidate_links("https://blog.example.com/", html)
 
-    assert low_confidence == []
-    assert len(high_confidence) == 3
+    assert len(links) == 3

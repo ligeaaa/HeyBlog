@@ -1,10 +1,9 @@
 """Unit tests for friend-link page discovery."""
 
-from app.crawler.discovery import collect_homepage_navigation_candidates
 from app.crawler.discovery import discover_friend_links_pages
 
 
-def test_discovery_finds_footer_friend_links_page_without_exact_path_hint() -> None:
+def test_discovery_finds_footer_friend_links_page_without_scoring() -> None:
     """Footer context and keyword text should surface a non-standard friend-link page."""
     html = """
     <html>
@@ -18,14 +17,13 @@ def test_discovery_finds_footer_friend_links_page_without_exact_path_hint() -> N
     </html>
     """
 
-    candidates = collect_homepage_navigation_candidates("https://blog.example.com/", html)
+    result = discover_friend_links_pages("https://blog.example.com/", html)
 
-    assert candidates[0].url == "https://blog.example.com/pals"
-    assert candidates[0].score >= 2.5
+    assert result[0] == "https://blog.example.com/pals"
 
 
 def test_discovery_rejects_false_positive_links_page() -> None:
-    """Generic resource links should not outrank deterministic friend-link pages."""
+    """Generic resource links should not be treated as friend-link pages."""
     html = """
     <html>
       <body>
@@ -36,9 +34,9 @@ def test_discovery_rejects_false_positive_links_page() -> None:
     </html>
     """
 
-    candidates = collect_homepage_navigation_candidates("https://blog.example.com/", html)
+    result = discover_friend_links_pages("https://blog.example.com/", html)
 
-    assert candidates[0].score < 2.5
+    assert "https://blog.example.com/resources/links" not in result
 
 
 def test_discovery_falls_back_to_path_hints_when_no_signal_exists() -> None:

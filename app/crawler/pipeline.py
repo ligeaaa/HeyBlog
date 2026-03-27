@@ -7,9 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.crawler.classifier import ClassifierUnavailableError
-from app.crawler.classifier import build_classifier
-from app.crawler.discovery import discover_friend_link_page_candidates
+from app.crawler.discovery import discover_friend_links_pages
 from app.crawler.extractor import extract_candidate_links
 from app.crawler.fetcher import Fetcher
 from app.crawler.filters import decide_blog_candidate
@@ -97,54 +95,22 @@ class CrawlPipeline:
     def _crawl_blog(self, blog: dict[str, Any]) -> int:
         """Crawl one blog and persist outgoing blog links."""
         homepage = self.fetcher.fetch(str(blog["url"]))
-        classifier = build_classifier(self.settings)
-        ranked_candidates = discover_friend_link_page_candidates(
-            homepage.url,
-            homepage.text,
-            min_page_score=self.settings.friend_link_page_score_threshold,
-        )
-        candidate_pages = self._select_candidate_pages(ranked_candidates)
+        candidate_pages = discover_friend_links_pages(homepage.url, homepage.text)
+        candidate_pages = candidate_pages[: self.settings.max_candidate_pages_per_blog]
+
         discovered_count = 0
         seen_normalized: set[str] = set()
 
-        for candidate_page in candidate_pages:
+        for page_url in candidate_pages:
             try:
-                page = self.fetcher.fetch(candidate_page.url)
+                page = self.fetcher.fetch(page_url)
             except Exception:  # noqa: BLE001
                 continue
 
-            extracted_links = extract_candidate_links(
-                page.url,
-                page.text,
-                page_confidence=candidate_page.score,
-                min_section_score=self.settings.friend_link_section_score_threshold,
-            )
-            classifier_decisions: dict[str, bool] = {}
-            if (
-                classifier is not None
-                and candidate_page.score < self.settings.friend_link_ambiguity_threshold
-                and extracted_links
-            ):
-                try:
-                    reviewed = classifier.review_links(page.url, page.text, extracted_links)
-                except ClassifierUnavailableError as exc:
-                    self.repository.add_log(
-                        blog_id=int(blog["id"]),
-                        stage="classifier",
-                        result="fallback",
-                        message=str(exc),
-                    )
-                else:
-                    if reviewed.available:
-                        classifier_decisions = {
-                            decision.url: decision.accepted for decision in reviewed.selected_links
-                        }
-
-            for link in extracted_links:
+            for link in extract_candidate_links(page.url, page.text):
                 decision_kwargs: dict[str, Any] = {
                     "link_text": link.text,
                     "context_text": link.context_text,
-                    "section_score": link.section_score,
                     "domain_blocklist": self.settings.friend_link_domain_blocklist,
                     "exact_url_blocklist": self.settings.friend_link_exact_url_blocklist,
                     "prefix_blocklist": self.settings.friend_link_prefix_blocklist,
@@ -157,8 +123,6 @@ class CrawlPipeline:
                     **decision_kwargs,
                 )
                 if not decision.accepted:
-                    continue
-                if link.url in classifier_decisions and not classifier_decisions[link.url]:
                     continue
                 normalized = normalize_url(link.url)
                 if normalized.normalized_url in seen_normalized:
@@ -196,14 +160,3 @@ class CrawlPipeline:
             message=f"Crawled {blog['url']}",
         )
         return discovered_count
-
-    def _select_candidate_pages(self, ranked_candidates: list[Any]) -> list[Any]:
-        """Pick high-confidence candidates first, then bounded fallbacks."""
-        confident = [
-            candidate
-            for candidate in ranked_candidates
-            if candidate.score >= self.settings.friend_link_page_score_threshold
-        ]
-        if confident:
-            return confident[: self.settings.max_candidate_pages_per_blog]
-        return ranked_candidates[: self.settings.max_path_probes_per_blog]

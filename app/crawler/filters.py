@@ -100,7 +100,6 @@ def decide_blog_candidate(
     *,
     link_text: str = "",
     context_text: str = "",
-    section_score: float = 0.0,
     domain_blocklist: tuple[str, ...] = (),
     blocked_tlds: tuple[str, ...] = BLOCKED_TLDS,
     exact_url_blocklist: tuple[str, ...] = (),
@@ -143,9 +142,6 @@ def decide_blog_candidate(
     if path in {"", "/"}:
         reasons.append("root_path")
         score += 0.5
-    if section_score >= 3.0:
-        reasons.append("strong_section")
-        score += 1.0
     if "." in domain and len(domain.split(".")) >= 2:
         reasons.append("external_domain")
         score += 0.5

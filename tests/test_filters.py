@@ -52,7 +52,6 @@ def test_filter_accepts_positive_context_signal() -> None:
         "blog.example.com",
         link_text="Friend Blog",
         context_text="友情链接 邻居们",
-        section_score=3.2,
     )
 
     assert decision.accepted
@@ -66,7 +65,6 @@ def test_filter_hard_blocks_override_context() -> None:
         "blog.example.com",
         link_text="Friend Blog",
         context_text="友情链接",
-        section_score=5.0,
     )
 
     assert not decision.accepted
