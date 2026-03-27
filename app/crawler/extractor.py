@@ -15,7 +15,7 @@ NEGATIVE_SECTION_KEYWORDS = ("archive", "contact", "rss", "search", "sitemap")
 STRUCTURAL_CONTAINERS = ("main", "section", "article", "aside", "div", "ul", "ol", "table")
 
 
-@dataclass(slots=True)
+@dataclass
 class ExtractedLink:
     """Represent one extracted anchor link with nearby context."""
 
@@ -27,6 +27,16 @@ class ExtractedLink:
 def _clean_text(value: str) -> str:
     """Normalize extracted text for keyword matching."""
     return " ".join(value.split()).strip()
+
+
+def _container_depth(container: Tag) -> int:
+    """Measure how specific a container is within the page tree."""
+    depth = 0
+    current = container.parent
+    while isinstance(current, Tag):
+        depth += 1
+        current = current.parent
+    return depth
 
 
 def _count_external_links(base_url: str, container: Tag) -> int:
@@ -51,29 +61,66 @@ def _heading_text(container: Tag) -> str:
     return ""
 
 
-def _looks_like_friend_links_section(base_url: str, container: Tag) -> bool:
-    """Return True when a container likely holds friend links."""
+def _friend_links_section_score(base_url: str, container: Tag) -> int:
+    """Score how strongly a container looks like a friend-link section."""
     text = _clean_text(container.get_text(" ", strip=True))
     if not text:
-        return False
+        return 0
 
     heading = _heading_text(container).lower()
     lowered = text.lower()
     classes = " ".join(container.get("class", [])).lower()
     identifier = str(container.get("id", "")).lower()
     combined = f"{classes} {identifier}"
+    score = 0
 
     if any(keyword in lowered for keyword in NEGATIVE_SECTION_KEYWORDS):
-        return False
+        score -= 3
     if any(keyword in heading for keyword in SECTION_KEYWORDS):
-        return True
+        score += 4
     if any(keyword in lowered for keyword in SECTION_KEYWORDS):
-        return True
+        score += 2
     if any(keyword in combined for keyword in SECTION_KEYWORDS):
-        return True
-    if _count_external_links(base_url, container) >= 3:
-        return True
-    return False
+        score += 3
+
+    external_links = _count_external_links(base_url, container)
+    if score > 0 and external_links >= 3:
+        score += 2
+    elif score > 0 and external_links >= 1:
+        score += 1
+    return max(score, 0)
+
+
+def _is_overlapping_container(container: Tag, chosen: list[Tag]) -> bool:
+    """Return True when the container overlaps an already selected section."""
+    return any(existing in container.parents or container in existing.parents for existing in chosen)
+
+
+def _select_candidate_containers(base_url: str, containers: list[Tag]) -> list[Tag]:
+    """Pick the most specific friend-link-looking containers."""
+    scored: list[tuple[int, int, int, Tag]] = []
+    for index, container in enumerate(containers):
+        score = _friend_links_section_score(base_url, container)
+        if score <= 0:
+            continue
+        scored.append((score, _container_depth(container), index, container))
+
+    # Prefer high-confidence sections first, and prefer deeper containers over wrappers.
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    selected: list[Tag] = []
+    for _, _, _, container in scored:
+        if _is_overlapping_container(container, selected):
+            continue
+        selected.append(container)
+    return selected
+
+
+def _fallback_container(containers: list[Tag]) -> list[Tag]:
+    """Use the first structural container when no explicit section matches."""
+    for container in containers:
+        if container.find("a", href=True) is not None:
+            return [container]
+    return containers[:1]
 
 
 def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
@@ -83,11 +130,10 @@ def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
     links: list[ExtractedLink] = []
     seen_urls: set[str] = set()
 
-    selected = [
-        container for container in containers if _looks_like_friend_links_section(base_url, container)
-    ]
+    # Extractor only decides where to read candidate anchors from; final keep/drop rules stay in filters.
+    selected = _select_candidate_containers(base_url, containers)
     if not selected:
-        selected = containers[:1]
+        selected = _fallback_container(containers)
 
     for container in selected:
         context_text = _clean_text(container.get_text(" ", strip=True))[:240]

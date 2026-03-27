@@ -72,7 +72,7 @@ FILE_SUFFIX_BLOCKLIST = (
 )
 
 
-@dataclass(slots=True)
+@dataclass
 class LinkDecision:
     """Represent one deterministic filtering decision."""
 
@@ -94,6 +94,17 @@ def _text_contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in lowered for keyword in keywords)
 
 
+def _matches_blocked_domain(domain: str, blocklist: tuple[str, ...] | set[str]) -> bool:
+    """Return True when the domain matches or is nested under a blocked domain."""
+    return any(domain == blocked or domain.endswith(f".{blocked}") for blocked in blocklist)
+
+
+def _matches_exact_url(normalized_url: str, exact_url_blocklist: tuple[str, ...]) -> bool:
+    """Return True when the candidate URL matches a blocked absolute URL."""
+    normalized_blocklist = {value.rstrip("/") for value in exact_url_blocklist}
+    return normalized_url in normalized_blocklist
+
+
 def decide_blog_candidate(
     url: str,
     source_domain: str,
@@ -108,22 +119,24 @@ def decide_blog_candidate(
     """Score and classify whether a link should be treated as a blog candidate."""
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
+    normalized_source_domain = source_domain.lower()
     normalized_url = url.rstrip("/")
     path = parsed.path.lower() or "/"
     reasons: list[str] = []
     score = 0.0
 
+    # Apply hard blocks first so clearly invalid candidates never reach the softer scoring layer.
     if not parsed.scheme.startswith("http"):
         return LinkDecision(False, score, ("non_http_scheme",), hard_blocked=True)
-    if not domain or domain == source_domain:
+    if not domain or domain == normalized_source_domain:
         return LinkDecision(False, score, ("same_domain",), hard_blocked=True)
-    if normalized_url in exact_url_blocklist:
+    if _matches_exact_url(normalized_url, exact_url_blocklist):
         return LinkDecision(False, score, ("exact_url_blocked",), hard_blocked=True)
     if any(normalized_url.startswith(prefix) for prefix in prefix_blocklist):
         return LinkDecision(False, score, ("prefix_blocked",), hard_blocked=True)
-    if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in PLATFORM_BLOCKLIST):
+    if _matches_blocked_domain(domain, PLATFORM_BLOCKLIST):
         return LinkDecision(False, score, ("platform_blocked",), hard_blocked=True)
-    if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in domain_blocklist):
+    if _matches_blocked_domain(domain, domain_blocklist):
         return LinkDecision(False, score, ("domain_blocked",), hard_blocked=True)
     if any(domain.endswith(tld) for tld in blocked_tlds):
         return LinkDecision(False, score, ("blocked_tld",), hard_blocked=True)
@@ -132,6 +145,7 @@ def decide_blog_candidate(
     if _path_has_blocked_segment(path):
         return LinkDecision(False, score, ("blocked_path",), hard_blocked=True)
 
+    # Once hard blocks pass, light context scoring can keep likely blog homepages without mixing in discovery logic.
     combined_text = f"{link_text} {context_text}".strip()
     if _text_contains_any(combined_text, NEGATIVE_CONTEXT_KEYWORDS):
         reasons.append("negative_context")
