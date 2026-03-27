@@ -7,6 +7,7 @@ ENV PYTHONUNBUFFERED=1
 
 COPY pyproject.toml readme.md ./
 COPY app ./app
+COPY services ./services
 COPY seed.csv ./seed.csv
 
 RUN pip install --no-cache-dir .

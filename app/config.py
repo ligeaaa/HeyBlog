@@ -28,6 +28,12 @@ class Settings:
     db_path: Path
     seed_path: Path
     export_dir: Path
+    db_dsn: str | None = None
+    persistence_base_url: str = "http://127.0.0.1:8030"
+    crawler_base_url: str = "http://127.0.0.1:8010"
+    search_base_url: str = "http://127.0.0.1:8020"
+    backend_base_url: str = "http://127.0.0.1:8000"
+    search_cache_dir: Path | None = None
     user_agent: str = DEFAULT_USER_AGENT
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
@@ -47,8 +53,14 @@ class Settings:
         export_dir = Path(os.getenv("HEYBLOG_EXPORT_DIR", root / "data" / "exports"))
         return cls(
             db_path=db_path,
+            db_dsn=os.getenv("HEYBLOG_DB_DSN"),
             seed_path=seed_path,
             export_dir=export_dir,
+            persistence_base_url=os.getenv("HEYBLOG_PERSISTENCE_BASE_URL", "http://persistence-api:8030"),
+            crawler_base_url=os.getenv("HEYBLOG_CRAWLER_BASE_URL", "http://crawler:8010"),
+            search_base_url=os.getenv("HEYBLOG_SEARCH_BASE_URL", "http://search:8020"),
+            backend_base_url=os.getenv("HEYBLOG_BACKEND_BASE_URL", "http://backend:8000"),
+            search_cache_dir=Path(os.getenv("HEYBLOG_SEARCH_CACHE_DIR", root / "data" / "search-cache")),
             user_agent=os.getenv("HEYBLOG_USER_AGENT", DEFAULT_USER_AGENT),
             request_timeout_seconds=float(
                 os.getenv(

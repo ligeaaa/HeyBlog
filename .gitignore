@@ -8,3 +8,5 @@ __pycache__/
 data/
 dist/
 build/
+heyblog.egg-info/
+volumes/

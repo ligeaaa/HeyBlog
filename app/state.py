@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 from app.config import Settings
 from app.crawler.pipeline import CrawlPipeline
-from app.db.repository import Repository
+from app.db.repository import RepositoryProtocol
+from app.db.repository import build_repository
 from app.services.graph_service import GraphService
 from app.services.stats_service import StatsService
 
@@ -16,7 +17,7 @@ class AppState:
     """Container for service instances shared across requests."""
 
     settings: Settings
-    repository: Repository
+    repository: RepositoryProtocol
     pipeline: CrawlPipeline
     graph_service: GraphService
     stats_service: StatsService
@@ -25,7 +26,7 @@ class AppState:
 def build_app_state(settings: Settings | None = None) -> AppState:
     """Create default service wiring from provided or environment settings."""
     resolved = settings or Settings.from_env()
-    repository = Repository(resolved.db_path)
+    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn)
     pipeline = CrawlPipeline(resolved, repository)
     return AppState(
         settings=resolved,

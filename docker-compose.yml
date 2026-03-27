@@ -1,11 +1,85 @@
 services:
-  heyblog:
+  frontend:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      HEYBLOG_BACKEND_BASE_URL: http://backend:8000
+    command: ["uvicorn", "services.frontend.main:app", "--host", "0.0.0.0", "--port", "3000"]
+    depends_on:
+      - backend
+    networks:
+      - heyblog_net
+
+  backend:
     build: .
     ports:
       - "8000:8000"
     environment:
-      HEYBLOG_DB_PATH: /app/data/heyblog.sqlite
-      HEYBLOG_SEED_PATH: /app/seed.csv
-      HEYBLOG_EXPORT_DIR: /app/data/exports
+      HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
+      HEYBLOG_CRAWLER_BASE_URL: http://crawler:8010
+      HEYBLOG_SEARCH_BASE_URL: http://search:8020
+    command: ["uvicorn", "services.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      - persistence-api
+      - crawler
+      - search
+    networks:
+      - heyblog_net
+
+  crawler:
+    build: .
+    environment:
+      HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
+      HEYBLOG_SEED_PATH: /data/seeds/seed.csv
+      HEYBLOG_EXPORT_DIR: /data/exports
+    command: ["uvicorn", "services.crawler.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    depends_on:
+      - persistence-api
     volumes:
-      - ./data:/app/data
+      - ./volumes/exports:/data/exports
+      - ./seed.csv:/data/seeds/seed.csv:ro
+    networks:
+      - heyblog_net
+
+  search:
+    build: .
+    environment:
+      HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
+      HEYBLOG_SEARCH_CACHE_DIR: /data/search-cache
+    command: ["uvicorn", "services.search.main:app", "--host", "0.0.0.0", "--port", "8020"]
+    depends_on:
+      - persistence-api
+    volumes:
+      - ./volumes/search-cache:/data/search-cache
+    networks:
+      - heyblog_net
+
+  persistence-api:
+    build: .
+    ports:
+      - "8030:8030"
+    environment:
+      HEYBLOG_DB_DSN: postgresql://heyblog:heyblog@persistence-db:5432/heyblog
+    command: ["uvicorn", "services.persistence.main:app", "--host", "0.0.0.0", "--port", "8030"]
+    depends_on:
+      - persistence-db
+    networks:
+      - heyblog_net
+
+  persistence-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: heyblog
+      POSTGRES_USER: heyblog
+      POSTGRES_PASSWORD: heyblog
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - heyblog_net
+
+networks:
+  heyblog_net:
+    driver: bridge
