@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from app.clients.crawler_http import CrawlerHttpClient
 from app.clients.persistence_http import PersistenceHttpClient
@@ -20,6 +21,10 @@ class BackendState:
     persistence: Any
     crawler: Any
     search: Any
+
+
+class RunBatchRequest(BaseModel):
+    max_nodes: int
 
 
 def build_backend_state(settings: Settings | None = None) -> BackendState:
@@ -60,8 +65,9 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:
         stats = get_state().persistence.stats()
+        runtime = get_state().crawler.runtime_status()
         return {
-            "is_running": False,
+            "is_running": runtime["runner_status"] in {"starting", "running", "stopping"},
             "pending_tasks": stats["pending_tasks"],
             "processing_tasks": stats["processing_tasks"],
             "finished_tasks": stats["finished_tasks"],
@@ -117,8 +123,32 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def search(q: str) -> dict[str, Any]:
         return get_state().search.search(q)
 
+    @app.get("/api/runtime/status")
+    def runtime_status() -> dict[str, Any]:
+        return get_state().crawler.runtime_status()
+
+    @app.get("/api/runtime/current")
+    def runtime_current() -> dict[str, Any]:
+        return get_state().crawler.current()
+
+    @app.post("/api/runtime/start")
+    def runtime_start() -> dict[str, Any]:
+        return get_state().crawler.start()
+
+    @app.post("/api/runtime/stop")
+    def runtime_stop() -> dict[str, Any]:
+        return get_state().crawler.stop()
+
+    @app.post("/api/runtime/run-batch")
+    def runtime_run_batch(payload: RunBatchRequest) -> dict[str, Any]:
+        result = get_state().crawler.run_batch(payload.max_nodes)
+        try:
+            get_state().search.reindex()
+        except Exception:  # noqa: BLE001
+            pass
+        return result
+
     return app
 
 
 app = create_app()
-

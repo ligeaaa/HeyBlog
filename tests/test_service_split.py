@@ -20,6 +20,33 @@ class StubCrawler:
     def run(self, max_nodes: int | None = None) -> dict[str, int | None]:
         return {"processed": max_nodes or 1, "discovered": 1, "failed": 0}
 
+    def runtime_status(self) -> dict[str, object]:
+        return {
+            "runner_status": "idle",
+            "active_run_id": None,
+            "current_blog_id": None,
+            "current_url": None,
+            "current_stage": None,
+            "last_started_at": None,
+            "last_stopped_at": None,
+            "last_error": None,
+            "last_result": None,
+        }
+
+    def current(self) -> dict[str, object]:
+        return self.runtime_status()
+
+    def start(self) -> dict[str, object]:
+        payload = self.runtime_status()
+        payload["runner_status"] = "running"
+        return payload
+
+    def stop(self) -> dict[str, object]:
+        return self.runtime_status()
+
+    def run_batch(self, max_nodes: int) -> dict[str, object]:
+        return {"accepted": True, "mode": "batch", "result": {"processed": max_nodes}}
+
 
 class StubSearch:
     def __init__(self) -> None:
@@ -110,6 +137,14 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert crawl.status_code == 200
     assert crawl.json()["processed"] == 2
     assert search.reindexed is True
+
+    runtime = client.get("/api/runtime/status")
+    assert runtime.status_code == 200
+    assert runtime.json()["runner_status"] == "idle"
+
+    batch = client.post("/api/runtime/run-batch", json={"max_nodes": 3})
+    assert batch.status_code == 200
+    assert batch.json()["accepted"] is True
 
 
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:

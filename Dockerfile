@@ -1,3 +1,12 @@
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /frontend
+
+COPY frontend/package.json ./
+RUN npm install
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -8,6 +17,7 @@ ENV PYTHONUNBUFFERED=1
 COPY pyproject.toml readme.md ./
 COPY app ./app
 COPY services ./services
+COPY --from=frontend-builder /frontend/dist ./frontend/dist
 COPY seed.csv ./seed.csv
 
 RUN pip install --no-cache-dir .

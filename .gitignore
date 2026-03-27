@@ -10,3 +10,5 @@ dist/
 build/
 heyblog.egg-info/
 volumes/
+frontend/node_modules/
+frontend/dist/

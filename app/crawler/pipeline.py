@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import Callable
 from typing import Any
 
 from app.config import Settings
@@ -15,14 +16,20 @@ from app.crawler.fetcher import FetchResult
 from app.crawler.filters import decide_blog_candidate
 from app.crawler.normalizer import normalize_url
 from app.crawler.utils import unique_in_order
-from app.db.repository import Repository
+from app.db.repository import RepositoryProtocol
 from app.services.export_service import ExportService
+
+
+BlogStartHook = Callable[[dict[str, Any]], None]
+BlogFinishHook = Callable[[dict[str, Any], dict[str, Any]], None]
+BlogErrorHook = Callable[[dict[str, Any], Exception], None]
+ShouldStopHook = Callable[[], bool]
 
 
 class CrawlPipeline:
     """Coordinate one-shot crawl batches and seed bootstrapping."""
 
-    def __init__(self, settings: Settings, repository: Repository) -> None:
+    def __init__(self, settings: Settings, repository: RepositoryProtocol) -> None:
         """Initialize dependencies required for crawl operations."""
         self.settings = settings
         self.repository = repository
@@ -58,7 +65,15 @@ class CrawlPipeline:
         )
         return {"seed_path": str(path), "imported": created}
 
-    def run_once(self, max_nodes: int | None = None) -> dict[str, Any]:
+    def run_once(
+        self,
+        max_nodes: int | None = None,
+        *,
+        on_blog_start: BlogStartHook | None = None,
+        on_blog_finish: BlogFinishHook | None = None,
+        on_blog_error: BlogErrorHook | None = None,
+        should_stop: ShouldStopHook | None = None,
+    ) -> dict[str, Any]:
         """Run one crawl loop and export resulting graph snapshots."""
         processed = 0
         discovered = 0
@@ -66,12 +81,19 @@ class CrawlPipeline:
         limit = max_nodes or self.settings.max_nodes_per_run
 
         while processed < limit:
+            if should_stop and should_stop():
+                break
             blog = self.repository.get_next_waiting_blog(self.settings.max_depth)
             if blog is None:
                 break
+            if on_blog_start is not None:
+                on_blog_start(dict(blog))
             processed += 1
             try:
-                discovered += self._crawl_blog(dict(blog))
+                blog_result = self._crawl_blog(dict(blog))
+                discovered += blog_result
+                if on_blog_finish is not None:
+                    on_blog_finish(dict(blog), {"discovered": blog_result})
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 self.repository.mark_blog_result(
@@ -86,6 +108,8 @@ class CrawlPipeline:
                     result="error",
                     message=str(exc),
                 )
+                if on_blog_error is not None:
+                    on_blog_error(dict(blog), exc)
 
         exports = self.export_service.write_exports()
         return {
