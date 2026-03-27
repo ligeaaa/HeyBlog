@@ -116,10 +116,7 @@ class CrawlPipeline:
 
     def _discover_candidate_pages(self, homepage: FetchResult) -> list[str]:
         """Return the candidate friend-link pages to visit for one homepage."""
-        return unique_in_order(
-            discover_friend_links_pages(homepage.url, homepage.text),
-            limit=self.settings.max_candidate_pages_per_blog,
-        )
+        return unique_in_order(discover_friend_links_pages(homepage.url, homepage.text))
 
     def _crawl_candidate_pages(self, blog: dict[str, Any], candidate_pages: list[str]) -> int:
         """Fetch each candidate page and persist accepted child links."""
@@ -127,9 +124,6 @@ class CrawlPipeline:
         seen_normalized: set[str] = set()
 
         for page_url in candidate_pages:
-            if discovered_count >= self.settings.max_outgoing_links_per_blog:
-                break
-
             page: FetchResult | None = self._fetch_candidate_page(page_url)
             if page is None:
                 continue
@@ -138,7 +132,6 @@ class CrawlPipeline:
                 blog=blog,
                 page=page,
                 seen_normalized=seen_normalized,
-                remaining_budget=self.settings.max_outgoing_links_per_blog - discovered_count,
             )
 
         return discovered_count
@@ -156,15 +149,11 @@ class CrawlPipeline:
         blog: dict[str, Any],
         page: FetchResult,
         seen_normalized: set[str],
-        remaining_budget: int,
     ) -> int:
         """Persist accepted links extracted from one friend-link page."""
         stored_count = 0
 
         for link in extract_candidate_links(page.url, page.text):
-            if stored_count >= remaining_budget:
-                break
-
             if not self._should_store_link(blog, link):
                 continue
 

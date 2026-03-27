@@ -26,8 +26,6 @@ def build_pipeline(tmp_path: Path) -> tuple[CrawlPipeline, Repository]:
         db_path=tmp_path / "db.sqlite",
         seed_path=tmp_path / "seed.csv",
         export_dir=tmp_path / "exports",
-        max_outgoing_links_per_blog=10,
-        max_candidate_pages_per_blog=3,
         max_path_probes_per_blog=2,
     )
     repository = Repository(settings.db_path)
@@ -130,47 +128,6 @@ def test_pipeline_uses_fallback_paths_when_homepage_has_no_friend_link_entry(tmp
 
     assert discovered == 3
 
-
-def test_pipeline_respects_outgoing_link_limit(tmp_path: Path) -> None:
-    """Pipeline should stop storing links after the configured BFS child budget."""
-    pipeline, repository = build_pipeline(tmp_path)
-    pipeline.settings.max_outgoing_links_per_blog = 2
-
-    blog_id, _ = repository.upsert_blog(
-        url="https://blog.example.com/",
-        normalized_url="https://blog.example.com/",
-        domain="blog.example.com",
-        depth=0,
-        source_blog_id=None,
-    )
-    blog = repository.get_blog(blog_id)
-    assert blog is not None
-
-    pipeline.fetcher = FakeFetcher(
-        {
-            "https://blog.example.com/": FetchResult(
-                url="https://blog.example.com/",
-                status_code=200,
-                text="<html><body><footer><a href='/friends'>友情链接</a></footer></body></html>",
-            ),
-            "https://blog.example.com/friends": FetchResult(
-                url="https://blog.example.com/friends",
-                status_code=200,
-                text="""
-                <html><body><section><h2>友情链接</h2>
-                <a href='https://friend.example/'>Friend</a>
-                <a href='https://friend-two.example/'>Friend Two</a>
-                <a href='https://friend-three.example/'>Friend Three</a>
-                </section></body></html>
-                """,
-            ),
-        }
-    )
-
-    discovered = pipeline._crawl_blog(blog)
-
-    assert discovered == 2
-    assert len(repository.list_edges()) == 2
 
 
 def test_pipeline_deduplicates_normalized_child_links(tmp_path: Path) -> None:

@@ -58,34 +58,29 @@ def _heading_text(container: Tag) -> str:
     return ""
 
 
-def _friend_links_section_score(base_url: str, container: Tag) -> int:
-    """Score how strongly a container looks like a friend-link section."""
+def _looks_like_friend_links_section(base_url: str, container: Tag) -> bool:
+    """Return True when a container likely represents a friend-links section."""
     text = clean_text(container.get_text(" ", strip=True))
     if not text:
-        return 0
+        return False
 
     heading = _heading_text(container).lower()
     lowered = text.lower()
     classes = " ".join(container.get("class", [])).lower()
     identifier = str(container.get("id", "")).lower()
     combined = f"{classes} {identifier}"
-    score = 0
 
     if any(keyword in lowered for keyword in NEGATIVE_SECTION_KEYWORDS):
-        score -= 3
+        return False
     if any(keyword in heading for keyword in SECTION_KEYWORDS):
-        score += 4
+        return True
     if any(keyword in lowered for keyword in SECTION_KEYWORDS):
-        score += 2
+        return True
     if any(keyword in combined for keyword in SECTION_KEYWORDS):
-        score += 3
+        return True
 
     external_links = _count_external_links(base_url, container)
-    if score > 0 and external_links >= 3:
-        score += 2
-    elif score > 0 and external_links >= 1:
-        score += 1
-    return max(score, 0)
+    return external_links >= 3
 
 
 def _is_overlapping_container(container: Tag, chosen: list[Tag]) -> bool:
@@ -94,18 +89,17 @@ def _is_overlapping_container(container: Tag, chosen: list[Tag]) -> bool:
 
 
 def _select_candidate_containers(base_url: str, containers: list[Tag]) -> list[Tag]:
-    """Pick the most specific friend-link-looking containers."""
-    scored: list[tuple[int, int, int, Tag]] = []
+    """Pick the most specific containers that look like friend-links sections."""
+    matching: list[tuple[int, int, Tag]] = []
     for index, container in enumerate(containers):
-        score = _friend_links_section_score(base_url, container)
-        if score <= 0:
+        if not _looks_like_friend_links_section(base_url, container):
             continue
-        scored.append((score, _container_depth(container), index, container))
+        matching.append((_container_depth(container), index, container))
 
-    # Prefer high-confidence sections first, and prefer deeper containers over wrappers.
-    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    # Prefer deeper containers so the extractor reads the most specific section first.
+    matching.sort(key=lambda item: (-item[0], item[1]))
     selected: list[Tag] = []
-    for _, _, _, container in scored:
+    for _, _, container in matching:
         if _is_overlapping_container(container, selected):
             continue
         selected.append(container)

@@ -4,7 +4,7 @@ from app.crawler.extractor import extract_candidate_links
 
 
 def test_extractor_prefers_friend_link_section_over_navigation() -> None:
-    """Extraction should prefer the scored friend-link section over the global nav."""
+    """Extraction should prefer the detected friend-link section over the global nav."""
     html = """
     <html>
       <body>

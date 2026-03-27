@@ -10,8 +10,6 @@ DEFAULT_USER_AGENT = "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_NODES_PER_RUN = 10
 DEFAULT_MAX_DEPTH = 2
-DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG = 1000
-DEFAULT_MAX_CANDIDATE_PAGES_PER_BLOG = 50
 DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
 
 
@@ -34,8 +32,6 @@ class Settings:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
     max_depth: int = DEFAULT_MAX_DEPTH
-    max_outgoing_links_per_blog: int = DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG
-    max_candidate_pages_per_blog: int = DEFAULT_MAX_CANDIDATE_PAGES_PER_BLOG
     max_path_probes_per_blog: int = DEFAULT_MAX_PATH_PROBES_PER_BLOG
     friend_link_domain_blocklist: tuple[str, ...] = ()
     friend_link_tld_blocklist: tuple[str, ...] = ()
@@ -64,18 +60,6 @@ class Settings:
                 os.getenv("HEYBLOG_MAX_NODES_PER_RUN", str(DEFAULT_MAX_NODES_PER_RUN))
             ),
             max_depth=int(os.getenv("HEYBLOG_MAX_DEPTH", str(DEFAULT_MAX_DEPTH))),
-            max_outgoing_links_per_blog=int(
-                os.getenv(
-                    "HEYBLOG_MAX_OUTGOING_LINKS_PER_BLOG",
-                    str(DEFAULT_MAX_OUTGOING_LINKS_PER_BLOG),
-                )
-            ),
-            max_candidate_pages_per_blog=int(
-                os.getenv(
-                    "HEYBLOG_MAX_CANDIDATE_PAGES_PER_BLOG",
-                    str(DEFAULT_MAX_CANDIDATE_PAGES_PER_BLOG),
-                )
-            ),
             max_path_probes_per_blog=int(
                 os.getenv(
                     "HEYBLOG_MAX_PATH_PROBES_PER_BLOG",
