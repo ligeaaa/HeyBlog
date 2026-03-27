@@ -46,3 +46,25 @@ def test_discovery_falls_back_to_path_hints_when_no_signal_exists() -> None:
     result = discover_friend_links_pages("https://blog.example.com/", html)
 
     assert "https://blog.example.com/links" in result
+
+
+def test_discovery_keeps_unique_candidate_pages_in_discovery_order() -> None:
+    """Discovery should preserve the first-seen candidate order without duplicates."""
+    html = """
+    <html>
+      <body>
+        <footer>
+          <a href="/friends">友情链接</a>
+          <a href="/friends">Friend Links</a>
+          <a href="/links">Blogroll</a>
+        </footer>
+      </body>
+    </html>
+    """
+
+    result = discover_friend_links_pages("https://blog.example.com/", html)
+
+    assert result == [
+        "https://blog.example.com/friends",
+        "https://blog.example.com/links",
+    ]

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from app.crawler.utils import text_contains_any
+
 
 PLATFORM_BLOCKLIST = {
     "github.com",
@@ -88,12 +90,6 @@ def _path_has_blocked_segment(path: str) -> bool:
     return any(lowered == blocked or lowered.startswith(f"{blocked}/") for blocked in PATH_BLOCKLIST)
 
 
-def _text_contains_any(text: str, keywords: tuple[str, ...]) -> bool:
-    """Case-insensitive keyword helper."""
-    lowered = text.lower()
-    return any(keyword in lowered for keyword in keywords)
-
-
 def _matches_blocked_domain(domain: str, blocklist: tuple[str, ...] | set[str]) -> bool:
     """Return True when the domain matches or is nested under a blocked domain."""
     return any(domain == blocked or domain.endswith(f".{blocked}") for blocked in blocklist)
@@ -147,10 +143,10 @@ def decide_blog_candidate(
 
     # Once hard blocks pass, light context scoring can keep likely blog homepages without mixing in discovery logic.
     combined_text = f"{link_text} {context_text}".strip()
-    if _text_contains_any(combined_text, NEGATIVE_CONTEXT_KEYWORDS):
+    if text_contains_any(combined_text, NEGATIVE_CONTEXT_KEYWORDS):
         reasons.append("negative_context")
         score -= 1.0
-    if _text_contains_any(combined_text, POSITIVE_CONTEXT_KEYWORDS):
+    if text_contains_any(combined_text, POSITIVE_CONTEXT_KEYWORDS):
         reasons.append("positive_context")
         score += 1.0
     if path in {"", "/"}:

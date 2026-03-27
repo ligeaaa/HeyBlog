@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from bs4 import Tag
 
+from app.crawler.utils import clean_text
+
 
 SECTION_KEYWORDS = ("友链", "友情链接", "friends", "friend links", "blogroll", "neighbors")
 NEGATIVE_SECTION_KEYWORDS = ("archive", "contact", "rss", "search", "sitemap")
@@ -22,11 +24,6 @@ class ExtractedLink:
     url: str
     text: str
     context_text: str = ""
-
-
-def _clean_text(value: str) -> str:
-    """Normalize extracted text for keyword matching."""
-    return " ".join(value.split()).strip()
 
 
 def _container_depth(container: Tag) -> int:
@@ -55,15 +52,15 @@ def _heading_text(container: Tag) -> str:
     """Return the strongest local heading for a section candidate."""
     heading = container.find(["h1", "h2", "h3", "h4", "legend", "summary", "strong"])
     if heading is not None:
-        return _clean_text(heading.get_text(" ", strip=True))
+        return clean_text(heading.get_text(" ", strip=True))
     if isinstance(container.previous_sibling, Tag):
-        return _clean_text(container.previous_sibling.get_text(" ", strip=True))
+        return clean_text(container.previous_sibling.get_text(" ", strip=True))
     return ""
 
 
 def _friend_links_section_score(base_url: str, container: Tag) -> int:
     """Score how strongly a container looks like a friend-link section."""
-    text = _clean_text(container.get_text(" ", strip=True))
+    text = clean_text(container.get_text(" ", strip=True))
     if not text:
         return 0
 
@@ -136,7 +133,7 @@ def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
         selected = _fallback_container(containers)
 
     for container in selected:
-        context_text = _clean_text(container.get_text(" ", strip=True))[:240]
+        context_text = clean_text(container.get_text(" ", strip=True))[:240]
         for anchor in container.find_all("a", href=True):
             url = urljoin(base_url, anchor["href"].strip())
             if url in seen_urls:
@@ -145,7 +142,7 @@ def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
             links.append(
                 ExtractedLink(
                     url=url,
-                    text=_clean_text(anchor.get_text(" ", strip=True)),
+                    text=clean_text(anchor.get_text(" ", strip=True)),
                     context_text=context_text,
                 )
             )

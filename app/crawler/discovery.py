@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from bs4 import Tag
 
+from app.crawler.utils import clean_text
+from app.crawler.utils import text_contains_any
+from app.crawler.utils import unique_in_order
+
 
 PAGE_KEYWORDS = (
     "友链",
@@ -46,17 +50,6 @@ PATH_HINTS = ("/links", "/friends", "/friend-links", "/blogroll", "/friendlink")
 CONTEXT_TAGS = {"nav", "aside", "footer", "section", "li", "div", "ul", "ol"}
 
 
-def _clean_text(value: str) -> str:
-    """Normalize extracted text for matching."""
-    return " ".join(value.split()).strip()
-
-
-def _text_contains_any(text: str, keywords: tuple[str, ...]) -> bool:
-    """Return True when the lower-cased text contains any provided keyword."""
-    lowered = text.lower()
-    return any(keyword in lowered for keyword in keywords)
-
-
 def _anchor_context(anchor: Tag) -> str:
     """Collect nearby context text for an anchor."""
     fragments: list[str] = []
@@ -67,7 +60,7 @@ def _anchor_context(anchor: Tag) -> str:
         current = current.parent if isinstance(current.parent, Tag) else None
         if current is None or current.name not in CONTEXT_TAGS:
             continue
-        text = _clean_text(current.get_text(" ", strip=True))
+        text = clean_text(current.get_text(" ", strip=True))
         if not text or text in seen:
             continue
         seen.add(text)
@@ -81,44 +74,46 @@ def _anchor_context(anchor: Tag) -> str:
 def _looks_like_friend_links_page(anchor: Tag) -> bool:
     """Return True when an anchor looks like a friend-link page entry."""
     href = anchor["href"].strip()
-    anchor_text = _clean_text(anchor.get_text(" ", strip=True))
+    anchor_text = clean_text(anchor.get_text(" ", strip=True))
     context_text = _anchor_context(anchor)
-    combined = _clean_text(f"{anchor_text} {context_text}")
+    combined = clean_text(f"{anchor_text} {context_text}")
     path = (urlparse(href).path or "/").lower()
 
     if not anchor_text and not context_text:
         return False
-    if _text_contains_any(combined, NEGATIVE_KEYWORDS):
+
+    # Prefer anchors whose label or nearby container speaks the language of a
+    # friend-links directory, but reject generic "links/resources" navigation.
+    if text_contains_any(combined, NEGATIVE_KEYWORDS):
         return False
-    if _text_contains_any(combined, PAGE_KEYWORDS):
+    if text_contains_any(combined, PAGE_KEYWORDS):
         return True
     if any(hint in path for hint in PATH_HINTS):
         return True
     return False
 
 
+def _candidate_page_urls(base_url: str, soup: BeautifulSoup) -> list[str]:
+    """Return homepage-discovered friend-link page URLs."""
+    urls = [
+        urljoin(base_url, anchor["href"].strip())
+        for anchor in soup.find_all("a", href=True)
+        if _looks_like_friend_links_page(anchor)
+    ]
+    return unique_in_order(urls)
+
+
+def _fallback_page_urls(base_url: str) -> list[str]:
+    """Return deterministic fallback paths for blogs without clear homepage clues."""
+    return unique_in_order(urljoin(base_url, hint) for hint in PATH_HINTS)
+
+
 def discover_friend_links_pages(base_url: str, html: str) -> list[str]:
     """Infer friend-link page URLs from homepage anchors and fallback paths."""
     soup = BeautifulSoup(html, "html.parser")
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    for anchor in soup.find_all("a", href=True):
-        if not _looks_like_friend_links_page(anchor):
-            continue
-        url = urljoin(base_url, anchor["href"].strip())
-        if url in seen:
-            continue
-        seen.add(url)
-        candidates.append(url)
+    candidates = _candidate_page_urls(base_url, soup)
 
     if candidates:
         return candidates
 
-    for hint in PATH_HINTS:
-        url = urljoin(base_url, hint)
-        if url in seen:
-            continue
-        seen.add(url)
-        candidates.append(url)
-    return candidates
+    return _fallback_page_urls(base_url)
