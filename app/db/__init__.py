@@ -1,9 +1,9 @@
-"""Database helpers and repository builders."""
+"""Compatibility shim for persistence API repository exports."""
 
-from app.db.repository import PostgresRepository
-from app.db.repository import Repository
-from app.db.repository import RepositoryProtocol
-from app.db.repository import build_repository
+from persistence_api.repository import PostgresRepository
+from persistence_api.repository import Repository
+from persistence_api.repository import RepositoryProtocol
+from persistence_api.repository import build_repository
 
 __all__ = [
     "PostgresRepository",

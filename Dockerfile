@@ -16,6 +16,12 @@ ENV PYTHONUNBUFFERED=1
 
 COPY pyproject.toml readme.md ./
 COPY app ./app
+COPY shared ./shared
+COPY backend ./backend
+COPY crawler ./crawler
+COPY persistence_api ./persistence_api
+COPY search ./search
+COPY frontend ./frontend
 COPY services ./services
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 COPY seed.csv ./seed.csv

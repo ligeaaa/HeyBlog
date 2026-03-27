@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.config import Settings
-from app.crawler.pipeline import CrawlPipeline
-from app.db.repository import RepositoryProtocol
-from app.db.repository import build_repository
+from crawler.pipeline import CrawlPipeline
+from persistence_api.repository import RepositoryProtocol
+from persistence_api.repository import build_repository
 from app.services.graph_service import GraphService
 from app.services.stats_service import StatsService
+from shared.config import Settings
 
 
 @dataclass(slots=True)

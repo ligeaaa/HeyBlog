@@ -1,0 +1,15 @@
+.git
+.omx
+.venv
+.pytest_cache
+.ruff_cache
+build
+data
+volumes
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+__pycache__
+*.pyc
