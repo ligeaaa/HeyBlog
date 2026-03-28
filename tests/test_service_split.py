@@ -203,3 +203,29 @@ def test_frontend_service_health_checks_backend(tmp_path: Path, monkeypatch) -> 
     health = client.get("/internal/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+
+
+def test_frontend_service_serves_built_app_when_dist_exists(tmp_path: Path, monkeypatch) -> None:
+    """Frontend routes should serve the built SPA instead of the fallback page."""
+    dist_dir = tmp_path / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<!DOCTYPE html><title>Built App</title>", encoding="utf-8")
+
+    monkeypatch.setattr("frontend.server.FRONTEND_DIST_DIR", dist_dir)
+    monkeypatch.setattr("frontend.server.FRONTEND_ASSETS_DIR", assets_dir)
+
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    response = client.get("/stats")
+
+    assert response.status_code == 200
+    assert "Built App" in response.text
+    assert "Frontend build is not ready" not in response.text

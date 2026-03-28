@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from shared.config import Settings
 
 
-FRONTEND_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent / "dist"
 FRONTEND_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
 FALLBACK_HTML = """<!DOCTYPE html>
 <html lang="en">
