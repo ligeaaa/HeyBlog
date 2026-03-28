@@ -15,7 +15,6 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 COPY pyproject.toml readme.md ./
-COPY app ./app
 COPY shared ./shared
 COPY backend ./backend
 COPY crawler ./crawler

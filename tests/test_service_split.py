@@ -205,6 +205,23 @@ def test_frontend_service_health_checks_backend(tmp_path: Path, monkeypatch) -> 
     assert health.json()["status"] == "ok"
 
 
+def test_frontend_root_redirects_to_stats(tmp_path: Path) -> None:
+    """Frontend root should redirect browsers to the stats page."""
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/stats"
+
+
 def test_frontend_service_serves_built_app_when_dist_exists(tmp_path: Path, monkeypatch) -> None:
     """Frontend routes should serve the built SPA instead of the fallback page."""
     dist_dir = tmp_path / "dist"

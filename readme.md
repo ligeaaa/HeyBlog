@@ -26,9 +26,8 @@ python -m uvicorn backend.main:app --reload
 The backend API will be available at `http://127.0.0.1:8000`, with interactive
 docs at `/docs`.
 
-The split frontend panel is available at `http://127.0.0.1:3000/panel` when the
-frontend service is running. The legacy monolith entrypoint in `app.main` still
-exists for compatibility and uses SQLite by default; the split runtime uses
+The split frontend panel is available at `http://127.0.0.1:3000/` when the
+frontend service is running. The runtime now uses the split topology with
 `persistence-api + persistence-db`.
 
 ## Seed Blogs
@@ -70,10 +69,9 @@ The split services communicate over the shared Docker network and persist data t
 
 ## Tests
 
-The repository keeps tests centralized under `tests/` during directory decoupling.
-New tests should prefer importing from the new top-level packages such as
-`crawler/`, `backend/`, `search/`, `persistence_api/`, and `shared/` instead of
-binding to `app/` compatibility shims.
+The repository keeps tests centralized under `tests/`. New tests should prefer
+importing from the top-level packages such as `crawler/`, `backend/`, `search/`,
+`persistence_api/`, `frontend/`, and `shared/`.
 
 ## Shared Boundary
 
@@ -86,20 +84,6 @@ there:
 
 Do not place service-specific business logic in `shared/`. If code only serves
 one deployable unit, it should live in that service package instead.
-
-## App Retirement
-
-`app/` is now a compatibility layer, not the target home for new logic.
-
-Retirement order:
-
-1. Stop adding new implementation code under `app/`
-2. Keep replacing `app/*` imports with `backend/`, `crawler/`, `search/`,
-   `persistence_api/`, and `shared/`
-3. Reduce `app/services/*`, `app/crawler/*`, `app/db/*`, and `app/clients/*`
-   to compatibility shims only
-4. Delete shim modules once no runtime path or test imports them
-5. Remove `app/` entirely after Docker, tests, and docs no longer reference it
 
 ## services/ Policy
 
