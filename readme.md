@@ -100,3 +100,18 @@ Retirement order:
    to compatibility shims only
 4. Delete shim modules once no runtime path or test imports them
 5. Remove `app/` entirely after Docker, tests, and docs no longer reference it
+
+## services/ Policy
+
+`services/` is retained only as the thinnest startup compatibility layer.
+
+- Allowed: service entrypoint shims such as `services/backend/main.py`
+- Not allowed: new business logic, runtime state, repository code, crawler logic,
+  or service-specific domain code
+
+Current decision:
+
+- Keep `services/*/main.py` as transitional entry shims for one migration window
+- Do not add new non-entrypoint modules under `services/`
+- Prefer top-level service packages (`backend/`, `crawler/`, `search/`,
+  `persistence_api/`, `frontend/`) for all new implementation code
