@@ -4,13 +4,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.config import Settings
 from backend.main import BackendState
 from backend.main import create_app as create_backend_app
+from frontend.server import create_app as create_frontend_app
 from persistence_api.main import build_persistence_state
 from persistence_api.main import create_app as create_persistence_app
 from search.main import SearchService
 from search.main import create_app as create_search_app
+from shared.config import Settings
 
 
 class StubCrawler:
@@ -129,6 +130,10 @@ def test_backend_service_preserves_public_api_shape() -> None:
     app = create_backend_app(BackendState(persistence=persistence, crawler=StubCrawler(), search=search))
     client = TestClient(app)
 
+    health = client.get("/internal/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+
     status = client.get("/api/status")
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
@@ -171,3 +176,30 @@ def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:
     result = client.get("/internal/search?q=friend")
     assert result.status_code == 200
     assert result.json()["edges"][0]["link_text"] == "Friend Blog"
+
+
+def test_frontend_service_health_checks_backend(tmp_path: Path, monkeypatch) -> None:
+    """Frontend health should fail fast when its backend is unavailable."""
+
+    class OkResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(url: str, timeout: float) -> OkResponse:
+        assert url == "http://backend:8000/api/status"
+        assert timeout == 10.0
+        return OkResponse()
+
+    monkeypatch.setattr("frontend.server.httpx.get", fake_get)
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    health = client.get("/internal/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"

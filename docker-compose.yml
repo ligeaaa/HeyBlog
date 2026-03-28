@@ -6,8 +6,19 @@ services:
     environment:
       HEYBLOG_BACKEND_BASE_URL: http://backend:8000
     command: ["uvicorn", "frontend.server:app", "--host", "0.0.0.0", "--port", "3000"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/internal/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - heyblog_net
 
@@ -20,10 +31,23 @@ services:
       HEYBLOG_CRAWLER_BASE_URL: http://crawler:8010
       HEYBLOG_SEARCH_BASE_URL: http://search:8020
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/internal/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - persistence-api
-      - crawler
-      - search
+      persistence-api:
+        condition: service_healthy
+      crawler:
+        condition: service_healthy
+      search:
+        condition: service_healthy
     networks:
       - heyblog_net
 
@@ -34,8 +58,19 @@ services:
       HEYBLOG_SEED_PATH: /data/seeds/seed.csv
       HEYBLOG_EXPORT_DIR: /data/exports
     command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/internal/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - persistence-api
+      persistence-api:
+        condition: service_healthy
     volumes:
       - ./volumes/exports:/data/exports
       - ./seed.csv:/data/seeds/seed.csv:ro
@@ -48,8 +83,19 @@ services:
       HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
       HEYBLOG_SEARCH_CACHE_DIR: /data/search-cache
     command: ["uvicorn", "search.main:app", "--host", "0.0.0.0", "--port", "8020"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/internal/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - persistence-api
+      persistence-api:
+        condition: service_healthy
     volumes:
       - ./volumes/search-cache:/data/search-cache
     networks:
@@ -62,8 +108,19 @@ services:
     environment:
       HEYBLOG_DB_DSN: postgresql://heyblog:heyblog@persistence-db:5432/heyblog
     command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "8030"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8030/internal/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      - persistence-db
+      persistence-db:
+        condition: service_healthy
     networks:
       - heyblog_net
 
@@ -77,6 +134,12 @@ services:
       - "5432:5432"
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heyblog -d heyblog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - heyblog_net
 

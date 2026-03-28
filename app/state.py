@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from crawler.pipeline import CrawlPipeline
-from backend.graph_service import GraphService
-from backend.stats_service import StatsService
+from persistence_api.graph_service import GraphService
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
+from persistence_api.stats_service import StatsService
 from shared.config import Settings
 
 

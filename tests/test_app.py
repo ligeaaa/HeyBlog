@@ -5,9 +5,9 @@ from pathlib import Path
 from _pytest.monkeypatch import MonkeyPatch
 from fastapi.testclient import TestClient
 
-from app.config import Settings
 from app.main import create_app
 from app.state import build_app_state
+from shared.config import Settings
 
 
 def build_test_client(tmp_path: Path) -> TestClient:

@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from app.config import Settings
 from crawler.fetcher import FetchResult
 from crawler.pipeline import CrawlPipeline
-from app.db.repository import Repository
+from persistence_api.repository import Repository
+from shared.config import Settings
 
 
 class FakeFetcher:

@@ -8,11 +8,11 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from persistence_api.graph_service import GraphService
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
+from persistence_api.stats_service import StatsService
 from shared.config import Settings
-from backend.graph_service import GraphService
-from backend.stats_service import StatsService
 
 
 @dataclass(slots=True)
@@ -58,6 +58,8 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
     repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn)
     return PersistenceState(
         repository=repository,
+        # Keep graph/stats assembly owned by persistence so this service does not
+        # depend on backend-only modules for its own read models.
         graph_service=GraphService(repository),
         stats_service=StatsService(repository),
     )

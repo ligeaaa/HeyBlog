@@ -62,6 +62,19 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             "panel": "served-by-frontend",
         }
 
+    @app.get("/internal/health")
+    def health() -> dict[str, str]:
+        state = get_state()
+        try:
+            # Probe the three upstream services the backend must aggregate before
+            # we report the backend as healthy to Compose or external checks.
+            state.persistence.stats()
+            state.crawler.runtime_status()
+            state.search.search("")
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail="upstream_unavailable") from exc
+        return {"status": "ok"}
+
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:
         stats = get_state().persistence.stats()

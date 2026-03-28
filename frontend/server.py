@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi import HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -42,6 +43,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/")
     def root() -> RedirectResponse:
         return RedirectResponse(url="/stats", status_code=307)
+
+    @app.get("/internal/health")
+    def health() -> dict[str, str]:
+        try:
+            httpx.get(f"{app.state.backend_base_url}/api/status", timeout=10.0).raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail="backend_unavailable") from exc
+        return {"status": "ok"}
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST"])
     async def proxy_api(path: str, request: Request) -> Response:

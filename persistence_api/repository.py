@@ -11,11 +11,28 @@ from typing import Any
 from typing import Iterator
 from typing import Protocol
 
-import psycopg
-from psycopg.rows import dict_row
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ModuleNotFoundError:  # pragma: no cover - exercised via regression tests.
+    psycopg = None
+    dict_row = None
 
 from persistence_api.schema import init_postgres_db
 from persistence_api.schema import init_sqlite_db
+
+
+PSYCOPG_IMPORT_ERROR = (
+    "psycopg is required for PostgreSQL support. "
+    "Install heyblog with the 'psycopg[binary]' dependency."
+)
+
+
+def _postgres_driver() -> tuple[Any, Any]:
+    """Return the PostgreSQL driver and row factory when available."""
+    if psycopg is None or dict_row is None:
+        raise ModuleNotFoundError(PSYCOPG_IMPORT_ERROR)
+    return psycopg, dict_row
 
 
 def now_iso() -> str:
@@ -308,20 +325,22 @@ class PostgresRepository:
     @contextmanager
     def connect(self, *, wait_for_ready: bool = False) -> Iterator[psycopg.Connection[Any]]:
         """Yield a managed PostgreSQL connection with dict rows enabled."""
+        driver, row_factory = _postgres_driver()
         if wait_for_ready:
             connection = self._connect_with_retry()
         else:
-            connection = psycopg.connect(self.db_dsn, row_factory=dict_row)
+            connection = driver.connect(self.db_dsn, row_factory=row_factory)
         with connection:
             yield connection
 
     def _connect_with_retry(self) -> psycopg.Connection[Any]:
         """Retry startup connections while the database container becomes ready."""
+        driver, row_factory = _postgres_driver()
         last_error: Exception | None = None
         for _attempt in range(20):
             try:
-                return psycopg.connect(self.db_dsn, row_factory=dict_row)
-            except psycopg.OperationalError as exc:
+                return driver.connect(self.db_dsn, row_factory=row_factory)
+            except driver.OperationalError as exc:
                 last_error = exc
                 time.sleep(1)
         assert last_error is not None
