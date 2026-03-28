@@ -15,9 +15,9 @@ from crawler.fetcher import FetchResult
 from crawler.filters import decide_blog_candidate
 from crawler.normalizer import normalize_url
 from crawler.utils import unique_in_order
+from crawler.export_service import ExportService
 from persistence_api.repository import RepositoryProtocol
 from shared.config import Settings
-from app.services.export_service import ExportService
 
 
 BlogStartHook = Callable[[dict[str, Any]], None]

@@ -7,13 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.db.repository import Repository
+from persistence_api.repository import RepositoryProtocol
 
 
 class ExportService:
     """Persist graph snapshots for downstream analysis tools."""
 
-    def __init__(self, repository: Repository, export_dir: Path) -> None:
+    def __init__(self, repository: RepositoryProtocol, export_dir: Path) -> None:
         """Create an exporter bound to a repository and output folder."""
         self.repository = repository
         self.export_dir = export_dir

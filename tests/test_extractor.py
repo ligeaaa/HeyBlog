@@ -1,6 +1,6 @@
 """Unit tests for section-aware candidate extraction."""
 
-from app.crawler.extractor import extract_candidate_links
+from crawler.extractor import extract_candidate_links
 
 
 def test_extractor_prefers_friend_link_section_over_navigation() -> None:

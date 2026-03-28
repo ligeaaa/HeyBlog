@@ -67,3 +67,10 @@ The split services communicate over the shared Docker network and persist data t
 - `./volumes/postgres`
 - `./volumes/exports`
 - `./volumes/search-cache`
+
+## Tests
+
+The repository keeps tests centralized under `tests/` during directory decoupling.
+New tests should prefer importing from the new top-level packages such as
+`crawler/`, `backend/`, `search/`, `persistence_api/`, and `shared/` instead of
+binding to `app/` compatibility shims.

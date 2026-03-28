@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from app.config import Settings
-from app.crawler.fetcher import FetchResult
-from app.crawler.pipeline import CrawlPipeline
+from crawler.fetcher import FetchResult
+from crawler.pipeline import CrawlPipeline
 from app.db.repository import Repository
 
 
