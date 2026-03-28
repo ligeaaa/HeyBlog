@@ -20,7 +20,7 @@ a split-service runtime topology for frontend, backend, crawler, search,
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-python -m uvicorn services.backend.main:app --reload
+python -m uvicorn backend.main:app --reload
 ```
 
 The backend API will be available at `http://127.0.0.1:8000`, with interactive
@@ -74,3 +74,29 @@ The repository keeps tests centralized under `tests/` during directory decouplin
 New tests should prefer importing from the new top-level packages such as
 `crawler/`, `backend/`, `search/`, `persistence_api/`, and `shared/` instead of
 binding to `app/` compatibility shims.
+
+## Shared Boundary
+
+`shared/` is intentionally narrow. Only stable, cross-service utilities belong
+there:
+
+- runtime configuration
+- small reusable HTTP clients
+- pure data helpers or contracts
+
+Do not place service-specific business logic in `shared/`. If code only serves
+one deployable unit, it should live in that service package instead.
+
+## App Retirement
+
+`app/` is now a compatibility layer, not the target home for new logic.
+
+Retirement order:
+
+1. Stop adding new implementation code under `app/`
+2. Keep replacing `app/*` imports with `backend/`, `crawler/`, `search/`,
+   `persistence_api/`, and `shared/`
+3. Reduce `app/services/*`, `app/crawler/*`, `app/db/*`, and `app/clients/*`
+   to compatibility shims only
+4. Delete shim modules once no runtime path or test imports them
+5. Remove `app/` entirely after Docker, tests, and docs no longer reference it

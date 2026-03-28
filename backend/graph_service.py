@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.db.repository import Repository
+from persistence_api.repository import RepositoryProtocol
 
 
 class GraphService:
     """Create combined node-edge graph views from repository data."""
 
-    def __init__(self, repository: Repository) -> None:
+    def __init__(self, repository: RepositoryProtocol) -> None:
         """Store repository dependency for graph reads."""
         self.repository = repository
 

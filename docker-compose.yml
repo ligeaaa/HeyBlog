@@ -5,7 +5,7 @@ services:
       - "3000:3000"
     environment:
       HEYBLOG_BACKEND_BASE_URL: http://backend:8000
-    command: ["uvicorn", "services.frontend.main:app", "--host", "0.0.0.0", "--port", "3000"]
+    command: ["uvicorn", "frontend.server:app", "--host", "0.0.0.0", "--port", "3000"]
     depends_on:
       - backend
     networks:
@@ -19,7 +19,7 @@ services:
       HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
       HEYBLOG_CRAWLER_BASE_URL: http://crawler:8010
       HEYBLOG_SEARCH_BASE_URL: http://search:8020
-    command: ["uvicorn", "services.backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       - persistence-api
       - crawler
@@ -33,7 +33,7 @@ services:
       HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
       HEYBLOG_SEED_PATH: /data/seeds/seed.csv
       HEYBLOG_EXPORT_DIR: /data/exports
-    command: ["uvicorn", "services.crawler.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "8010"]
     depends_on:
       - persistence-api
     volumes:
@@ -47,7 +47,7 @@ services:
     environment:
       HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
       HEYBLOG_SEARCH_CACHE_DIR: /data/search-cache
-    command: ["uvicorn", "services.search.main:app", "--host", "0.0.0.0", "--port", "8020"]
+    command: ["uvicorn", "search.main:app", "--host", "0.0.0.0", "--port", "8020"]
     depends_on:
       - persistence-api
     volumes:
@@ -61,7 +61,7 @@ services:
       - "8030:8030"
     environment:
       HEYBLOG_DB_DSN: postgresql://heyblog:heyblog@persistence-db:5432/heyblog
-    command: ["uvicorn", "services.persistence.main:app", "--host", "0.0.0.0", "--port", "8030"]
+    command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "8030"]
     depends_on:
       - persistence-db
     networks:

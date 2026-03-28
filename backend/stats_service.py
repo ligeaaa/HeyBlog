@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.db.repository import Repository
+from persistence_api.repository import RepositoryProtocol
 
 
 class StatsService:
     """Provide lightweight status and stats dictionaries for API handlers."""
 
-    def __init__(self, repository: Repository) -> None:
+    def __init__(self, repository: RepositoryProtocol) -> None:
         """Create service with repository dependency."""
         self.repository = repository
 

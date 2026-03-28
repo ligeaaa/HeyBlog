@@ -5,12 +5,12 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from services.backend.main import BackendState
-from services.backend.main import create_app as create_backend_app
-from services.persistence.main import build_persistence_state
-from services.persistence.main import create_app as create_persistence_app
-from services.search.main import SearchService
-from services.search.main import create_app as create_search_app
+from backend.main import BackendState
+from backend.main import create_app as create_backend_app
+from persistence_api.main import build_persistence_state
+from persistence_api.main import create_app as create_persistence_app
+from search.main import SearchService
+from search.main import create_app as create_search_app
 
 
 class StubCrawler:
