@@ -47,6 +47,16 @@ export type StatsPayload = {
   finished_tasks: number;
 };
 
+export type ResetDatabasePayload = {
+  ok: boolean;
+  blogs_deleted: number;
+  edges_deleted: number;
+  logs_deleted: number;
+  search_reindexed: boolean;
+  search: Record<string, unknown> | null;
+  search_error?: string;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
@@ -70,4 +80,5 @@ export const api = {
       body: JSON.stringify({ max_nodes: maxNodes }),
     }),
   bootstrap: () => request<Record<string, unknown>>("/api/crawl/bootstrap", { method: "POST" }),
+  resetDatabase: () => request<ResetDatabasePayload>("/api/database/reset", { method: "POST" }),
 };

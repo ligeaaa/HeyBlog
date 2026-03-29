@@ -135,6 +135,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             "logs": repository.list_logs(limit=500),
         }
 
+    @app.post("/internal/database/reset")
+    def reset_database() -> dict[str, Any]:
+        return get_state().repository.reset()
+
     return app
 
 

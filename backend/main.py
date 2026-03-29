@@ -161,6 +161,22 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             pass
         return result
 
+    @app.post("/api/database/reset")
+    def reset_database() -> dict[str, Any]:
+        runtime = get_state().crawler.runtime_status()
+        if runtime.get("runner_status") in {"starting", "running", "stopping"}:
+            raise HTTPException(status_code=409, detail="crawler_busy")
+
+        result = get_state().persistence.reset()
+        try:
+            result["search"] = get_state().search.reindex()
+            result["search_reindexed"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["search"] = None
+            result["search_reindexed"] = False
+            result["search_error"] = str(exc)
+        return result
+
     return app
 
 

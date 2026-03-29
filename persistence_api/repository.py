@@ -87,6 +87,8 @@ class RepositoryProtocol(Protocol):
 
     def stats(self) -> dict[str, Any]: ...
 
+    def reset(self) -> dict[str, Any]: ...
+
 
 class Repository:
     """Encapsulate all persistence operations against SQLite."""
@@ -311,6 +313,31 @@ class Repository:
                 "failed_tasks": int(status_counts.get("FAILED", 0)),
                 "finished_tasks": int(status_counts.get("FINISHED", 0)),
             }
+
+    def reset(self) -> dict[str, Any]:
+        """Clear all crawler data and reset autoincrement counters."""
+        with self.connect() as connection:
+            summary = connection.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM blogs) AS blogs,
+                  (SELECT COUNT(*) FROM edges) AS edges,
+                  (SELECT COUNT(*) FROM crawl_logs) AS logs
+                """
+            ).fetchone()
+            connection.execute("DELETE FROM edges")
+            connection.execute("DELETE FROM crawl_logs")
+            connection.execute("DELETE FROM blogs")
+            connection.execute(
+                "DELETE FROM sqlite_sequence WHERE name IN ('blogs', 'edges', 'crawl_logs')"
+            )
+            connection.commit()
+        return {
+            "ok": True,
+            "blogs_deleted": int(summary["blogs"] or 0),
+            "edges_deleted": int(summary["edges"] or 0),
+            "logs_deleted": int(summary["logs"] or 0),
+        }
 
 
 class PostgresRepository:
@@ -547,6 +574,27 @@ class PostgresRepository:
                 "failed_tasks": int(status_counts.get("FAILED", 0)),
                 "finished_tasks": int(status_counts.get("FINISHED", 0)),
             }
+
+    def reset(self) -> dict[str, Any]:
+        """Clear all crawler data and restart PostgreSQL identity counters."""
+        with self.connect() as connection:
+            summary = connection.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM blogs) AS blogs,
+                  (SELECT COUNT(*) FROM edges) AS edges,
+                  (SELECT COUNT(*) FROM crawl_logs) AS logs
+                """
+            ).fetchone()
+            connection.execute(
+                "TRUNCATE TABLE crawl_logs, edges, blogs RESTART IDENTITY CASCADE"
+            )
+        return {
+            "ok": True,
+            "blogs_deleted": int(summary["blogs"] or 0),
+            "edges_deleted": int(summary["edges"] or 0),
+            "logs_deleted": int(summary["logs"] or 0),
+        }
 
 
 def build_repository(*, db_path: Path, db_dsn: str | None = None) -> RepositoryProtocol:

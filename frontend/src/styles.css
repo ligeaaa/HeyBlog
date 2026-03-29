@@ -215,7 +215,8 @@ td {
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   border-radius: 999px;
   min-height: 44px;
   padding: 0 18px;
@@ -232,6 +233,12 @@ td {
 .secondary-button {
   background: transparent;
   color: var(--ink);
+}
+
+.danger-button {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
 }
 
 .batch-form label {

@@ -71,5 +71,9 @@ export function useCrawlerActions() {
       mutationFn: api.runBatch,
       onSuccess: invalidateAll,
     }),
+    resetDatabase: useMutation({
+      mutationFn: api.resetDatabase,
+      onSuccess: invalidateAll,
+    }),
   };
 }

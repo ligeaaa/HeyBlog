@@ -52,12 +52,14 @@ class StubCrawler:
 class StubSearch:
     def __init__(self) -> None:
         self.reindexed = False
+        self.reindex_calls = 0
 
     def search(self, query: str) -> dict[str, object]:
         return {"query": query, "blogs": [{"domain": "blog.example.com"}], "edges": [], "logs": []}
 
     def reindex(self) -> dict[str, bool]:
         self.reindexed = True
+        self.reindex_calls += 1
         return {"ok": True}
 
 
@@ -88,6 +90,14 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
     assert blogs.json()[0]["domain"] == "blog.example.com"
+
+    reset = client.post("/internal/database/reset")
+    assert reset.status_code == 200
+    assert reset.json()["blogs_deleted"] == 1
+
+    blogs = client.get("/internal/blogs")
+    assert blogs.status_code == 200
+    assert blogs.json() == []
 
 
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -124,6 +134,12 @@ def test_backend_service_preserves_public_api_shape() -> None:
             "list_edges": lambda self: [],
             "graph": lambda self: {"nodes": [], "edges": []},
             "list_logs": lambda self: [],
+            "reset": lambda self: {
+                "ok": True,
+                "blogs_deleted": 3,
+                "edges_deleted": 4,
+                "logs_deleted": 0,
+            },
         },
     )()
     search = StubSearch()
@@ -150,6 +166,60 @@ def test_backend_service_preserves_public_api_shape() -> None:
     batch = client.post("/api/runtime/run-batch", json={"max_nodes": 3})
     assert batch.status_code == 200
     assert batch.json()["accepted"] is True
+
+    reset = client.post("/api/database/reset")
+    assert reset.status_code == 200
+    assert reset.json()["blogs_deleted"] == 3
+    assert reset.json()["search_reindexed"] is True
+    assert search.reindex_calls == 3
+
+
+def test_backend_database_reset_requires_idle_runtime() -> None:
+    """Database reset should be rejected while the crawler runtime is busy."""
+
+    class BusyCrawler(StubCrawler):
+        def runtime_status(self) -> dict[str, object]:
+            payload = super().runtime_status()
+            payload["runner_status"] = "running"
+            return payload
+
+    persistence = type(
+        "PersistenceStub",
+        (),
+        {
+            "stats": lambda self: {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "max_depth": 0,
+                "average_friend_links": 0.0,
+            },
+            "list_blogs": lambda self: [],
+            "get_blog": lambda self, blog_id: None,
+            "list_edges": lambda self: [],
+            "graph": lambda self: {"nodes": [], "edges": []},
+            "list_logs": lambda self: [],
+            "reset": lambda self: {
+                "ok": True,
+                "blogs_deleted": 0,
+                "edges_deleted": 0,
+                "logs_deleted": 0,
+            },
+        },
+    )()
+    app = create_backend_app(
+        BackendState(persistence=persistence, crawler=BusyCrawler(), search=StubSearch())
+    )
+    client = TestClient(app)
+
+    reset = client.post("/api/database/reset")
+
+    assert reset.status_code == 409
+    assert reset.json()["detail"] == "crawler_busy"
 
 
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:

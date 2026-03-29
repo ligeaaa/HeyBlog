@@ -127,3 +127,7 @@ class PersistenceHttpClient:
     def search_snapshot(self) -> dict[str, list[dict[str, Any]]]:
         return self._get("/internal/search-snapshot")
 
+    def reset(self) -> dict[str, Any]:
+        response = self.client.post("/internal/database/reset")
+        response.raise_for_status()
+        return response.json()
