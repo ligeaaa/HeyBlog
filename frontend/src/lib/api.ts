@@ -25,6 +25,20 @@ export type BlogRecord = {
   updated_at: string;
 };
 
+
+export type EdgeRecord = {
+  id: number;
+  from_blog_id: number;
+  to_blog_id: number;
+  link_url_raw: string;
+  link_text: string | null;
+  discovered_at: string;
+};
+
+export type GraphPayload = {
+  nodes: BlogRecord[];
+  edges: EdgeRecord[];
+};
 export type StatusPayload = {
   is_running: boolean;
   pending_tasks: number;
@@ -69,6 +83,7 @@ export const api = {
   blogs: () => request<BlogRecord[]>("/api/blogs"),
   status: () => request<StatusPayload>("/api/status"),
   stats: () => request<StatsPayload>("/api/stats"),
+  graph: () => request<GraphPayload>("/api/graph"),
   runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),
   runtimeCurrent: () => request<RuntimeStatus>("/api/runtime/current"),
   startCrawler: () => request<RuntimeStatus>("/api/runtime/start", { method: "POST" }),

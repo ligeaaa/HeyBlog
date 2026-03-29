@@ -25,6 +25,14 @@ export function useStats() {
   });
 }
 
+
+export function useGraph() {
+  return useQuery({
+    queryKey: ["graph"],
+    queryFn: api.graph,
+    refetchInterval: 6000,
+  });
+}
 export function useRuntimeStatus() {
   return useQuery({
     queryKey: ["runtime-status"],
@@ -49,6 +57,7 @@ export function useCrawlerActions() {
       queryClient.invalidateQueries({ queryKey: ["blogs"] }),
       queryClient.invalidateQueries({ queryKey: ["status"] }),
       queryClient.invalidateQueries({ queryKey: ["stats"] }),
+      queryClient.invalidateQueries({ queryKey: ["graph"] }),
       queryClient.invalidateQueries({ queryKey: ["runtime-status"] }),
       queryClient.invalidateQueries({ queryKey: ["runtime-current"] }),
     ]);

@@ -275,3 +275,47 @@ td {
     border-bottom: 1px solid rgba(214, 200, 172, 0.6);
   }
 }
+
+.graph-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 16px;
+}
+
+.graph-canvas {
+  width: 100%;
+  min-height: 420px;
+  border-radius: 18px;
+  border: 1px solid rgba(214, 200, 172, 0.8);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.65), rgba(251, 247, 240, 0.95));
+}
+
+.graph-edge {
+  stroke: rgba(111, 92, 68, 0.45);
+  stroke-width: 1.2;
+}
+
+.graph-node {
+  fill: rgba(194, 96, 31, 0.85);
+  stroke: rgba(158, 65, 18, 0.95);
+  stroke-width: 1.5;
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.graph-node:hover {
+  fill: rgba(158, 65, 18, 0.95);
+}
+
+.graph-tooltip {
+  border-radius: 18px;
+  border: 1px solid rgba(214, 200, 172, 0.8);
+  background: rgba(255, 252, 246, 0.85);
+  padding: 14px;
+}
+
+@media (max-width: 1200px) {
+  .graph-layout {
+    grid-template-columns: 1fr;
+  }
+}
