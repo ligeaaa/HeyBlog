@@ -12,15 +12,20 @@ def test_filter_rejects_same_domain_links() -> None:
 def test_filter_rejects_known_platform_domains() -> None:
     """Reject links pointing to known social/code platforms."""
     assert not is_blog_candidate("https://github.com/user/repo", "blog.example.com")
+    assert not is_blog_candidate("https://linkedin.com/in/someone", "blog.example.com")
 
 
-def test_filter_rejects_blocked_tlds_like_gov() -> None:
-    """Reject blocked TLD categories such as government domains."""
+def test_filter_rejects_blocked_tlds_like_gov_and_org() -> None:
+    """Reject blocked TLD categories such as government/organization domains."""
     decision = decide_blog_candidate("https://agency.gov/", "blog.example.com")
+    org_decision = decide_blog_candidate("https://foundation.org/", "blog.example.com")
 
     assert not decision.accepted
     assert decision.hard_blocked
     assert "blocked_tld" in decision.reasons
+    assert not org_decision.accepted
+    assert org_decision.hard_blocked
+    assert "blocked_tld" in org_decision.reasons
 
 
 def test_filter_rejects_exact_url_and_prefix_blocklist_entries() -> None:
@@ -47,10 +52,19 @@ def test_filter_rejects_asset_suffixes_and_blocked_paths() -> None:
 
     assert not asset.accepted
     assert asset.hard_blocked
-    assert "asset_suffix" in asset.reasons
+    assert asset.reasons[0] in {"asset_suffix", "non_root_path"}
     assert not blocked_path.accepted
     assert blocked_path.hard_blocked
-    assert "blocked_path" in blocked_path.reasons
+    assert blocked_path.reasons[0] in {"blocked_path", "non_root_path"}
+
+
+def test_filter_rejects_non_root_paths() -> None:
+    """Reject URLs with appended path segments to reduce non-friend-link noise."""
+    decision = decide_blog_candidate("https://friend.example/ysyaysyy", "blog.example.com")
+
+    assert not decision.accepted
+    assert decision.hard_blocked
+    assert "non_root_path" in decision.reasons
 
 
 def test_filter_accepts_blog_like_links_with_positive_context() -> None:
