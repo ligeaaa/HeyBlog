@@ -1,6 +1,6 @@
 """Unit tests for friend-link page discovery."""
 
-from app.crawler.discovery import discover_friend_links_pages
+from crawler.discovery import discover_friend_links_pages
 
 
 def test_discovery_finds_footer_friend_links_page_without_scoring() -> None:

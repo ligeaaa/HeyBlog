@@ -12,6 +12,7 @@ dependencies = [
   "beautifulsoup4>=4.12,<5",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
+  "psycopg[binary]>=3.2,<4",
   "uvicorn>=0.34,<1",
 ]
 
@@ -25,4 +26,4 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*"]

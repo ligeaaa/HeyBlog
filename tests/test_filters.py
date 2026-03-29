@@ -1,7 +1,7 @@
 """Unit tests for crawler URL filtering rules."""
 
-from app.crawler.filters import decide_blog_candidate
-from app.crawler.filters import is_blog_candidate
+from crawler.filters import decide_blog_candidate
+from crawler.filters import is_blog_candidate
 
 
 def test_filter_rejects_same_domain_links() -> None:
