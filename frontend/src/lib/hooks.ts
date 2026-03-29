@@ -30,7 +30,8 @@ export function useGraph() {
   return useQuery({
     queryKey: ["graph"],
     queryFn: api.graph,
-    refetchInterval: 6000,
+    staleTime: 600000,
+    refetchInterval: 600000,
   });
 }
 export function useRuntimeStatus() {

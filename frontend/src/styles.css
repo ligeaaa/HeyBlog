@@ -282,6 +282,97 @@ td {
   gap: 16px;
 }
 
+.graph-layout-cyto {
+  align-items: start;
+}
+
+.graph-workbench {
+  display: grid;
+  gap: 14px;
+}
+
+.graph-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.graph-toolbar-copy,
+.graph-panel-subtle {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.graph-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.graph-cyto-shell {
+  min-height: 620px;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(24, 48, 94, 0.12);
+  background:
+    radial-gradient(circle at top left, rgba(71, 136, 255, 0.2), transparent 22%),
+    radial-gradient(circle at 84% 16%, rgba(53, 182, 169, 0.16), transparent 18%),
+    linear-gradient(180deg, #0f1c39 0%, #0b1630 48%, #091021 100%);
+  box-shadow: 0 28px 70px rgba(9, 16, 33, 0.22);
+}
+
+.graph-panel {
+  border-radius: 24px;
+  border: 1px solid rgba(24, 48, 94, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 242, 233, 0.92));
+  padding: 18px;
+  box-shadow: 0 18px 48px rgba(85, 57, 18, 0.08);
+}
+
+.graph-panel h3 {
+  margin: 0;
+}
+
+.graph-panel-section {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(214, 200, 172, 0.6);
+}
+
+.graph-panel-meta {
+  margin-top: 22px;
+}
+
+.graph-stat-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  margin: 18px 0;
+}
+
+.graph-stat {
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(214, 200, 172, 0.22);
+}
+
+.graph-stat dt {
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.graph-stat dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.graph-panel-empty {
+  display: grid;
+  gap: 10px;
+}
+
 .graph-canvas {
   width: 100%;
   min-height: 420px;
@@ -317,5 +408,15 @@ td {
 @media (max-width: 1200px) {
   .graph-layout {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .graph-toolbar {
+    flex-direction: column;
+  }
+
+  .graph-cyto-shell {
+    min-height: 500px;
   }
 }

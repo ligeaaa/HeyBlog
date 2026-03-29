@@ -1,168 +1,213 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import CytoscapeComponent from "react-cytoscapejs";
+import cytoscape from "cytoscape";
+import fcose from "cytoscape-fcose";
 import { PageHeader } from "../components/PageHeader";
 import { Surface } from "../components/Surface";
+import { GraphInspector } from "../components/graph/GraphInspector";
+import { buildCytoscapeGraph, createFcoseLayout, graphStylesheet } from "../lib/graph/cytoscapeGraph";
 import { useGraph } from "../lib/hooks";
-import type { BlogRecord, GraphPayload } from "../lib/api";
 
-type GraphNode = BlogRecord & {
-  x: number;
-  y: number;
+cytoscape.use(fcose);
+
+type ViewportSnapshot = {
+  zoom: number;
+  pan: cytoscape.Position;
+  selectedNodeId: string | null;
 };
 
-type HoveredNode = {
-  id: number;
-  url: string;
-  title: string;
-  friendLinks: number;
-  outgoingCount: number;
-  incomingCount: number;
-  depth: number;
-};
+function formatLastUpdated(timestamp: number) {
+  if (!timestamp) {
+    return null;
+  }
 
-const VIEWPORT_WIDTH = 980;
-const VIEWPORT_HEIGHT = 540;
-const GRAPH_RADIUS = 210;
-
-function normalizeGraph(payload: GraphPayload | undefined): { nodes: GraphNode[]; edges: GraphPayload["edges"] } {
-  const nodeCount = Math.max(payload?.nodes.length ?? 1, 1);
-  const nodes = (payload?.nodes ?? []).map((node, index) => {
-    const angle = (Math.PI * 2 * index) / nodeCount;
-    return {
-      ...node,
-      x: VIEWPORT_WIDTH / 2 + Math.cos(angle) * GRAPH_RADIUS,
-      y: VIEWPORT_HEIGHT / 2 + Math.sin(angle) * GRAPH_RADIUS,
-    };
-  });
-
-  return {
-    nodes,
-    edges: payload?.edges ?? [],
-  };
+  return new Date(timestamp).toLocaleString();
 }
 
 export function GraphPage() {
   const graph = useGraph();
-  const [hovered, setHovered] = useState<HoveredNode | null>(null);
+  const cyRef = useRef<cytoscape.Core | null>(null);
+  const positionsRef = useRef(new Map<string, { x: number; y: number }>());
+  const viewportRef = useRef<ViewportSnapshot>({
+    zoom: 1,
+    pan: { x: 0, y: 0 },
+    selectedNodeId: null,
+  });
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const graphBundle = useMemo(() => buildCytoscapeGraph(graph.data, positionsRef.current), [graph.data]);
+  const selectedDetails = selectedNodeId ? graphBundle.detailsById.get(selectedNodeId) ?? null : null;
 
-  const normalized = useMemo(() => normalizeGraph(graph.data), [graph.data]);
-  const nodeMap = useMemo(() => new Map(normalized.nodes.map((node) => [node.id, node])), [normalized.nodes]);
-
-  const outgoingById = useMemo(() => {
-    const counter = new Map<number, number>();
-    normalized.edges.forEach((edge) => {
-      counter.set(edge.from_blog_id, (counter.get(edge.from_blog_id) ?? 0) + 1);
+  function cacheSceneState(cy: cytoscape.Core) {
+    const positionMap = new Map<string, { x: number; y: number }>();
+    cy.nodes().forEach((node) => {
+      positionMap.set(node.id(), node.position());
     });
-    return counter;
-  }, [normalized.edges]);
+    positionsRef.current = positionMap;
+    viewportRef.current = {
+      zoom: cy.zoom(),
+      pan: cy.pan(),
+      selectedNodeId,
+    };
+  }
 
-  const incomingById = useMemo(() => {
-    const counter = new Map<number, number>();
-    normalized.edges.forEach((edge) => {
-      counter.set(edge.to_blog_id, (counter.get(edge.to_blog_id) ?? 0) + 1);
+  function runLayout(animate = true) {
+    const cy = cyRef.current;
+    if (!cy) {
+      return;
+    }
+
+    cy.layout({
+      ...createFcoseLayout(),
+      animate,
+    } as unknown as cytoscape.LayoutOptions).run();
+  }
+
+  useEffect(() => {
+    if (selectedNodeId && !graphBundle.detailsById.has(selectedNodeId)) {
+      setSelectedNodeId(null);
+    }
+  }, [graphBundle.detailsById, selectedNodeId]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) {
+      return;
+    }
+
+    cy.elements().forEach((element) => {
+      if (element.isNode()) {
+        const cachedPosition = positionsRef.current.get(element.id());
+        if (cachedPosition) {
+          element.position(cachedPosition);
+        }
+      }
     });
-    return counter;
-  }, [normalized.edges]);
+
+    cy.zoom(viewportRef.current.zoom);
+    cy.pan(viewportRef.current.pan);
+
+    if (viewportRef.current.selectedNodeId) {
+      const selectedElement = cy.$id(viewportRef.current.selectedNodeId);
+      if (selectedElement.nonempty()) {
+        selectedElement.select();
+      }
+    }
+  }, [graphBundle.signature]);
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Topology"
         title="Blog 友链图谱"
-        description="每个 blog 显示为 node，友链显示为 edge。鼠标悬停节点可以查看 URL、标题与关联数量。"
+        description="基于 Cytoscape 的图谱工作台：默认保留视口与选中态，10 分钟自动刷新，并提供手动刷新与重新布局控制。"
       />
-      <Surface title="Graph 视图" note="来自 /api/graph，基于 React + SVG 渲染">
+      <Surface title="Graph Explorer" note="来自 /api/graph，基于 Cytoscape.js + react-cytoscapejs + fCoSE">
         {graph.isLoading ? <p>正在加载图谱…</p> : null}
         {graph.error ? <p className="error-copy">图谱加载失败：{graph.error.message}</p> : null}
-        {!graph.isLoading && !graph.error && normalized.nodes.length === 0 ? <p>暂无图谱数据。</p> : null}
+        {!graph.isLoading && !graph.error && graphBundle.elements.length === 0 ? <p>暂无图谱数据。</p> : null}
 
-        {normalized.nodes.length > 0 ? (
-          <div className="graph-layout">
-            <svg
-              className="graph-canvas"
-              viewBox={`0 0 ${VIEWPORT_WIDTH} ${VIEWPORT_HEIGHT}`}
-              role="img"
-              aria-label="Blog graph visualization"
-            >
-              {normalized.edges.map((edge) => {
-                const source = nodeMap.get(edge.from_blog_id);
-                const target = nodeMap.get(edge.to_blog_id);
-                if (!source || !target) {
-                  return null;
-                }
-                return (
-                  <line
-                    key={edge.id}
-                    x1={source.x}
-                    y1={source.y}
-                    x2={target.x}
-                    y2={target.y}
-                    className="graph-edge"
-                  />
-                );
-              })}
-
-              {normalized.nodes.map((node) => {
-                const incoming = incomingById.get(node.id) ?? 0;
-                const outgoing = outgoingById.get(node.id) ?? 0;
-                const radius = Math.max(8, Math.min(22, 8 + outgoing * 0.9));
-                return (
-                  <g
-                    key={node.id}
-                    transform={`translate(${node.x}, ${node.y})`}
-                    onMouseEnter={() =>
-                      setHovered({
-                        id: node.id,
-                        url: node.url,
-                        title: (node as BlogRecord & { title?: string }).title ?? node.domain,
-                        friendLinks: node.friend_links_count,
-                        outgoingCount: outgoing,
-                        incomingCount: incoming,
-                        depth: node.depth,
-                      })
-                    }
-                    onMouseLeave={() => setHovered(null)}
+        {graphBundle.elements.length > 0 ? (
+          <div className="graph-layout graph-layout-cyto">
+            <div className="graph-workbench">
+              <div className="graph-toolbar">
+                <div>
+                  <p className="eyebrow">Graph Stage</p>
+                  <p className="graph-toolbar-copy">
+                    手动刷新只同步数据，重新布局才会再次触发 fCoSE。这样 10 分钟自动刷新不会把你的视口和当前关注节点打散。
+                  </p>
+                </div>
+                <div className="graph-toolbar-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={graph.isFetching}
+                    onClick={async () => {
+                      if (cyRef.current) {
+                        cacheSceneState(cyRef.current);
+                      }
+                      await graph.refetch();
+                    }}
                   >
-                    <circle r={radius} className="graph-node" />
-                  </g>
-                );
-              })}
-            </svg>
-            <aside className="graph-tooltip" aria-live="polite">
-              {hovered ? (
-                <dl className="detail-grid">
-                  <div>
-                    <dt>ID</dt>
-                    <dd>{hovered.id}</dd>
-                  </div>
-                  <div>
-                    <dt>Title</dt>
-                    <dd>{hovered.title}</dd>
-                  </div>
-                  <div>
-                    <dt>URL</dt>
-                    <dd className="url-cell">{hovered.url}</dd>
-                  </div>
-                  <div>
-                    <dt>链接 blog 数</dt>
-                    <dd>{hovered.friendLinks}</dd>
-                  </div>
-                  <div>
-                    <dt>Outgoing</dt>
-                    <dd>{hovered.outgoingCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Incoming</dt>
-                    <dd>{hovered.incomingCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Depth</dt>
-                    <dd>{hovered.depth}</dd>
-                  </div>
-                </dl>
-              ) : (
-                <p className="page-copy">将鼠标移动到任意节点查看详细信息。</p>
-              )}
-            </aside>
+                    {graph.isFetching ? "刷新中…" : "手动刷新"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      runLayout(true);
+                    }}
+                  >
+                    重新布局
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      cyRef.current?.fit(undefined, 60);
+                    }}
+                  >
+                    适配视图
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      cyRef.current?.center();
+                      cyRef.current?.zoom(1);
+                    }}
+                  >
+                    回到中心
+                  </button>
+                </div>
+              </div>
+
+              <div className="graph-cyto-shell">
+                <CytoscapeComponent
+                  elements={graphBundle.elements}
+                  stylesheet={graphStylesheet}
+                  style={{ width: "100%", height: "100%" }}
+                  minZoom={0.35}
+                  maxZoom={2.2}
+                  layout={{ name: "preset", fit: false, padding: 60 }}
+                  cy={(cy: cytoscape.Core) => {
+                    cyRef.current = cy;
+
+                    if (cy.scratch("heyblog-events-bound")) {
+                      return;
+                    }
+
+                    cy.scratch("heyblog-events-bound", true);
+                    cy.on("select", "node", (event: cytoscape.EventObject) => {
+                      setSelectedNodeId(event.target.id());
+                    });
+                    cy.on("unselect", "node", () => {
+                      const nextSelected = cy.$("node:selected").first();
+                      setSelectedNodeId(nextSelected.nonempty() ? nextSelected.id() : null);
+                    });
+                    cy.on("tap", (event: cytoscape.EventObject) => {
+                      if (event.target === cy) {
+                        cy.elements().unselect();
+                        setSelectedNodeId(null);
+                      }
+                    });
+                    cy.on("zoom pan dragfree layoutstop", () => {
+                      cacheSceneState(cy);
+                    });
+
+                    if (cy.elements().length > 0) {
+                      runLayout(false);
+                      cy.fit(undefined, 60);
+                      cacheSceneState(cy);
+                    }
+                  }}
+                />
+              </div>
+            </div>
+
+            <GraphInspector
+              details={selectedDetails}
+              lastUpdatedAt={formatLastUpdated(graph.dataUpdatedAt)}
+            />
           </div>
         ) : null}
       </Surface>
