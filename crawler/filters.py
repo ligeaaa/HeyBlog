@@ -9,7 +9,11 @@ from crawler.utils import text_contains_any
 
 
 PLATFORM_BLOCKLIST = {
+    "bsky.app",
+    "discord.com",
+    "discord.gg",
     "facebook.com",
+    "fb.com",
     "github.com",
     "instagram.com",
     "linkedin.com",
@@ -19,13 +23,17 @@ PLATFORM_BLOCKLIST = {
     "medium.com",
     "reddit.com",
     "threads.net",
+    "t.co",
     "tiktok.com",
     "twitter.com",
     "x.com",
+    "xiaohongshu.com",
+    "youtu.be",
     "zhihu.com",
     "weibo.com",
     "bilibili.com",
     "youtube.com",
+    "youtube-nocookie.com",
     "t.me",
     "telegram.me",
 }
@@ -64,7 +72,7 @@ POSITIVE_CONTEXT_KEYWORDS = (
     "伙伴",
     "邻居",
 )
-BLOCKED_TLDS = (".gov", ".org", ".edu")
+BLOCKED_TLDS = (".gov", ".gov.cn", ".org", ".edu")
 FILE_SUFFIX_BLOCKLIST = (
     ".7z",
     ".css",
@@ -103,6 +111,11 @@ def _path_has_blocked_segment(path: str) -> bool:
 def _is_root_like_path(path: str) -> bool:
     """Return True only for homepage-like paths."""
     return (path or "/") == "/"
+
+
+def _has_extra_location_parts(*, query: str, fragment: str) -> bool:
+    """Return True when a URL carries query or fragment payload beyond the homepage."""
+    return bool(query or fragment)
 
 
 def _matches_blocked_domain(domain: str, blocklist: tuple[str, ...] | set[str]) -> bool:
@@ -151,8 +164,12 @@ def decide_blog_candidate(
         return LinkDecision(False, score, ("domain_blocked",), hard_blocked=True)
     if any(domain.endswith(tld) for tld in blocked_tlds):
         return LinkDecision(False, score, ("blocked_tld",), hard_blocked=True)
+    # Friend-link directories usually point to the target blog homepage rather than
+    # a deep article or section path, so we keep only root URLs here.
     if not _is_root_like_path(parsed.path):
         return LinkDecision(False, score, ("non_root_path",), hard_blocked=True)
+    if _has_extra_location_parts(query=parsed.query, fragment=parsed.fragment):
+        return LinkDecision(False, score, ("non_root_location",), hard_blocked=True)
     if any(path.endswith(suffix) for suffix in FILE_SUFFIX_BLOCKLIST):
         return LinkDecision(False, score, ("asset_suffix",), hard_blocked=True)
     if _path_has_blocked_segment(path):

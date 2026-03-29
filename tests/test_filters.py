@@ -13,16 +13,22 @@ def test_filter_rejects_known_platform_domains() -> None:
     """Reject links pointing to known social/code platforms."""
     assert not is_blog_candidate("https://github.com/user/repo", "blog.example.com")
     assert not is_blog_candidate("https://linkedin.com/in/someone", "blog.example.com")
+    assert not is_blog_candidate("https://youtu.be/demo", "blog.example.com")
+    assert not is_blog_candidate("https://t.co/share", "blog.example.com")
 
 
 def test_filter_rejects_blocked_tlds_like_gov_and_org() -> None:
     """Reject blocked TLD categories such as government/organization domains."""
     decision = decide_blog_candidate("https://agency.gov/", "blog.example.com")
+    gov_cn_decision = decide_blog_candidate("https://beian.miit.gov.cn/", "blog.example.com")
     org_decision = decide_blog_candidate("https://foundation.org/", "blog.example.com")
 
     assert not decision.accepted
     assert decision.hard_blocked
     assert "blocked_tld" in decision.reasons
+    assert not gov_cn_decision.accepted
+    assert gov_cn_decision.hard_blocked
+    assert "blocked_tld" in gov_cn_decision.reasons
     assert not org_decision.accepted
     assert org_decision.hard_blocked
     assert "blocked_tld" in org_decision.reasons
@@ -65,6 +71,39 @@ def test_filter_rejects_non_root_paths() -> None:
     assert not decision.accepted
     assert decision.hard_blocked
     assert "non_root_path" in decision.reasons
+
+
+def test_filter_rejects_non_root_paths_even_with_positive_context() -> None:
+    """Positive labels should not rescue deep links that are unlikely to be homepages."""
+    decision = decide_blog_candidate(
+        "https://friend.example/posts/hello-world",
+        "blog.example.com",
+        link_text="Friend Blog",
+        context_text="友情链接",
+    )
+
+    assert not decision.accepted
+    assert decision.hard_blocked
+    assert "non_root_path" in decision.reasons
+
+
+def test_filter_rejects_root_url_with_query_or_fragment_payload() -> None:
+    """Fragments and query strings should not pass as homepage links."""
+    fragment_decision = decide_blog_candidate(
+        "https://friend.example/#/query/webSearch?code=61072102000193",
+        "blog.example.com",
+    )
+    query_decision = decide_blog_candidate(
+        "https://friend.example/?from=nav",
+        "blog.example.com",
+    )
+
+    assert not fragment_decision.accepted
+    assert fragment_decision.hard_blocked
+    assert "non_root_location" in fragment_decision.reasons
+    assert not query_decision.accepted
+    assert query_decision.hard_blocked
+    assert "non_root_location" in query_decision.reasons
 
 
 def test_filter_accepts_blog_like_links_with_positive_context() -> None:
