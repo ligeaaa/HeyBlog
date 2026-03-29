@@ -10,7 +10,7 @@ const payload: GraphPayload = {
       normalized_url: "https://alpha.example",
       domain: "alpha.example",
       status_code: 200,
-      crawl_status: "finished",
+      crawl_status: "FINISHED",
       friend_links_count: 3,
       depth: 0,
       source_blog_id: null,
@@ -46,12 +46,12 @@ const payload: GraphPayload = {
 };
 
 describe("buildCytoscapeGraph", () => {
-  test("creates stable Cytoscape elements and node details", () => {
+  test("creates stable Cytoscape elements and only includes finished nodes", () => {
     const bundle = buildCytoscapeGraph(payload);
 
-    expect(bundle.elements).toHaveLength(3);
-    expect(bundle.detailsById.get("1")?.outgoingCount).toBe(1);
-    expect(bundle.detailsById.get("2")?.incomingCount).toBe(1);
+    expect(bundle.elements).toHaveLength(1);
+    expect(bundle.detailsById.get("1")?.outgoingCount).toBe(0);
+    expect(bundle.detailsById.has("2")).toBe(false);
     expect(bundle.elements[0]).toMatchObject({
       data: {
         id: "1",

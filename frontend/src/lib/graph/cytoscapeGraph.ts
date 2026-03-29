@@ -45,8 +45,11 @@ export function buildCytoscapeGraph(
   payload?: GraphPayload,
   cachedPositions?: Map<string, { x: number; y: number }>,
 ): GraphBundle {
-  const nodes = payload?.nodes ?? [];
-  const edges = payload?.edges ?? [];
+  const nodes = (payload?.nodes ?? []).filter((node) => node.crawl_status === "FINISHED");
+  const finishedNodeIds = new Set(nodes.map((node) => node.id));
+  const edges = (payload?.edges ?? []).filter(
+    (edge) => finishedNodeIds.has(edge.from_blog_id) && finishedNodeIds.has(edge.to_blog_id),
+  );
   const incoming = new Map<number, number>();
   const outgoing = new Map<number, number>();
 
