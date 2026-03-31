@@ -171,13 +171,6 @@ class CrawlPipeline:
             max_concurrency=self.settings.candidate_page_fetch_concurrency,
         )
 
-    def _fetch_candidate_page(self, page_url: str) -> FetchResult | None:
-        """Fetch one candidate friend-link page and ignore transient failures."""
-        try:
-            return self.fetcher.fetch(page_url)
-        except Exception:  # noqa: BLE001
-            return None
-
     def _store_page_links(
         self,
         *,

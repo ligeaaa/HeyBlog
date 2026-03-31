@@ -154,3 +154,69 @@ def test_fetch_many_classifies_failures_by_error_kind(monkeypatch) -> None:
     assert results["https://example.com/request-error"].error_kind == "request_error"
     assert results["https://example.com/http-error"].error_kind == "http_status"
     assert results["https://example.com/timeout"].error_kind == "timeout"
+
+
+def test_fetch_many_classifies_invalid_url_without_failing_the_batch(monkeypatch) -> None:
+    """Malformed URLs should be downgraded to a failed attempt instead of crashing the batch."""
+    reset_fake_async_client()
+    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0)
+    FakeAsyncClient.responses = {
+        "https://example.com/ok": build_response("https://example.com/ok"),
+        "bad://url": httpx.InvalidURL("invalid url"),
+    }
+
+    results = fetcher.fetch_many(list(FakeAsyncClient.responses), max_concurrency=2)
+
+    assert results["https://example.com/ok"].result is not None
+    assert results["bad://url"].result is None
+    assert results["bad://url"].error_kind == "invalid_url"
+
+
+def test_fetch_many_requires_unique_request_urls() -> None:
+    """Duplicate request URLs should be rejected explicitly instead of being silently collapsed."""
+    fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0)
+
+    try:
+        fetcher.fetch_many(["https://example.com/a", "https://example.com/a"], max_concurrency=2)
+    except ValueError as exc:
+        assert "unique request URLs" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("fetch_many should reject duplicate URLs")
+
+
+def test_fetch_many_sync_wrapper_rejects_running_event_loop(monkeypatch) -> None:
+    """The sync wrapper should fail clearly when called from an existing event loop."""
+    reset_fake_async_client()
+    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0)
+    FakeAsyncClient.responses = {
+        "https://example.com/ok": build_response("https://example.com/ok")
+    }
+
+    async def run() -> None:
+        try:
+            fetcher.fetch_many(["https://example.com/ok"], max_concurrency=1)
+        except RuntimeError as exc:
+            assert "running asyncio event loop" in str(exc)
+        else:  # pragma: no cover - defensive
+            raise AssertionError("fetch_many should reject calls from a running event loop")
+
+    asyncio.run(run())
+
+
+def test_fetch_many_async_supports_callers_with_running_event_loop(monkeypatch) -> None:
+    """Async callers should be able to use the public async batch-fetch API directly."""
+    reset_fake_async_client()
+    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0)
+    FakeAsyncClient.responses = {
+        "https://example.com/ok": build_response("https://example.com/ok")
+    }
+
+    async def run() -> None:
+        results = await fetcher.fetch_many_async(["https://example.com/ok"], max_concurrency=1)
+        assert results["https://example.com/ok"].result is not None
+        assert results["https://example.com/ok"].error_kind is None
+
+    asyncio.run(run())
