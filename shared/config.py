@@ -11,6 +11,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_NODES_PER_RUN = 10
 DEFAULT_MAX_DEPTH = 2
 DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
+DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 
 
 def _parse_csv_env(name: str) -> tuple[str, ...]:
@@ -39,6 +40,7 @@ class Settings:
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
     max_depth: int = DEFAULT_MAX_DEPTH
     max_path_probes_per_blog: int = DEFAULT_MAX_PATH_PROBES_PER_BLOG
+    candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     friend_link_domain_blocklist: tuple[str, ...] = ()
     friend_link_tld_blocklist: tuple[str, ...] = ()
     friend_link_exact_url_blocklist: tuple[str, ...] = ()
@@ -77,6 +79,15 @@ class Settings:
                     "HEYBLOG_MAX_PATH_PROBES_PER_BLOG",
                     str(DEFAULT_MAX_PATH_PROBES_PER_BLOG),
                 )
+            ),
+            candidate_page_fetch_concurrency=max(
+                1,
+                int(
+                    os.getenv(
+                        "HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY",
+                        str(DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY),
+                    )
+                ),
             ),
             friend_link_domain_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST"),
             friend_link_tld_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST"),

@@ -10,6 +10,7 @@ from typing import Any
 from crawler.discovery import discover_friend_links_pages
 from crawler.extractor import ExtractedLink
 from crawler.extractor import extract_candidate_links
+from crawler.fetcher import FetchAttempt
 from crawler.fetcher import Fetcher
 from crawler.fetcher import FetchResult
 from crawler.filters import decide_blog_candidate
@@ -146,26 +147,29 @@ class CrawlPipeline:
         """Fetch each candidate page and persist accepted child links."""
         discovered_count = 0
         seen_normalized: set[str] = set()
+        page_attempts = self._fetch_candidate_pages(candidate_pages)
 
         for page_url in candidate_pages:
-            page: FetchResult | None = self._fetch_candidate_page(page_url)
-            if page is None:
+            page_attempt = page_attempts.get(page_url)
+            if page_attempt is None or page_attempt.result is None:
                 continue
 
             discovered_count += self._store_page_links(
                 blog=blog,
-                page=page,
+                page=page_attempt.result,
                 seen_normalized=seen_normalized,
             )
 
         return discovered_count
 
-    def _fetch_candidate_page(self, page_url: str) -> FetchResult | None:
-        """Fetch one candidate friend-link page and ignore transient failures."""
-        try:
-            return self.fetcher.fetch(page_url)
-        except Exception:  # noqa: BLE001
-            return None
+    def _fetch_candidate_pages(self, candidate_pages: list[str]) -> dict[str, FetchAttempt]:
+        """Fetch candidate pages while preserving the original candidate ordering contract."""
+        if not candidate_pages:
+            return {}
+        return self.fetcher.fetch_many(
+            candidate_pages,
+            max_concurrency=self.settings.candidate_page_fetch_concurrency,
+        )
 
     def _store_page_links(
         self,
