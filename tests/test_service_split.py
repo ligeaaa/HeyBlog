@@ -133,6 +133,91 @@ def test_backend_service_preserves_public_api_shape() -> None:
             "get_blog": lambda self, blog_id: {"id": blog_id, "domain": "blog.example.com"},
             "list_edges": lambda self: [],
             "graph": lambda self: {"nodes": [], "edges": []},
+            "graph_view": lambda self, **kwargs: {
+                "nodes": [],
+                "edges": [],
+                "meta": {
+                    "strategy": kwargs.get("strategy", "degree"),
+                    "limit": kwargs.get("limit", 180),
+                    "sample_mode": kwargs.get("sample_mode", "off"),
+                    "sample_value": kwargs.get("sample_value"),
+                    "sample_seed": kwargs.get("sample_seed", 7),
+                    "sampled": False,
+                    "focus_node_id": None,
+                    "hops": None,
+                    "has_stable_positions": True,
+                    "snapshot_version": "v1",
+                    "generated_at": "2026-03-31T00:00:00Z",
+                    "source": "snapshot",
+                    "total_nodes": 3,
+                    "total_edges": 4,
+                    "available_nodes": 3,
+                    "available_edges": 4,
+                    "selected_nodes": 0,
+                    "selected_edges": 0,
+                },
+            },
+            "graph_neighbors": lambda self, blog_id, hops=1, limit=120: {
+                "nodes": [{"id": blog_id, "domain": "blog.example.com"}],
+                "edges": [],
+                "meta": {
+                    "strategy": "neighborhood",
+                    "limit": limit,
+                    "sample_mode": "off",
+                    "sample_value": None,
+                    "sample_seed": 0,
+                    "sampled": False,
+                    "focus_node_id": blog_id,
+                    "hops": hops,
+                    "has_stable_positions": True,
+                    "snapshot_version": "v1",
+                    "generated_at": "2026-03-31T00:00:00Z",
+                    "source": "snapshot",
+                    "total_nodes": 3,
+                    "total_edges": 4,
+                    "available_nodes": 3,
+                    "available_edges": 4,
+                    "selected_nodes": 1,
+                    "selected_edges": 0,
+                },
+            },
+            "latest_graph_snapshot": lambda self: {
+                "version": "v1",
+                "generated_at": "2026-03-31T00:00:00Z",
+                "source": "snapshot",
+                "has_stable_positions": True,
+                "total_nodes": 3,
+                "total_edges": 4,
+                "available_nodes": 3,
+                "available_edges": 4,
+                "file": "graph-layout-v1.json",
+            },
+            "graph_snapshot": lambda self, version: {
+                "version": version,
+                "generated_at": "2026-03-31T00:00:00Z",
+                "nodes": [],
+                "edges": [],
+                "meta": {
+                    "strategy": "degree",
+                    "limit": 180,
+                    "sample_mode": "off",
+                    "sample_value": None,
+                    "sample_seed": 7,
+                    "sampled": False,
+                    "focus_node_id": None,
+                    "hops": None,
+                    "has_stable_positions": True,
+                    "snapshot_version": version,
+                    "generated_at": "2026-03-31T00:00:00Z",
+                    "source": "snapshot",
+                    "total_nodes": 3,
+                    "total_edges": 4,
+                    "available_nodes": 3,
+                    "available_edges": 4,
+                    "selected_nodes": 0,
+                    "selected_edges": 0,
+                },
+            },
             "list_logs": lambda self: [],
             "reset": lambda self: {
                 "ok": True,
@@ -153,6 +238,18 @@ def test_backend_service_preserves_public_api_shape() -> None:
     status = client.get("/api/status")
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
+
+    core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
+    assert core_view.status_code == 200
+    assert core_view.json()["meta"]["limit"] == 80
+
+    neighbors = client.get("/api/graph/nodes/1/neighbors?hops=2&limit=40")
+    assert neighbors.status_code == 200
+    assert neighbors.json()["meta"]["focus_node_id"] == 1
+
+    latest_snapshot = client.get("/api/graph/snapshots/latest")
+    assert latest_snapshot.status_code == 200
+    assert latest_snapshot.json()["version"] == "v1"
 
     crawl = client.post("/api/crawl/run?max_nodes=2")
     assert crawl.status_code == 200
@@ -202,6 +299,10 @@ def test_backend_database_reset_requires_idle_runtime() -> None:
             "get_blog": lambda self, blog_id: None,
             "list_edges": lambda self: [],
             "graph": lambda self: {"nodes": [], "edges": []},
+            "graph_view": lambda self, **kwargs: {"nodes": [], "edges": [], "meta": {}},
+            "graph_neighbors": lambda self, blog_id, hops=1, limit=120: {"nodes": [], "edges": [], "meta": {}},
+            "latest_graph_snapshot": lambda self: {"version": "v1"},
+            "graph_snapshot": lambda self, version: {"version": version, "nodes": [], "edges": [], "meta": {}},
             "list_logs": lambda self: [],
             "reset": lambda self: {
                 "ok": True,

@@ -124,6 +124,37 @@ class PersistenceHttpClient:
     def graph(self) -> dict[str, Any]:
         return self._get("/internal/graph")
 
+    def graph_view(
+        self,
+        *,
+        strategy: str = "degree",
+        limit: int = 180,
+        sample_mode: str = "off",
+        sample_value: float | None = None,
+        sample_seed: int = 7,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "strategy": strategy,
+            "limit": limit,
+            "sample_mode": sample_mode,
+            "sample_seed": sample_seed,
+        }
+        if sample_value is not None:
+            params["sample_value"] = sample_value
+        return self._get("/internal/graph/views/core", params)
+
+    def graph_neighbors(self, blog_id: int, *, hops: int = 1, limit: int = 120) -> dict[str, Any]:
+        return self._get(
+            f"/internal/graph/nodes/{blog_id}/neighbors",
+            {"hops": hops, "limit": limit},
+        )
+
+    def latest_graph_snapshot(self) -> dict[str, Any]:
+        return self._get("/internal/graph/snapshots/latest")
+
+    def graph_snapshot(self, version: str) -> dict[str, Any]:
+        return self._get(f"/internal/graph/snapshots/{version}")
+
     def search_snapshot(self) -> dict[str, list[dict[str, Any]]]:
         return self._get("/internal/search-snapshot")
 

@@ -48,6 +48,62 @@ export type GraphPayload = {
   edges: EdgeRecord[];
 };
 
+export type GraphNodeRecord = BlogRecord & {
+  x?: number;
+  y?: number;
+  degree?: number;
+  incoming_count?: number;
+  outgoing_count?: number;
+  priority_score?: number;
+  component_id?: string;
+};
+
+export type GraphViewMeta = {
+  strategy: string;
+  limit: number;
+  sample_mode: "off" | "count" | "percent";
+  sample_value: number | null;
+  sample_seed: number;
+  sampled: boolean;
+  focus_node_id: number | null;
+  hops: number | null;
+  has_stable_positions: boolean;
+  snapshot_version: string | null;
+  generated_at: string | null;
+  source: string;
+  total_nodes: number;
+  total_edges: number;
+  available_nodes: number;
+  available_edges: number;
+  selected_nodes: number;
+  selected_edges: number;
+  graph_fingerprint?: string | null;
+};
+
+export type GraphViewPayload = {
+  nodes: GraphNodeRecord[];
+  edges: EdgeRecord[];
+  meta: GraphViewMeta;
+};
+
+export type GraphSnapshotManifest = {
+  version: string;
+  generated_at: string;
+  source: string;
+  has_stable_positions: boolean;
+  total_nodes: number;
+  total_edges: number;
+  available_nodes: number;
+  available_edges: number;
+  graph_fingerprint?: string | null;
+  file: string;
+};
+
+export type GraphSnapshotPayload = GraphViewPayload & {
+  version: string;
+  generated_at: string;
+};
+
 export type BlogDetailPayload = BlogRecord & {
   outgoing_edges: EdgeRecord[];
 };
@@ -109,6 +165,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function withQuery(path: string, params: Record<string, string | number | boolean | null | undefined>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null) {
+      continue;
+    }
+    search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `${path}?${query}` : path;
+}
+
 export const api = {
   blogs: () => request<BlogRecord[]>("/api/blogs"),
   blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
@@ -116,6 +184,31 @@ export const api = {
   status: () => request<StatusPayload>("/api/status"),
   stats: () => request<StatsPayload>("/api/stats"),
   graph: () => request<GraphPayload>("/api/graph"),
+  graphView: (params: {
+    strategy: string;
+    limit: number;
+    sampleMode: "off" | "count" | "percent";
+    sampleValue: number | null;
+    sampleSeed: number;
+  }) =>
+    request<GraphViewPayload>(
+      withQuery("/api/graph/views/core", {
+        strategy: params.strategy,
+        limit: params.limit,
+        sample_mode: params.sampleMode,
+        sample_value: params.sampleValue,
+        sample_seed: params.sampleSeed,
+      }),
+    ),
+  graphNeighbors: (blogId: number | string, params: { hops: number; limit: number }) =>
+    request<GraphViewPayload>(
+      withQuery(`/api/graph/nodes/${blogId}/neighbors`, {
+        hops: params.hops,
+        limit: params.limit,
+      }),
+    ),
+  latestGraphSnapshot: () => request<GraphSnapshotManifest>("/api/graph/snapshots/latest"),
+  graphSnapshot: (version: string) => request<GraphSnapshotPayload>(`/api/graph/snapshots/${version}`),
   search: (query: string) => request<SearchPayload>(`/api/search?q=${encodeURIComponent(query)}`),
   runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),
   runtimeCurrent: () => request<RuntimeStatus>("/api/runtime/current"),

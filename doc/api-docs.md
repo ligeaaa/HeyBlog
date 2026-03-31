@@ -46,6 +46,10 @@
 - `GET /api/blogs/{blog_id}`
 - `GET /api/edges`
 - `GET /api/graph`
+- `GET /api/graph/views/core`
+- `GET /api/graph/nodes/{blog_id}/neighbors`
+- `GET /api/graph/snapshots/latest`
+- `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
 - `GET /api/logs`
 - `POST /api/crawl/bootstrap`
@@ -205,6 +209,108 @@
 
 - `nodes` 来自 blog 列表
 - `edges` 来自 edge 列表
+
+补充说明：
+
+- 这是 legacy 全量接口，当前图页默认入口已经不再依赖它
+- 主要保留给回退路径、导出和调试场景
+
+#### `GET /api/graph/views/core`
+
+用途：返回图页默认使用的结构化初始子图。
+
+常用查询参数：
+
+- `strategy`: `degree` 或 `seed`
+- `limit`: 默认子图规模上限
+- `sample_mode`: `off` / `count` / `percent`
+- `sample_value`: 当采样开启时的数量或百分比
+- `sample_seed`: 固定随机种子，便于复现
+
+响应结构：
+
+```json
+{
+  "nodes": [],
+  "edges": [],
+  "meta": {
+    "strategy": "degree",
+    "limit": 180,
+    "sample_mode": "off",
+    "sample_value": null,
+    "sample_seed": 7,
+    "sampled": false,
+    "focus_node_id": null,
+    "hops": null,
+    "has_stable_positions": true,
+    "snapshot_version": "20260331T000000000000Z",
+    "generated_at": "2026-03-31T00:00:00+00:00",
+    "source": "snapshot",
+    "total_nodes": 5306,
+    "total_edges": 9758,
+    "available_nodes": 5306,
+    "available_edges": 9758,
+    "selected_nodes": 180,
+    "selected_edges": 264,
+    "graph_fingerprint": "4d9c...a1f3"
+  }
+}
+```
+
+说明：
+
+- `nodes` 元素在 `BlogRecord` 基础上额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
+- 当 `has_stable_positions` 为 `true` 时，前端会优先使用这些坐标直接渲染，而不是首次实时跑力导布局
+- 当 `sample_mode != off` 时，会返回可复现的随机子图视图，但该模式只是辅助开关，不是默认主路径
+- 服务在返回前会检查底层 graph 是否已变化；若当前仓库数据与最新 snapshot 不一致，会先重建 snapshot，再返回最新视图
+- `graph_fingerprint` 是用于判定 graph 是否变更的稳定摘要，前端可把它当作视图身份的一部分，但不应自行推导业务含义
+
+#### `GET /api/graph/nodes/{blog_id}/neighbors`
+
+用途：基于当前节点返回邻域扩展结果，供图页“展开 1 跳 / 2 跳”使用。
+
+查询参数：
+
+- `hops`: 允许 `1` 或 `2`
+- `limit`: 邻域节点上限
+
+响应结构与 `GET /api/graph/views/core` 相同，但：
+
+- `meta.strategy` 固定为 `neighborhood`
+- `meta.focus_node_id` 为当前中心节点
+- `meta.hops` 为实际展开跳数
+
+#### `GET /api/graph/snapshots/latest`
+
+用途：返回最新离线图快照 manifest。
+
+响应结构：
+
+```json
+{
+  "version": "20260331T000000000000Z",
+  "generated_at": "2026-03-31T00:00:00+00:00",
+  "source": "snapshot",
+  "has_stable_positions": true,
+  "total_nodes": 5306,
+  "total_edges": 9758,
+  "available_nodes": 5306,
+  "available_edges": 9758,
+  "graph_fingerprint": "4d9c...a1f3",
+  "file": "graph-layout-20260331T000000000000Z.json"
+}
+```
+
+说明：
+
+- 这是对前端可见的受控发布边界，浏览器不应直接依赖 crawler 导出目录路径
+- 若本地尚无快照文件，或底层 graph 数据已经变化，服务会先基于当前数据构建并落盘，再返回 manifest
+
+#### `GET /api/graph/snapshots/{version}`
+
+用途：返回指定版本的离线图快照。
+
+响应结构与 `GET /api/graph/views/core` 类似，但包含完整 snapshot 范围的 `nodes` / `edges` 以及顶层 `version`、`generated_at`。
 
 ### 3.4 日志与搜索
 
@@ -704,6 +810,24 @@
   "edges": []
 }
 ```
+
+### `GET /internal/graph/views/core`
+
+用途：返回结构化初始子图。
+
+查询参数与公共 `GET /api/graph/views/core` 一致。
+
+### `GET /internal/graph/nodes/{blog_id}/neighbors`
+
+用途：返回单节点邻域扩展结果。
+
+### `GET /internal/graph/snapshots/latest`
+
+用途：返回最新 snapshot manifest。
+
+### `GET /internal/graph/snapshots/{version}`
+
+用途：返回指定版本 snapshot payload。
 
 ### `GET /internal/search-snapshot`
 

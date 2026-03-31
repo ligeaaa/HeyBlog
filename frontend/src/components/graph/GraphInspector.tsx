@@ -1,8 +1,10 @@
 import type { GraphNodeDetails } from "../../lib/graph/cytoscapeGraph";
+import type { GraphViewMeta } from "../../lib/api";
 
 type Props = {
   details: GraphNodeDetails | null;
   lastUpdatedAt: string | null;
+  viewMeta: GraphViewMeta | null;
 };
 
 function Stat({ label, value }: { label: string; value: string | number }) {
@@ -14,7 +16,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-export function GraphInspector({ details, lastUpdatedAt }: Props) {
+export function GraphInspector({ details, lastUpdatedAt, viewMeta }: Props) {
   return (
     <aside className="graph-panel" aria-live="polite">
       {details ? (
@@ -55,6 +57,31 @@ export function GraphInspector({ details, lastUpdatedAt }: Props) {
           最近同步：{lastUpdatedAt ?? "尚未同步"}
         </p>
       </div>
+
+      {viewMeta ? (
+        <div className="graph-panel-section graph-panel-meta">
+          <p className="eyebrow">View</p>
+          <p className="graph-panel-subtle">
+            策略：{viewMeta.strategy}
+            <br />
+            当前视图：{viewMeta.selected_nodes} nodes / {viewMeta.selected_edges} edges
+            <br />
+            数据源：{viewMeta.source}
+            {viewMeta.snapshot_version ? (
+              <>
+                <br />
+                Snapshot：{viewMeta.snapshot_version}
+              </>
+            ) : null}
+            {viewMeta.sampled ? (
+              <>
+                <br />
+                采样：{viewMeta.sample_mode} / seed={viewMeta.sample_seed}
+              </>
+            ) : null}
+          </p>
+        </div>
+      ) : null}
     </aside>
   );
 }

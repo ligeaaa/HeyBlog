@@ -2,11 +2,103 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { GraphPage } from "./GraphPage";
-import { useGraph } from "../lib/hooks";
+import { useGraphView } from "../lib/hooks";
+import { api } from "../lib/api";
 
 vi.mock("../lib/hooks", () => ({
-  useGraph: vi.fn(),
+  useGraphView: vi.fn(),
 }));
+
+vi.mock("../lib/api", async () => {
+  const actual = await vi.importActual("../lib/api");
+  return {
+    ...actual,
+    api: {
+      ...(actual as { api: object }).api,
+      graphNeighbors: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            id: 1,
+            url: "https://alpha.example",
+            normalized_url: "https://alpha.example",
+            domain: "alpha.example",
+            status_code: 200,
+            crawl_status: "FINISHED",
+            friend_links_count: 3,
+            depth: 0,
+            source_blog_id: null,
+            last_crawled_at: null,
+            created_at: "2026-03-29T00:00:00Z",
+            updated_at: "2026-03-29T00:00:00Z",
+            x: 100,
+            y: 120,
+            degree: 2,
+            incoming_count: 1,
+            outgoing_count: 1,
+            priority_score: 220,
+            component_id: "component-1",
+          },
+          {
+            id: 2,
+            url: "https://beta.example",
+            normalized_url: "https://beta.example",
+            domain: "beta.example",
+            status_code: 200,
+            crawl_status: "FINISHED",
+            friend_links_count: 1,
+            depth: 1,
+            source_blog_id: 1,
+            last_crawled_at: null,
+            created_at: "2026-03-31T00:00:00Z",
+            updated_at: "2026-03-31T00:00:00Z",
+            x: 160,
+            y: 140,
+            degree: 1,
+            incoming_count: 1,
+            outgoing_count: 0,
+            priority_score: 110,
+            component_id: "component-1",
+          },
+        ],
+        edges: [
+          {
+            id: 11,
+            from_blog_id: 1,
+            to_blog_id: 2,
+            link_url_raw: "https://beta.example",
+            link_text: "beta",
+            discovered_at: "2026-03-31T00:00:00Z",
+          },
+        ],
+        meta: {
+          strategy: "neighborhood",
+          limit: 120,
+          sample_mode: "off",
+          sample_value: null,
+          sample_seed: 0,
+          sampled: false,
+          focus_node_id: 1,
+          hops: 1,
+          has_stable_positions: true,
+          snapshot_version: "v1",
+          generated_at: "2026-03-31T00:00:00Z",
+          source: "snapshot",
+          total_nodes: 2,
+          total_edges: 1,
+          available_nodes: 2,
+          available_edges: 1,
+          selected_nodes: 2,
+          selected_edges: 1,
+        },
+      }),
+    },
+  };
+});
+
+const mockCySpies = {
+  fit: vi.fn(),
+  layoutRun: vi.fn(),
+};
 
 vi.mock("react-cytoscapejs", async () => {
   const React = await import("react");
@@ -17,7 +109,7 @@ vi.mock("react-cytoscapejs", async () => {
       cy?: (instance: {
         scratch: (key: string, value?: unknown) => unknown;
         on: (...args: unknown[]) => void;
-        elements: () => { length: number; unselect: () => void };
+        elements: () => { length: number; unselect: () => void; forEach: (fn: (value: unknown) => void) => void };
         layout: () => { run: () => void };
         fit: () => void;
         center: () => void;
@@ -60,8 +152,8 @@ vi.mock("react-cytoscapejs", async () => {
             handlersRef.current.set(eventName, handler);
           },
           elements: () => collection,
-          layout: () => ({ run: () => undefined }),
-          fit: () => undefined,
+          layout: () => ({ run: mockCySpies.layoutRun }),
+          fit: mockCySpies.fit,
           center: () => undefined,
           zoom: ((value?: number) => (value == null ? 1 : undefined)) as (() => number) & ((value: number) => void),
           pan: ((value?: { x: number; y: number }) => (value == null ? { x: 0, y: 0 } : undefined)) as (() => {
@@ -113,11 +205,11 @@ vi.mock("react-cytoscapejs", async () => {
   };
 });
 
-const mockedUseGraph = vi.mocked(useGraph);
+const mockedUseGraphView = vi.mocked(useGraphView);
+const mockedApi = vi.mocked(api);
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  mockedUseGraph.mockReturnValue({
+function buildQueryResult() {
+  return {
     data: {
       nodes: [
         {
@@ -133,42 +225,36 @@ beforeEach(() => {
           last_crawled_at: null,
           created_at: "2026-03-29T00:00:00Z",
           updated_at: "2026-03-29T00:00:00Z",
+          x: 100,
+          y: 120,
+          degree: 2,
+          incoming_count: 1,
+          outgoing_count: 1,
+          priority_score: 220,
+          component_id: "component-1",
         },
       ],
       edges: [],
-    },
-    isLoading: false,
-    isFetching: false,
-    error: null,
-    dataUpdatedAt: 1711737600000,
-    refetch: vi.fn().mockResolvedValue(undefined),
-  } as unknown as ReturnType<typeof useGraph>);
-});
-
-afterEach(() => {
-  cleanup();
-});
-
-test("manual refresh button triggers refetch", async () => {
-  const query = {
-    data: {
-      nodes: [
-        {
-          id: 1,
-          url: "https://alpha.example",
-          normalized_url: "https://alpha.example",
-          domain: "alpha.example",
-          status_code: 200,
-          crawl_status: "FINISHED",
-          friend_links_count: 3,
-          depth: 0,
-          source_blog_id: null,
-          last_crawled_at: null,
-          created_at: "2026-03-29T00:00:00Z",
-          updated_at: "2026-03-29T00:00:00Z",
-        },
-      ],
-      edges: [],
+      meta: {
+        strategy: "degree",
+        limit: 180,
+        sample_mode: "off" as const,
+        sample_value: null,
+        sample_seed: 7,
+        sampled: false,
+        focus_node_id: null,
+        hops: null,
+        has_stable_positions: true,
+        snapshot_version: "v1",
+        generated_at: "2026-03-31T00:00:00Z",
+        source: "snapshot",
+        total_nodes: 1,
+        total_edges: 0,
+        available_nodes: 1,
+        available_edges: 0,
+        selected_nodes: 1,
+        selected_edges: 0,
+      },
     },
     isLoading: false,
     isFetching: false,
@@ -176,7 +262,22 @@ test("manual refresh button triggers refetch", async () => {
     dataUpdatedAt: 1711737600000,
     refetch: vi.fn().mockResolvedValue(undefined),
   };
-  mockedUseGraph.mockReturnValue(query as unknown as ReturnType<typeof useGraph>);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockCySpies.fit.mockReset();
+  mockCySpies.layoutRun.mockReset();
+  mockedUseGraphView.mockReturnValue(buildQueryResult() as unknown as ReturnType<typeof useGraphView>);
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+test("manual refresh button triggers refetch", async () => {
+  const query = buildQueryResult();
+  mockedUseGraphView.mockReturnValue(query as unknown as ReturnType<typeof useGraphView>);
 
   render(<GraphPage />);
 
@@ -193,4 +294,45 @@ test("selecting a node updates the inspector", async () => {
   expect(screen.getByText("Selected Node")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "alpha.example" })).toBeInTheDocument();
   expect(screen.getByText("https://alpha.example")).toBeInTheDocument();
+});
+
+test("sampling controls become visible when random mode is enabled", async () => {
+  render(<GraphPage />);
+
+  await userEvent.selectOptions(screen.getByLabelText("采样模式"), "count");
+
+  expect(screen.getByLabelText("采样数量")).toBeInTheDocument();
+  expect(screen.getByLabelText("固定 Seed")).toBeInTheDocument();
+});
+
+test("expanding a selected node requests neighborhood data", async () => {
+  render(<GraphPage />);
+
+  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "展开 1 跳" }));
+
+  expect(mockedApi.graphNeighbors).toHaveBeenCalledWith("1", { hops: 1, limit: 180 });
+});
+
+test("reset restores the core graph after neighborhood expansion", async () => {
+  render(<GraphPage />);
+
+  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "展开 1 跳" }));
+
+  expect(await screen.findByRole("button", { name: "beta.example" })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "重置为核心视图" }));
+
+  expect(screen.queryByRole("button", { name: "beta.example" })).not.toBeInTheDocument();
+});
+
+test("fit and relayout controls call the Cytoscape instance", async () => {
+  render(<GraphPage />);
+
+  await userEvent.click(screen.getByRole("button", { name: "适配视图" }));
+  await userEvent.click(screen.getByRole("button", { name: "重新布局" }));
+
+  expect(mockCySpies.fit).toHaveBeenCalled();
+  expect(mockCySpies.layoutRun).toHaveBeenCalled();
 });

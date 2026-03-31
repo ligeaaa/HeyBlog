@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 from persistence_api.graph_service import GraphService
@@ -60,7 +61,7 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
         repository=repository,
         # Keep graph/stats assembly owned by persistence so this service does not
         # depend on backend-only modules for its own read models.
-        graph_service=GraphService(repository),
+        graph_service=GraphService(repository, resolved.export_dir),
         stats_service=StatsService(repository),
     )
 
@@ -125,6 +126,40 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.get("/internal/graph")
     def get_graph() -> dict[str, Any]:
         return get_state().graph_service.graph()
+
+    @app.get("/internal/graph/views/core")
+    def get_graph_view(
+        strategy: str = "degree",
+        limit: int = 180,
+        sample_mode: str = "off",
+        sample_value: float | None = None,
+        sample_seed: int = 7,
+    ) -> dict[str, Any]:
+        return get_state().graph_service.graph_view(
+            strategy=strategy,
+            limit=limit,
+            sample_mode=sample_mode,
+            sample_value=sample_value,
+            sample_seed=sample_seed,
+        )
+
+    @app.get("/internal/graph/nodes/{blog_id}/neighbors")
+    def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
+        try:
+            return get_state().graph_service.graph_neighbors(node_id=blog_id, hops=hops, limit=limit)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="graph_node_not_found") from exc
+
+    @app.get("/internal/graph/snapshots/latest")
+    def get_latest_graph_snapshot() -> dict[str, Any]:
+        return get_state().graph_service.latest_snapshot_manifest()
+
+    @app.get("/internal/graph/snapshots/{version}")
+    def get_graph_snapshot(version: str) -> dict[str, Any]:
+        payload = get_state().graph_service.snapshot(version)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="graph_snapshot_not_found")
+        return payload
 
     @app.get("/internal/search-snapshot")
     def get_search_snapshot() -> dict[str, list[dict[str, Any]]]:

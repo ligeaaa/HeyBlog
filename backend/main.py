@@ -111,6 +111,34 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_graph() -> dict[str, Any]:
         return get_state().persistence.graph()
 
+    @app.get("/api/graph/views/core")
+    def get_graph_view(
+        strategy: str = "degree",
+        limit: int = 180,
+        sample_mode: str = "off",
+        sample_value: float | None = None,
+        sample_seed: int = 7,
+    ) -> dict[str, Any]:
+        return get_state().persistence.graph_view(
+            strategy=strategy,
+            limit=limit,
+            sample_mode=sample_mode,
+            sample_value=sample_value,
+            sample_seed=sample_seed,
+        )
+
+    @app.get("/api/graph/nodes/{blog_id}/neighbors")
+    def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
+        return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+
+    @app.get("/api/graph/snapshots/latest")
+    def get_latest_graph_snapshot() -> dict[str, Any]:
+        return get_state().persistence.latest_graph_snapshot()
+
+    @app.get("/api/graph/snapshots/{version}")
+    def get_graph_snapshot(version: str) -> dict[str, Any]:
+        return get_state().persistence.graph_snapshot(version)
+
     @app.get("/api/stats")
     def get_stats() -> dict[str, Any]:
         return get_state().persistence.stats()

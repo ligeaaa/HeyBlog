@@ -1,0 +1,219 @@
+"""Tests for graph views and offline snapshot projections."""
+
+from datetime import UTC
+from datetime import datetime
+from pathlib import Path
+
+from persistence_api.graph_service import GraphService
+from persistence_api.graph_projection import build_core_graph_view
+from persistence_api.graph_projection import build_graph_snapshot_payload
+from persistence_api.graph_projection import build_neighborhood_graph_view
+from persistence_api.graph_projection import load_snapshot_manifest
+from persistence_api.graph_projection import load_snapshot_payload
+from persistence_api.graph_projection import write_snapshot_files
+
+
+def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    blogs = [
+        {
+            "id": 1,
+            "url": "https://alpha.example",
+            "normalized_url": "https://alpha.example",
+            "domain": "alpha.example",
+            "status_code": 200,
+            "crawl_status": "FINISHED",
+            "friend_links_count": 3,
+            "depth": 0,
+            "source_blog_id": None,
+            "last_crawled_at": None,
+            "created_at": "2026-03-31T00:00:00Z",
+            "updated_at": "2026-03-31T00:00:00Z",
+        },
+        {
+            "id": 2,
+            "url": "https://beta.example",
+            "normalized_url": "https://beta.example",
+            "domain": "beta.example",
+            "status_code": 200,
+            "crawl_status": "FINISHED",
+            "friend_links_count": 2,
+            "depth": 1,
+            "source_blog_id": 1,
+            "last_crawled_at": None,
+            "created_at": "2026-03-31T00:00:00Z",
+            "updated_at": "2026-03-31T00:00:00Z",
+        },
+        {
+            "id": 3,
+            "url": "https://gamma.example",
+            "normalized_url": "https://gamma.example",
+            "domain": "gamma.example",
+            "status_code": 200,
+            "crawl_status": "FINISHED",
+            "friend_links_count": 1,
+            "depth": 1,
+            "source_blog_id": 1,
+            "last_crawled_at": None,
+            "created_at": "2026-03-31T00:00:00Z",
+            "updated_at": "2026-03-31T00:00:00Z",
+        },
+    ]
+    edges = [
+        {
+            "id": 11,
+            "from_blog_id": 1,
+            "to_blog_id": 2,
+            "link_url_raw": "https://beta.example",
+            "link_text": "beta",
+            "discovered_at": "2026-03-31T00:00:00Z",
+        },
+        {
+            "id": 12,
+            "from_blog_id": 2,
+            "to_blog_id": 3,
+            "link_url_raw": "https://gamma.example",
+            "link_text": "gamma",
+            "discovered_at": "2026-03-31T00:00:00Z",
+        },
+    ]
+    return blogs, edges
+
+
+def test_snapshot_payload_contains_stable_positions() -> None:
+    blogs, edges = sample_graph()
+
+    payload = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    assert payload["version"] == "v1"
+    assert payload["meta"]["has_stable_positions"] is True
+    assert payload["meta"]["graph_fingerprint"]
+    assert payload["nodes"][0]["x"] is not None
+    assert payload["nodes"][0]["component_id"].startswith("component-")
+
+
+def test_core_view_sampling_is_deterministic() -> None:
+    blogs, edges = sample_graph()
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    first = build_core_graph_view(
+        snapshot,
+        strategy="degree",
+        limit=2,
+        sample_mode="count",
+        sample_value=2,
+        sample_seed=17,
+    )
+    second = build_core_graph_view(
+        snapshot,
+        strategy="degree",
+        limit=2,
+        sample_mode="count",
+        sample_value=2,
+        sample_seed=17,
+    )
+
+    assert [node["id"] for node in first["nodes"]] == [node["id"] for node in second["nodes"]]
+    assert first["meta"]["sampled"] is True
+
+
+def test_neighborhood_view_keeps_focus_node() -> None:
+    blogs, edges = sample_graph()
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    payload = build_neighborhood_graph_view(snapshot, node_id=2, hops=1, limit=3)
+
+    assert payload["meta"]["focus_node_id"] == 2
+    assert {node["id"] for node in payload["nodes"]} == {1, 2, 3}
+
+
+def test_snapshot_files_are_written_with_latest_manifest(tmp_path: Path) -> None:
+    blogs, edges = sample_graph()
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    paths = write_snapshot_files(tmp_path, snapshot)
+
+    manifest = load_snapshot_manifest(tmp_path)
+    payload = load_snapshot_payload(tmp_path, "v1")
+
+    assert Path(paths["graph_snapshot_manifest"]).exists()
+    assert Path(paths["graph_snapshot"]).exists()
+    assert manifest is not None
+    assert manifest["version"] == "v1"
+    assert manifest["graph_fingerprint"] == snapshot["meta"]["graph_fingerprint"]
+    assert payload is not None
+    assert payload["nodes"][0]["x"] is not None
+
+
+def test_snapshot_files_serialize_postgres_style_datetimes(tmp_path: Path) -> None:
+    blogs, edges = sample_graph()
+    postgres_time = datetime(2026, 3, 31, 0, 0, tzinfo=UTC)
+    blogs[0]["created_at"] = postgres_time
+    blogs[0]["updated_at"] = postgres_time
+    edges[0]["discovered_at"] = postgres_time
+
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    write_snapshot_files(tmp_path, snapshot)
+    payload = load_snapshot_payload(tmp_path, "v1")
+
+    assert payload is not None
+    node_by_id = {node["id"]: node for node in payload["nodes"]}
+    edge_by_id = {edge["id"]: edge for edge in payload["edges"]}
+    assert node_by_id[1]["created_at"] == postgres_time.isoformat()
+    assert edge_by_id[11]["discovered_at"] == postgres_time.isoformat()
+
+
+def test_graph_service_refreshes_snapshot_when_repository_graph_changes(tmp_path: Path) -> None:
+    blogs, edges = sample_graph()
+
+    class MutableRepository:
+        def __init__(self) -> None:
+            self.blogs = [dict(blog) for blog in blogs]
+            self.edges = [dict(edge) for edge in edges]
+
+        def list_blogs(self) -> list[dict[str, object]]:
+            return [dict(blog) for blog in self.blogs]
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return [dict(edge) for edge in self.edges]
+
+    repository = MutableRepository()
+    service = GraphService(repository, tmp_path)
+
+    first_view = service.graph_view(limit=10)
+    first_manifest = service.latest_snapshot_manifest()
+
+    repository.blogs.append(
+        {
+            "id": 4,
+            "url": "https://delta.example",
+            "normalized_url": "https://delta.example",
+            "domain": "delta.example",
+            "status_code": 200,
+            "crawl_status": "FINISHED",
+            "friend_links_count": 2,
+            "depth": 1,
+            "source_blog_id": 1,
+            "last_crawled_at": None,
+            "created_at": "2026-03-31T00:05:00Z",
+            "updated_at": "2026-03-31T00:05:00Z",
+        }
+    )
+    repository.edges.append(
+        {
+            "id": 13,
+            "from_blog_id": 1,
+            "to_blog_id": 4,
+            "link_url_raw": "https://delta.example",
+            "link_text": "delta",
+            "discovered_at": "2026-03-31T00:05:00Z",
+        }
+    )
+
+    second_view = service.graph_view(limit=10)
+    second_manifest = service.latest_snapshot_manifest()
+
+    assert first_view["meta"]["available_nodes"] == 3
+    assert second_view["meta"]["available_nodes"] == 4
+    assert first_manifest["graph_fingerprint"] != second_manifest["graph_fingerprint"]
+    assert first_manifest["version"] != second_manifest["version"]

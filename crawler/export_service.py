@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from persistence_api.graph_projection import build_graph_snapshot_payload
+from persistence_api.graph_projection import write_snapshot_files
 from persistence_api.repository import RepositoryProtocol
 
 
@@ -41,8 +43,12 @@ class ExportService:
         with graph_path.open("w", encoding="utf-8") as handle:
             json.dump({"nodes": blogs, "edges": edges}, handle, ensure_ascii=False, indent=2)
 
+        snapshot_payload = build_graph_snapshot_payload(blogs, edges)
+        snapshot_paths = write_snapshot_files(self.export_dir, snapshot_payload)
+
         return {
             "nodes_csv": str(nodes_path),
             "edges_csv": str(edges_path),
             "graph_json": str(graph_path),
+            **snapshot_paths,
         }

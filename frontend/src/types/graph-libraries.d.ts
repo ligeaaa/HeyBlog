@@ -9,6 +9,9 @@ declare module "react-cytoscapejs" {
     style?: CSSProperties;
     minZoom?: number;
     maxZoom?: number;
+    pixelRatio?: number;
+    hideEdgesOnViewport?: boolean;
+    textureOnViewport?: boolean;
     cy?: (instance: cytoscape.Core) => void;
   };
 

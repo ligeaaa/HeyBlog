@@ -40,9 +40,34 @@ export function useStats() {
 
 
 export function useGraph() {
+  return useGraphView({
+    strategy: "degree",
+    limit: 180,
+    sampleMode: "off",
+    sampleValue: null,
+    sampleSeed: 7,
+  });
+}
+
+export type GraphViewOptions = {
+  strategy: string;
+  limit: number;
+  sampleMode: "off" | "count" | "percent";
+  sampleValue: number | null;
+  sampleSeed: number;
+};
+
+export function useGraphView(options: GraphViewOptions) {
   return useQuery({
-    queryKey: ["graph"],
-    queryFn: api.graph,
+    queryKey: ["graph-view", options],
+    queryFn: () =>
+      api.graphView({
+        strategy: options.strategy,
+        limit: options.limit,
+        sampleMode: options.sampleMode,
+        sampleValue: options.sampleValue,
+        sampleSeed: options.sampleSeed,
+      }),
     staleTime: 600000,
     refetchInterval: 600000,
   });
@@ -142,6 +167,7 @@ export function useCrawlerActions() {
       queryClient.invalidateQueries({ queryKey: ["status"] }),
       queryClient.invalidateQueries({ queryKey: ["stats"] }),
       queryClient.invalidateQueries({ queryKey: ["graph"] }),
+      queryClient.invalidateQueries({ queryKey: ["graph-view"] }),
       queryClient.invalidateQueries({ queryKey: ["runtime-status"] }),
       queryClient.invalidateQueries({ queryKey: ["runtime-current"] }),
     ]);
