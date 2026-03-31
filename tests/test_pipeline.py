@@ -132,6 +132,73 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     assert edges[0]["link_url_raw"] == "https://friend.example/"
 
 
+def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
+    """Homepage crawl should persist title and icon metadata onto the source blog."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    homepage_html = """
+    <html>
+      <head>
+        <title>Alpha Blog</title>
+        <link rel="icon" href="/static/favicon.png" />
+      </head>
+      <body>
+        <footer><a href="/friends">友情链接</a></footer>
+      </body>
+    </html>
+    """
+    friend_page_html = """
+    <html><body><section><h2>友情链接</h2>
+      <a href="https://friend.example/">Friend</a>
+    </section></body></html>
+    """
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text=homepage_html,
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends",
+                status_code=200,
+                text=friend_page_html,
+            ),
+        }
+    )
+
+    pipeline._crawl_blog(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["title"] == "Alpha Blog"
+    assert refreshed["icon_url"] == "https://blog.example.com/static/favicon.png"
+
+
+def test_pipeline_falls_back_to_origin_favicon_when_page_has_no_icon_link(tmp_path: Path) -> None:
+    """Missing explicit icon markup should still produce an origin favicon candidate."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="<html><head><title>Plain Blog</title></head><body></body></html>",
+            ),
+        }
+    )
+
+    pipeline._crawl_blog(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["title"] == "Plain Blog"
+    assert refreshed["icon_url"] == "https://blog.example.com/favicon.ico"
+
+
 def test_pipeline_uses_fallback_paths_when_homepage_has_no_friend_link_entry(tmp_path: Path) -> None:
     """Pipeline should still try fallback friend-link paths when homepage gives no signal."""
     pipeline, repository = build_pipeline(tmp_path)

@@ -167,6 +167,13 @@
 
 返回数组元素结构见“数据模型”章节中的 `BlogRecord`。
 
+补充说明：
+
+- 每条记录都包含 `title` 与 `icon_url`。
+- `title` 来自站点主页的 `<title>`。
+- `icon_url` 优先使用主页里声明的 icon 链接；若页面未声明，当前实现会乐观回退到 `${origin}/favicon.ico`。
+- 这两个字段都允许为 `null`，前端应回退到 `domain` 与默认占位图标。
+
 #### `GET /api/blogs/{blog_id}`
 
 用途：返回单个 blog 详情，并追加该 blog 的出边列表。
@@ -209,6 +216,7 @@
 
 - `nodes` 来自 blog 列表
 - `edges` 来自 edge 列表
+- `nodes` 中的每个 blog 记录同样包含 `title` 与 `icon_url`
 
 补充说明：
 
@@ -259,7 +267,7 @@
 
 说明：
 
-- `nodes` 元素在 `BlogRecord` 基础上额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
+- `nodes` 元素沿用 `BlogRecord`，并额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
 - 当 `has_stable_positions` 为 `true` 时，前端会优先使用这些坐标直接渲染，而不是首次实时跑力导布局
 - 当 `sample_mode != off` 时，会返回可复现的随机子图视图，但该模式只是辅助开关，不是默认主路径
 - 服务在返回前会检查底层 graph 是否已变化；若当前仓库数据与最新 snapshot 不一致，会先重建 snapshot，再返回最新视图
@@ -886,6 +894,8 @@
 | `url` | `string` | 原始 URL |
 | `normalized_url` | `string` | 归一化 URL，唯一键 |
 | `domain` | `string` | 域名 |
+| `title` | `string \| null` | 站点主页解析出的 `<title>`，缺失时为 `null` |
+| `icon_url` | `string \| null` | 站点标签页 icon URL；优先使用页面声明的 icon 链接，缺失时可能回退为 `${origin}/favicon.ico` |
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
 | `crawl_status` | `string` | 当前抓取状态，常见值有 `WAITING` `PROCESSING` `FAILED` `FINISHED` |
 | `friend_links_count` | `number` | 最近一次抓取发现的友链数 |

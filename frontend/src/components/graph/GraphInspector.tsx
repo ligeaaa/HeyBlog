@@ -1,5 +1,6 @@
 import type { GraphNodeDetails } from "../../lib/graph/cytoscapeGraph";
 import type { GraphViewMeta } from "../../lib/api";
+import { SiteIdentity } from "../SiteIdentity";
 
 type Props = {
   details: GraphNodeDetails | null;
@@ -23,8 +24,13 @@ export function GraphInspector({ details, lastUpdatedAt, viewMeta }: Props) {
         <>
           <div className="graph-panel-head">
             <p className="eyebrow">Selected Node</p>
-            <h3>{details.label}</h3>
-            <p className="graph-panel-subtle">{details.domain}</p>
+            <SiteIdentity
+              className="graph-site-identity"
+              title={details.title}
+              domain={details.domain}
+              iconUrl={details.iconUrl}
+              nameElement="h3"
+            />
           </div>
           <dl className="graph-stat-grid">
             <Stat label="Depth" value={details.depth} />

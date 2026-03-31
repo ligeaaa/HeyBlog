@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS blogs (
   url TEXT NOT NULL,
   normalized_url TEXT NOT NULL UNIQUE,
   domain TEXT NOT NULL,
+  title TEXT,
+  icon_url TEXT,
   status_code INTEGER,
   crawl_status TEXT NOT NULL DEFAULT 'WAITING',
   friend_links_count INTEGER NOT NULL DEFAULT 0,
@@ -56,6 +58,8 @@ POSTGRES_STATEMENTS = (
       url TEXT NOT NULL,
       normalized_url TEXT NOT NULL UNIQUE,
       domain TEXT NOT NULL,
+      title TEXT,
+      icon_url TEXT,
       status_code INTEGER,
       crawl_status TEXT NOT NULL DEFAULT 'WAITING',
       friend_links_count INTEGER NOT NULL DEFAULT 0,
@@ -94,9 +98,25 @@ POSTGRES_STATEMENTS = (
 )
 
 
+def _sqlite_blog_columns(connection: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(blogs)").fetchall()
+    }
+
+
+def _ensure_sqlite_blog_columns(connection: sqlite3.Connection) -> None:
+    columns = _sqlite_blog_columns(connection)
+    if "title" not in columns:
+        connection.execute("ALTER TABLE blogs ADD COLUMN title TEXT")
+    if "icon_url" not in columns:
+        connection.execute("ALTER TABLE blogs ADD COLUMN icon_url TEXT")
+
+
 def init_sqlite_db(connection: sqlite3.Connection) -> None:
     """Create database tables when they do not already exist."""
     connection.executescript(SQLITE_SCHEMA_SQL)
+    _ensure_sqlite_blog_columns(connection)
     connection.commit()
 
 
@@ -105,3 +125,5 @@ def init_postgres_db(connection: Any) -> None:
     with connection.cursor() as cursor:
         for statement in POSTGRES_STATEMENTS:
             cursor.execute(statement)
+        cursor.execute("ALTER TABLE blogs ADD COLUMN IF NOT EXISTS title TEXT")
+        cursor.execute("ALTER TABLE blogs ADD COLUMN IF NOT EXISTS icon_url TEXT")

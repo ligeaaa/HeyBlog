@@ -78,6 +78,9 @@ class PersistenceHttpClient:
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None:
         self._post(
             f"/internal/blogs/{blog_id}/result",
@@ -85,6 +88,9 @@ class PersistenceHttpClient:
                 "crawl_status": crawl_status,
                 "status_code": status_code,
                 "friend_links_count": friend_links_count,
+                "metadata_captured": metadata_captured,
+                "title": title,
+                "icon_url": icon_url,
             },
         )
 

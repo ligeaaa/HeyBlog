@@ -15,6 +15,8 @@ export type BlogRecord = {
   url: string;
   normalized_url: string;
   domain: string;
+  title: string | null;
+  icon_url: string | null;
   status_code: number | null;
   crawl_status: string;
   friend_links_count: number;

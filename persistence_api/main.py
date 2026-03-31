@@ -37,6 +37,9 @@ class BlogResultRequest(BaseModel):
     crawl_status: str
     status_code: int | None
     friend_links_count: int
+    metadata_captured: bool = False
+    title: str | None = None
+    icon_url: str | None = None
 
 
 class AddEdgeRequest(BaseModel):

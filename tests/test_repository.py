@@ -1,6 +1,7 @@
 """Regression tests for repository import and backend selection."""
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -96,3 +97,87 @@ def test_sqlite_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) ->
     )
     assert inserted is True
     assert new_blog_id == 1
+
+
+def test_sqlite_repository_mark_blog_result_persists_site_metadata(tmp_path: Path) -> None:
+    """Result updates should store homepage-derived title and icon fields."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+        depth=0,
+        source_blog_id=None,
+    )
+    assert inserted is True
+
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=2,
+        metadata_captured=True,
+        title="Blog Example",
+        icon_url="https://blog.example.com/favicon.ico",
+    )
+
+    blog = repository.get_blog(blog_id)
+    assert blog is not None
+    assert blog["title"] == "Blog Example"
+    assert blog["icon_url"] == "https://blog.example.com/favicon.ico"
+
+
+def test_build_repository_migrates_existing_sqlite_blog_table_with_metadata_columns(tmp_path: Path) -> None:
+    """Repository init should add title/icon columns to an existing SQLite blogs table."""
+    db_path = tmp_path / "legacy.sqlite"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(
+        """
+        CREATE TABLE blogs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          url TEXT NOT NULL,
+          normalized_url TEXT NOT NULL UNIQUE,
+          domain TEXT NOT NULL,
+          status_code INTEGER,
+          crawl_status TEXT NOT NULL DEFAULT 'WAITING',
+          friend_links_count INTEGER NOT NULL DEFAULT 0,
+          depth INTEGER NOT NULL DEFAULT 0,
+          source_blog_id INTEGER,
+          last_crawled_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE edges (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          from_blog_id INTEGER NOT NULL,
+          to_blog_id INTEGER NOT NULL,
+          link_url_raw TEXT NOT NULL,
+          link_text TEXT,
+          discovered_at TEXT NOT NULL
+        );
+
+        CREATE TABLE crawl_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          blog_id INTEGER,
+          stage TEXT NOT NULL,
+          result TEXT NOT NULL,
+          message TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository_module.build_repository(db_path=db_path)
+
+    migrated = sqlite3.connect(db_path)
+    columns = {
+        row[1]
+        for row in migrated.execute("PRAGMA table_info(blogs)").fetchall()
+    }
+    migrated.close()
+
+    assert "title" in columns
+    assert "icon_url" in columns

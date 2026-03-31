@@ -20,6 +20,8 @@ def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
             "url": "https://alpha.example",
             "normalized_url": "https://alpha.example",
             "domain": "alpha.example",
+            "title": "Alpha Blog",
+            "icon_url": "https://alpha.example/favicon.ico",
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 3,
@@ -34,6 +36,8 @@ def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
             "url": "https://beta.example",
             "normalized_url": "https://beta.example",
             "domain": "beta.example",
+            "title": "Beta Blog",
+            "icon_url": "https://beta.example/favicon.ico",
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 2,
@@ -48,6 +52,8 @@ def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
             "url": "https://gamma.example",
             "normalized_url": "https://gamma.example",
             "domain": "gamma.example",
+            "title": None,
+            "icon_url": None,
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 1,
@@ -87,8 +93,11 @@ def test_snapshot_payload_contains_stable_positions() -> None:
     assert payload["version"] == "v1"
     assert payload["meta"]["has_stable_positions"] is True
     assert payload["meta"]["graph_fingerprint"]
-    assert payload["nodes"][0]["x"] is not None
-    assert payload["nodes"][0]["component_id"].startswith("component-")
+    node_by_id = {node["id"]: node for node in payload["nodes"]}
+    assert node_by_id[1]["x"] is not None
+    assert node_by_id[1]["component_id"].startswith("component-")
+    assert node_by_id[1]["title"] == "Alpha Blog"
+    assert node_by_id[1]["icon_url"] == "https://alpha.example/favicon.ico"
 
 
 def test_core_view_sampling_is_deterministic() -> None:
@@ -189,6 +198,8 @@ def test_graph_service_refreshes_snapshot_when_repository_graph_changes(tmp_path
             "url": "https://delta.example",
             "normalized_url": "https://delta.example",
             "domain": "delta.example",
+            "title": "Delta Blog",
+            "icon_url": "https://delta.example/favicon.ico",
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 2,

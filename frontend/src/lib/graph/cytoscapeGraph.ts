@@ -6,6 +6,8 @@ export type GraphNodeDetails = {
   label: string;
   url: string;
   domain: string;
+  title: string | null;
+  iconUrl: string | null;
   friendLinks: number;
   outgoingCount: number;
   incomingCount: number;
@@ -25,8 +27,7 @@ export type GraphBundle = {
 };
 
 function labelForNode(node: GraphNodeRecord) {
-  const titledNode = node as GraphNodeRecord & { title?: string };
-  return titledNode.title?.trim() || node.domain;
+  return node.title?.trim() || node.domain;
 }
 
 function seedPosition(nodeIndex: number, nodeCount: number) {
@@ -90,6 +91,8 @@ export function buildCytoscapeGraph(
       label,
       url: node.url,
       domain: node.domain,
+      title: node.title ?? null,
+      iconUrl: node.icon_url ?? null,
       friendLinks: node.friend_links_count,
       outgoingCount: node.outgoing_count ?? 0,
       incomingCount: node.incoming_count ?? 0,
@@ -111,6 +114,7 @@ export function buildCytoscapeGraph(
         id: nodeId,
         label,
         domain: node.domain,
+        iconUrl: node.icon_url ?? "",
         depth: node.depth,
         degree,
         outgoingCount: node.outgoing_count ?? 0,
@@ -121,6 +125,7 @@ export function buildCytoscapeGraph(
         degree >= 8 ? "graph-node-heavy" : "",
         shouldShowLabel ? "graph-node-labeled" : "",
         node.depth === 0 ? "graph-node-root" : "",
+        node.icon_url ? "graph-node-has-icon" : "",
       ]
         .filter(Boolean)
         .join(" "),
@@ -149,6 +154,7 @@ export function buildCytoscapeGraph(
       graphFingerprint: payload?.meta.graph_fingerprint ?? null,
       selectedNodeIds: nodes.map((node) => node.id),
       selectedEdgeIds: edges.map((edge) => edge.id),
+      nodeLabels: nodes.map((node) => [node.id, node.title ?? node.domain, node.icon_url ?? null]),
       nodePositions: nodes.map((node) => [node.id, node.x ?? null, node.y ?? null]),
       sampleMode: payload?.meta.sample_mode ?? "off",
       sampleValue: payload?.meta.sample_value ?? null,
@@ -197,6 +203,17 @@ export const graphStylesheet: cytoscape.StylesheetJson = [
     selector: "node.graph-node-heavy",
     style: {
       "background-color": "#78e6c7",
+    },
+  },
+  {
+    selector: "node.graph-node-has-icon",
+    style: {
+      "background-image": "data(iconUrl)",
+      "background-fit": "cover",
+      "background-clip": "node",
+      "background-width": "84%",
+      "background-height": "84%",
+      "background-image-opacity": 1,
     },
   },
   {

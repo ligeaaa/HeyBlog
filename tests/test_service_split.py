@@ -91,6 +91,24 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert blogs.status_code == 200
     assert blogs.json()[0]["domain"] == "blog.example.com"
 
+    updated = client.post(
+        "/internal/blogs/1/result",
+        json={
+            "crawl_status": "FINISHED",
+            "status_code": 200,
+            "friend_links_count": 3,
+            "metadata_captured": True,
+            "title": "Blog Example",
+            "icon_url": "https://blog.example.com/favicon.ico",
+        },
+    )
+    assert updated.status_code == 200
+
+    blog = client.get("/internal/blogs/1")
+    assert blog.status_code == 200
+    assert blog.json()["title"] == "Blog Example"
+    assert blog.json()["icon_url"] == "https://blog.example.com/favicon.ico"
+
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 1
@@ -129,8 +147,20 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "max_depth": 1,
                 "average_friend_links": 1.0,
             },
-            "list_blogs": lambda self: [{"id": 1, "domain": "blog.example.com"}],
-            "get_blog": lambda self, blog_id: {"id": blog_id, "domain": "blog.example.com"},
+            "list_blogs": lambda self: [
+                {
+                    "id": 1,
+                    "domain": "blog.example.com",
+                    "title": "Blog Example",
+                    "icon_url": "https://blog.example.com/favicon.ico",
+                }
+            ],
+            "get_blog": lambda self, blog_id: {
+                "id": blog_id,
+                "domain": "blog.example.com",
+                "title": "Blog Example",
+                "icon_url": "https://blog.example.com/favicon.ico",
+            },
             "list_edges": lambda self: [],
             "graph": lambda self: {"nodes": [], "edges": []},
             "graph_view": lambda self, **kwargs: {
@@ -158,7 +188,14 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 },
             },
             "graph_neighbors": lambda self, blog_id, hops=1, limit=120: {
-                "nodes": [{"id": blog_id, "domain": "blog.example.com"}],
+                "nodes": [
+                    {
+                        "id": blog_id,
+                        "domain": "blog.example.com",
+                        "title": "Blog Example",
+                        "icon_url": "https://blog.example.com/favicon.ico",
+                    }
+                ],
                 "edges": [],
                 "meta": {
                     "strategy": "neighborhood",
@@ -239,6 +276,11 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
 
+    blogs = client.get("/api/blogs")
+    assert blogs.status_code == 200
+    assert blogs.json()[0]["title"] == "Blog Example"
+    assert blogs.json()[0]["icon_url"] == "https://blog.example.com/favicon.ico"
+
     core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
     assert core_view.status_code == 200
     assert core_view.json()["meta"]["limit"] == 80
@@ -246,6 +288,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
     neighbors = client.get("/api/graph/nodes/1/neighbors?hops=2&limit=40")
     assert neighbors.status_code == 200
     assert neighbors.json()["meta"]["focus_node_id"] == 1
+    assert neighbors.json()["nodes"][0]["title"] == "Blog Example"
 
     latest_snapshot = client.get("/api/graph/snapshots/latest")
     assert latest_snapshot.status_code == 200

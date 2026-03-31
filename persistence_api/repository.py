@@ -66,6 +66,9 @@ class RepositoryProtocol(Protocol):
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None: ...
 
     def add_edge(
@@ -189,25 +192,48 @@ class Repository:
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None:
         """Store crawl result metadata for one blog."""
         with self.connect() as connection:
-            connection.execute(
-                """
-                UPDATE blogs
-                SET crawl_status = ?, status_code = ?, friend_links_count = ?,
-                    last_crawled_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    crawl_status,
-                    status_code,
-                    friend_links_count,
-                    now_iso(),
-                    now_iso(),
-                    blog_id,
-                ),
-            )
+            if metadata_captured:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = ?, status_code = ?, friend_links_count = ?,
+                        title = ?, icon_url = ?, last_crawled_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        title,
+                        icon_url,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = ?, status_code = ?, friend_links_count = ?,
+                        last_crawled_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
             connection.commit()
 
     def add_edge(
@@ -236,7 +262,7 @@ class Repository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, url, normalized_url, domain, status_code, crawl_status,
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
                        friend_links_count, depth, source_blog_id, last_crawled_at,
                        created_at, updated_at
                 FROM blogs
@@ -451,25 +477,48 @@ class PostgresRepository:
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None:
         """Store crawl result metadata for one blog."""
         with self.connect() as connection:
-            connection.execute(
-                """
-                UPDATE blogs
-                SET crawl_status = %s, status_code = %s, friend_links_count = %s,
-                    last_crawled_at = %s, updated_at = %s
-                WHERE id = %s
-                """,
-                (
-                    crawl_status,
-                    status_code,
-                    friend_links_count,
-                    now_iso(),
-                    now_iso(),
-                    blog_id,
-                ),
-            )
+            if metadata_captured:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = %s, status_code = %s, friend_links_count = %s,
+                        title = %s, icon_url = %s, last_crawled_at = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        title,
+                        icon_url,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = %s, status_code = %s, friend_links_count = %s,
+                        last_crawled_at = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
 
     def add_edge(
         self,
@@ -497,7 +546,7 @@ class PostgresRepository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, url, normalized_url, domain, status_code, crawl_status,
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
                        friend_links_count, depth, source_blog_id, last_crawled_at,
                        created_at, updated_at
                 FROM blogs
