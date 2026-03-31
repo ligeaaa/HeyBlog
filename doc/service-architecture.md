@@ -174,7 +174,7 @@ search  -> persistence-api
 ### 4.6 搜索
 
 ```text
-调用方
+浏览器 / SearchPage
   -> GET /api/search?q=keyword
   -> backend -> search /internal/search?q=keyword
   -> search 读取本地 search-index.json
@@ -185,9 +185,27 @@ search  -> persistence-api
 说明：
 
 - 搜索服务是“可重建缓存层”
-- 当前前端还没有独立搜索页，但公共 API 已经存在
+- 搜索页当前把 `blogs` 作为主结果区块，`edges/logs` 作为辅助信息区块
 
-### 4.7 重置数据库
+### 4.7 博客详情页
+
+```text
+浏览器 / BlogDetailPage
+  -> GET /api/blogs/{blogId}
+  -> GET /api/blogs
+  -> GET /api/edges
+  -> frontend 代理到 backend
+  -> backend -> persistence-api 读取单 blog、全部 blogs、全部 edges
+  -> 前端用 /api/blogs/{blogId} 渲染基础信息与 outgoing_edges
+  -> 前端再基于 /api/blogs 建立 id -> domain 映射，并基于 /api/edges 计算 incoming_edges
+```
+
+说明：
+
+- 当前详情页首版没有新增后端协议，而是在前端补齐入边展示
+- 这是一个有意接受的 MVP 取舍；若边规模变大，可把 `incoming_edges` 下沉到后端
+
+### 4.8 重置数据库
 
 ```text
 浏览器 / 控制页
@@ -238,4 +256,4 @@ search  -> persistence-api
 - `frontend` 代理层当前只支持 `GET` / `POST`，如果未来公共 API 增加 `PUT`、`PATCH`、`DELETE`，这里也需要同步扩展。
 - `backend` 已经比较薄，更多像“公共协议门面 + 工作流串联器”。
 - `crawler` 与 `search` 都通过 `persistence-api` 访问数据，这让数据边界保持集中，但也意味着 `persistence-api` 是整个系统的关键枢纽。
-- 当前前端主要覆盖统计、博客列表、图谱、运行时与控制页；搜索、日志、单 blog 详情、全部 edge 列表虽然有 API，但未全部做成页面。
+- 当前前端已覆盖统计、博客列表、博客详情、搜索、图谱、运行时与控制页；日志与全部 edge 列表仍主要停留在 API 层。

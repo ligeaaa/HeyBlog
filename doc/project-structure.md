@@ -92,6 +92,7 @@ HeyBlog 目前以“拆分服务运行时”为主线组织代码。真正承载
 - 顶层服务包已经是事实上的源码主线，`services/` 只是薄兼容层。
 - `backend/graph_service.py` 与 `backend/stats_service.py` 只是向 `persistence_api` 的兼容转发，不再是核心实现。
 - `frontend/server.py` 既是静态资源服务，也是浏览器访问后端 API 的统一代理层。
+- `frontend/` 当前已经包含统计、博客列表、博客详情、搜索、图谱、运行时、控制台与项目介绍等页面级入口。
 - `persistence_api/` 承担的不只是 CRUD，还包括 `stats` 与 `graph` 这类读模型聚合。
 - `search/` 是缓存式服务，不是系统事实来源；事实来源仍然是 `persistence_api` 背后的数据库。
 

@@ -30,6 +30,10 @@ input {
   font: inherit;
 }
 
+a {
+  color: inherit;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -214,6 +218,27 @@ td {
   align-items: end;
 }
 
+.search-form,
+.page-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.search-field {
+  display: grid;
+  gap: 6px;
+}
+
+.search-field input {
+  min-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
 .primary-button,
 .secondary-button,
 .danger-button {
@@ -260,6 +285,51 @@ td {
   gap: 10px;
 }
 
+.result-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.result-item {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(214, 200, 172, 0.65);
+  background: rgba(214, 200, 172, 0.16);
+}
+
+.result-title,
+.result-link {
+  margin: 0;
+  font-weight: 700;
+}
+
+.result-link,
+.table-link {
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+
+.result-link:hover,
+.table-link:hover {
+  text-decoration: underline;
+}
+
+.meta-copy {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .error-copy {
   color: var(--danger);
   margin: 0;
@@ -273,6 +343,11 @@ td {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid rgba(214, 200, 172, 0.6);
+  }
+
+  .search-field input {
+    min-width: 0;
+    width: 100%;
   }
 }
 

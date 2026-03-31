@@ -33,6 +33,8 @@
 
 - `/stats`
 - `/blogs`
+- `/blogs/:blogId`
+- `/search`
 - `/graph`
 - `/runtime/current`
 - `/about`
@@ -42,6 +44,8 @@
 
 - [frontend/src/pages/StatsPage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/StatsPage.tsx)
 - [frontend/src/pages/BlogsPage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/BlogsPage.tsx)
+- [frontend/src/pages/BlogDetailPage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/BlogDetailPage.tsx)
+- [frontend/src/pages/SearchPage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/SearchPage.tsx)
 - [frontend/src/pages/GraphPage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/GraphPage.tsx)
 - [frontend/src/pages/CurrentRuntimePage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/CurrentRuntimePage.tsx)
 - [frontend/src/pages/AboutPage.tsx](/Users/lige/code/HeyBlog/frontend/src/pages/AboutPage.tsx)
@@ -52,6 +56,9 @@
 浏览器侧封装目前使用的是这批公开 API：
 
 - `/api/blogs`
+- `/api/blogs/{blog_id}`
+- `/api/edges`
+- `/api/search`
 - `/api/status`
 - `/api/stats`
 - `/api/graph`
@@ -65,7 +72,8 @@
 
 说明：
 
-- 当前前端还没有搜索页面，因此虽然 `backend` 提供 `/api/search`，前端暂未直接消费。
+- 搜索页直接消费 `/api/search`。
+- 博客详情页直接消费 `/api/blogs/{blog_id}`，并额外结合 `/api/blogs` 与 `/api/edges` 在前端补齐相邻博客映射和入边展示。
 - `frontend/server.py` 目前只代理 `GET` 和 `POST` 两类 `/api/*` 请求。
 
 ### 2.5 运行依赖
