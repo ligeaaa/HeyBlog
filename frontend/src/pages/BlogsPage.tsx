@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { Surface } from "../components/Surface";
 import { useBlogs } from "../lib/hooks";
@@ -34,8 +35,16 @@ export function BlogsPage() {
               <tbody>
                 {blogs.data?.map((blog) => (
                   <tr key={blog.id}>
-                    <td>{blog.id}</td>
-                    <td>{blog.domain}</td>
+                    <td>
+                      <Link className="table-link" to={`/blogs/${blog.id}`}>
+                        {blog.id}
+                      </Link>
+                    </td>
+                    <td>
+                      <Link className="table-link" to={`/blogs/${blog.id}`}>
+                        {blog.domain}
+                      </Link>
+                    </td>
                     <td className="url-cell">{blog.url}</td>
                     <td>
                       <span className={`status-chip status-${blog.crawl_status.toLowerCase()}`}>

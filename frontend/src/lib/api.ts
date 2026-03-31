@@ -25,6 +25,14 @@ export type BlogRecord = {
   updated_at: string;
 };
 
+export type LogRecord = {
+  id: number;
+  blog_id: number | null;
+  stage: string;
+  result: string;
+  message: string;
+  created_at: string;
+};
 
 export type EdgeRecord = {
   id: number;
@@ -39,6 +47,18 @@ export type GraphPayload = {
   nodes: BlogRecord[];
   edges: EdgeRecord[];
 };
+
+export type BlogDetailPayload = BlogRecord & {
+  outgoing_edges: EdgeRecord[];
+};
+
+export type SearchPayload = {
+  query: string;
+  blogs: BlogRecord[];
+  edges: EdgeRecord[];
+  logs: LogRecord[];
+};
+
 export type StatusPayload = {
   is_running: boolean;
   pending_tasks: number;
@@ -71,19 +91,32 @@ export type ResetDatabasePayload = {
   search_error?: string;
 };
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, statusText: string) {
+    super(`${status} ${statusText}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    throw new ApiError(response.status, response.statusText);
   }
   return response.json() as Promise<T>;
 }
 
 export const api = {
   blogs: () => request<BlogRecord[]>("/api/blogs"),
+  blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
+  edges: () => request<EdgeRecord[]>("/api/edges"),
   status: () => request<StatusPayload>("/api/status"),
   stats: () => request<StatsPayload>("/api/stats"),
   graph: () => request<GraphPayload>("/api/graph"),
+  search: (query: string) => request<SearchPayload>(`/api/search?q=${encodeURIComponent(query)}`),
   runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),
   runtimeCurrent: () => request<RuntimeStatus>("/api/runtime/current"),
   startCrawler: () => request<RuntimeStatus>("/api/runtime/start", { method: "POST" }),

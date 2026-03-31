@@ -3,6 +3,7 @@ import { NavLink, Outlet } from "react-router-dom";
 const navigation = [
   { to: "/stats", label: "统计总览" },
   { to: "/blogs", label: "Blog 概览" },
+  { to: "/search", label: "搜索发现" },
   { to: "/graph", label: "关系图谱" },
   { to: "/runtime/current", label: "当前处理" },
   { to: "/control", label: "控制台" },
