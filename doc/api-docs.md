@@ -18,6 +18,12 @@
 - `persistence-api`：持久化读写接口
 - `persistence-db`：PostgreSQL 数据库
 
+如果需要先从服务视角阅读，再回来看接口细节，建议配合下面两份文档：
+
+- [project-structure.md](/Users/lige/code/HeyBlog/doc/project-structure.md)
+- [services-overview.md](/Users/lige/code/HeyBlog/doc/services-overview.md)
+- [service-architecture.md](/Users/lige/code/HeyBlog/doc/service-architecture.md)
+
 默认端口来自 [docker-compose.yml](/Users/lige/code/HeyBlog/docker-compose.yml)：
 
 - `frontend`: `3000`
@@ -53,6 +59,12 @@
 - `POST /api/database/reset`
 
 源码位置： [backend/main.py](/Users/lige/code/HeyBlog/backend/main.py)
+
+补充说明：
+
+- 浏览器实际访问的是 `frontend` 服务。
+- [frontend/server.py](/Users/lige/code/HeyBlog/frontend/server.py) 会把 `/api/*` 代理到 `backend`。
+- 因此“公共 API 由 backend 提供”与“浏览器经 frontend 访问 API”这两件事同时成立。
 
 ### 2.2 内部服务 API
 
