@@ -66,6 +66,7 @@ export type GraphScene = {
 };
 
 const LABEL_DEGREE_THRESHOLD = 5;
+const REDUCED_LABEL_DEGREE_THRESHOLD = 8;
 const HIDE_EDGES_THRESHOLD = 800;
 const REDUCE_LABELS_THRESHOLD = 220;
 
@@ -136,6 +137,7 @@ export function buildGraphScene(
   const edges = payload?.edges ?? [];
   const hasStablePositions = payload?.meta.has_stable_positions ?? false;
   const shouldUseOverlay = canRestoreOverlay(payload, overlay);
+  const reduceLabels = nodes.length > REDUCE_LABELS_THRESHOLD || edges.length > HIDE_EDGES_THRESHOLD;
   const detailsById = new Map<string, GraphNodeDetails>();
 
   const sceneNodes = nodes.map((node, nodeIndex) => {
@@ -217,8 +219,8 @@ export function buildGraphScene(
     graphFingerprint: payload?.meta.graph_fingerprint ?? null,
     performanceMode: {
       reduceEdgeDetail: sceneEdges.length > HIDE_EDGES_THRESHOLD,
-      reduceLabels: sceneNodes.length > REDUCE_LABELS_THRESHOLD || sceneEdges.length > HIDE_EDGES_THRESHOLD,
-      labelDegreeThreshold: LABEL_DEGREE_THRESHOLD,
+      reduceLabels,
+      labelDegreeThreshold: reduceLabels ? REDUCED_LABEL_DEGREE_THRESHOLD : LABEL_DEGREE_THRESHOLD,
     },
   };
 }

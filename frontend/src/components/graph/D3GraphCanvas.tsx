@@ -1,8 +1,6 @@
 import {
   drag,
   select,
-  type Selection,
-  type BaseType,
   zoom,
   zoomIdentity,
   type D3DragEvent,
@@ -91,6 +89,7 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
   const onSelectRef = useRef(onSelect);
   const onViewportChangeRef = useRef(onViewportChange);
   const onOverlayChangeRef = useRef(onOverlayChange);
+  const graphFingerprintRef = useRef(scene.graphFingerprint);
   const clipIdPrefix = useId().replace(/[:]/g, "");
 
   useEffect(() => {
@@ -104,6 +103,10 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
   useEffect(() => {
     onOverlayChangeRef.current = onOverlayChange;
   }, [onOverlayChange]);
+
+  useEffect(() => {
+    graphFingerprintRef.current = scene.graphFingerprint;
+  }, [scene.graphFingerprint]);
 
   function clipIdFor(nodeId: string) {
     return `graph-node-icon-${clipIdPrefix}-${nodeId}`;
@@ -233,7 +236,7 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
     });
     simulationRef.current.on("end", () => {
       renderPositions();
-      emitOverlay(nodesRef, scene.graphFingerprint, onOverlayChangeRef.current);
+      emitOverlay(nodesRef, graphFingerprintRef.current, onOverlayChangeRef.current);
     });
     simulationRef.current.alpha(mode === "full" ? 1 : 0.6).restart();
   }
@@ -334,6 +337,12 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
 
     nodeSelection
       .attr("aria-label", (datum) => datum.label)
+      .on("keydown", (event, datum) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelectRef.current(datum.id);
+        }
+      })
       .on("click", (_, datum) => {
         onSelectRef.current(datum.id);
       });

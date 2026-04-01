@@ -5,6 +5,7 @@ import { D3GraphCanvas } from "./D3GraphCanvas";
 import { buildGraphScene } from "../../lib/graph/graphScene";
 import type { GraphRendererHandle } from "../../lib/graph/graphRenderer";
 import type { GraphViewPayload } from "../../lib/api";
+import * as d3GraphRenderer from "../../lib/graph/d3GraphRenderer";
 
 const payload: GraphViewPayload = {
   nodes: [
@@ -178,5 +179,103 @@ describe("D3GraphCanvas", () => {
     const edge = document.querySelector(".graph-link");
     expect(edge?.getAttribute("x1")).not.toBe("0");
     expect(edge?.getAttribute("x2")).not.toBe("0");
+  });
+
+  test("keyboard activation selects a focused node", () => {
+    const onSelect = vi.fn();
+
+    render(
+      <D3GraphCanvas
+        scene={buildGraphScene(payload)}
+        selectedNodeId={null}
+        onSelect={onSelect}
+        onViewportChange={() => undefined}
+        onOverlayChange={() => undefined}
+      />,
+    );
+
+    const firstNode = document.querySelector<SVGGElement>("g.graph-node");
+    expect(firstNode).not.toBeNull();
+
+    firstNode?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    expect(onSelect).toHaveBeenCalledWith("1");
+  });
+
+  test("relayout emits overlays with the latest scene fingerprint", () => {
+    let endHandler: (() => void) | null = null;
+    const createGraphSimulationSpy = vi.spyOn(d3GraphRenderer, "createGraphSimulation").mockImplementation(
+      () =>
+        ({
+          stop: vi.fn(),
+          on: vi.fn((event: string, handler: () => void) => {
+            if (event === "end") {
+              endHandler = handler;
+            }
+            return fakeSimulation;
+          }),
+          alpha: vi.fn(() => ({
+            restart: () => {
+              endHandler?.();
+              return fakeSimulation;
+            },
+          })),
+          alphaTarget: vi.fn(() => fakeSimulation),
+        }) as unknown as ReturnType<typeof d3GraphRenderer.createGraphSimulation>,
+    );
+    const fakeSimulation = {
+      stop: vi.fn(),
+      on: vi.fn((event: string, handler: () => void) => {
+        if (event === "end") {
+          endHandler = handler;
+        }
+        return fakeSimulation;
+      }),
+      alpha: vi.fn(() => ({
+        restart: () => {
+          endHandler?.();
+          return fakeSimulation;
+        },
+      })),
+      alphaTarget: vi.fn(() => fakeSimulation),
+    };
+    const ref = createRef<GraphRendererHandle>();
+    const onOverlayChange = vi.fn();
+    const { rerender } = render(
+      <D3GraphCanvas
+        ref={ref}
+        scene={buildGraphScene(payload)}
+        selectedNodeId={null}
+        onSelect={() => undefined}
+        onViewportChange={() => undefined}
+        onOverlayChange={onOverlayChange}
+      />,
+    );
+
+    rerender(
+      <D3GraphCanvas
+        ref={ref}
+        scene={buildGraphScene({
+          ...payload,
+          meta: {
+            ...payload.meta,
+            graph_fingerprint: "graph-v2",
+          },
+        })}
+        selectedNodeId={null}
+        onSelect={() => undefined}
+        onViewportChange={() => undefined}
+        onOverlayChange={onOverlayChange}
+      />,
+    );
+
+    ref.current?.requestRelayout("soft");
+
+    expect(createGraphSimulationSpy).toHaveBeenCalled();
+    expect(onOverlayChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        graphFingerprint: "graph-v2",
+      }),
+    );
   });
 });

@@ -120,6 +120,27 @@ describe("buildGraphScene", () => {
 
     expect(refocusedScene.signature).not.toBe(scene.signature);
   });
+
+  test("raises the label threshold when the scene is large", () => {
+    const largeScene = buildGraphScene({
+      ...payload,
+      nodes: Array.from({ length: 260 }, (_, index) => ({
+        ...payload.nodes[0],
+        id: index + 1,
+        domain: `site-${index + 1}.example`,
+        url: `https://site-${index + 1}.example`,
+        normalized_url: `https://site-${index + 1}.example`,
+        title: `Site ${index + 1}`,
+      })),
+      meta: {
+        ...payload.meta,
+        selected_nodes: 260,
+      },
+    });
+
+    expect(largeScene.performanceMode.reduceLabels).toBe(true);
+    expect(largeScene.performanceMode.labelDegreeThreshold).toBeGreaterThan(5);
+  });
 });
 
 describe("mergeGraphViewPayload", () => {
