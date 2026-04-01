@@ -36,10 +36,6 @@ export function StatsPage() {
             <dd>{stats.data?.failed_tasks ?? 0}</dd>
           </div>
           <div>
-            <dt>最大深度</dt>
-            <dd>{stats.data?.max_depth ?? 0}</dd>
-          </div>
-          <div>
             <dt>平均友链数</dt>
             <dd>{Number(stats.data?.average_friend_links ?? 0).toFixed(2)}</dd>
           </div>

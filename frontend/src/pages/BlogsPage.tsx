@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { SiteIdentity } from "../components/SiteIdentity";
 import { Surface } from "../components/Surface";
 import { useBlogs } from "../lib/hooks";
 
@@ -12,7 +13,7 @@ export function BlogsPage() {
       <PageHeader
         eyebrow="Catalog"
         title="Blog URL 概览"
-        description="查看目前已经记录到的所有 blog URL 以及它们的当前处理状态。"
+        description="查看目前已经记录到的所有 blog、站点标题、标签页 icon 以及它们的当前处理状态。"
       />
       <Surface title="Blog 列表" note="来自 /api/blogs">
         {blogs.isLoading ? <p>正在加载 blog 列表…</p> : null}
@@ -24,10 +25,9 @@ export function BlogsPage() {
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Domain</th>
+                  <th>站点</th>
                   <th>URL</th>
                   <th>Status</th>
-                  <th>Depth</th>
                   <th>Edges</th>
                   <th>Updated</th>
                 </tr>
@@ -42,7 +42,12 @@ export function BlogsPage() {
                     </td>
                     <td>
                       <Link className="table-link" to={`/blogs/${blog.id}`}>
-                        {blog.domain}
+                        <SiteIdentity
+                          compact
+                          title={blog.title}
+                          domain={blog.domain}
+                          iconUrl={blog.icon_url}
+                        />
                       </Link>
                     </td>
                     <td className="url-cell">{blog.url}</td>
@@ -51,7 +56,6 @@ export function BlogsPage() {
                         {blog.crawl_status}
                       </span>
                     </td>
-                    <td>{blog.depth}</td>
                     <td>{blog.friend_links_count}</td>
                     <td>{new Date(blog.updated_at).toLocaleString()}</td>
                   </tr>

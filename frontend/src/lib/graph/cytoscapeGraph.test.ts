@@ -9,10 +9,11 @@ const payload: GraphViewPayload = {
       url: "https://alpha.example",
       normalized_url: "https://alpha.example",
       domain: "alpha.example",
+      title: "Alpha Blog",
+      icon_url: "https://alpha.example/favicon.ico",
       status_code: 200,
       crawl_status: "FINISHED",
       friend_links_count: 3,
-      depth: 0,
       source_blog_id: null,
       last_crawled_at: null,
       created_at: "2026-03-29T00:00:00Z",
@@ -57,10 +58,12 @@ describe("buildCytoscapeGraph", () => {
     expect(bundle.hasStablePositions).toBe(true);
     expect(bundle.shouldRunLayout).toBe(false);
     expect(bundle.detailsById.get("1")?.outgoingCount).toBe(4);
+    expect(bundle.detailsById.get("1")?.iconUrl).toBe("https://alpha.example/favicon.ico");
     expect(bundle.elements[0]).toMatchObject({
       data: {
         id: "1",
-        label: "alpha.example",
+        label: "Alpha Blog",
+        iconUrl: "https://alpha.example/favicon.ico",
       },
       position: {
         x: 10,
@@ -95,6 +98,8 @@ describe("mergeGraphViewPayload", () => {
           ...payload.nodes[0],
           id: 2,
           domain: "beta.example",
+          title: "Beta Blog",
+          icon_url: "https://beta.example/favicon.ico",
           url: "https://beta.example",
           normalized_url: "https://beta.example",
         },

@@ -22,10 +22,11 @@ vi.mock("../lib/api", async () => {
             url: "https://alpha.example",
             normalized_url: "https://alpha.example",
             domain: "alpha.example",
+            title: "Alpha Blog",
+            icon_url: "https://alpha.example/favicon.ico",
             status_code: 200,
             crawl_status: "FINISHED",
             friend_links_count: 3,
-            depth: 0,
             source_blog_id: null,
             last_crawled_at: null,
             created_at: "2026-03-29T00:00:00Z",
@@ -43,10 +44,11 @@ vi.mock("../lib/api", async () => {
             url: "https://beta.example",
             normalized_url: "https://beta.example",
             domain: "beta.example",
+            title: "Beta Blog",
+            icon_url: "https://beta.example/favicon.ico",
             status_code: 200,
             crawl_status: "FINISHED",
             friend_links_count: 1,
-            depth: 1,
             source_blog_id: 1,
             last_crawled_at: null,
             created_at: "2026-03-31T00:00:00Z",
@@ -217,10 +219,11 @@ function buildQueryResult() {
           url: "https://alpha.example",
           normalized_url: "https://alpha.example",
           domain: "alpha.example",
+          title: "Alpha Blog",
+          icon_url: "https://alpha.example/favicon.ico",
           status_code: 200,
           crawl_status: "FINISHED",
           friend_links_count: 3,
-          depth: 0,
           source_blog_id: null,
           last_crawled_at: null,
           created_at: "2026-03-29T00:00:00Z",
@@ -289,10 +292,12 @@ test("manual refresh button triggers refetch", async () => {
 test("selecting a node updates the inspector", async () => {
   render(<GraphPage />);
 
-  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
 
   expect(screen.getByText("Selected Node")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "alpha.example" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Alpha Blog" })).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Alpha Blog icon" })).toBeInTheDocument();
+  expect(screen.getByText("alpha.example")).toBeInTheDocument();
   expect(screen.getByText("https://alpha.example")).toBeInTheDocument();
 });
 
@@ -308,7 +313,7 @@ test("sampling controls become visible when random mode is enabled", async () =>
 test("expanding a selected node requests neighborhood data", async () => {
   render(<GraphPage />);
 
-  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
   await userEvent.click(screen.getByRole("button", { name: "展开 1 跳" }));
 
   expect(mockedApi.graphNeighbors).toHaveBeenCalledWith("1", { hops: 1, limit: 180 });
@@ -317,14 +322,14 @@ test("expanding a selected node requests neighborhood data", async () => {
 test("reset restores the core graph after neighborhood expansion", async () => {
   render(<GraphPage />);
 
-  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
   await userEvent.click(screen.getByRole("button", { name: "展开 1 跳" }));
 
-  expect(await screen.findByRole("button", { name: "beta.example" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Beta Blog" })).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole("button", { name: "重置为核心视图" }));
 
-  expect(screen.queryByRole("button", { name: "beta.example" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Beta Blog" })).not.toBeInTheDocument();
 });
 
 test("fit and relayout controls call the Cytoscape instance", async () => {

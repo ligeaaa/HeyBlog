@@ -29,7 +29,6 @@ class UpsertBlogRequest(BaseModel):
     url: str
     normalized_url: str
     domain: str
-    depth: int
     source_blog_id: int | None
 
 
@@ -37,6 +36,9 @@ class BlogResultRequest(BaseModel):
     crawl_status: str
     status_code: int | None
     friend_links_count: int
+    metadata_captured: bool = False
+    title: str | None = None
+    icon_url: str | None = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -83,8 +85,8 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         return get_state().repository.list_blogs()
 
     @app.get("/internal/queue/next")
-    def next_waiting(max_depth: int) -> dict[str, Any] | None:
-        row = get_state().repository.get_next_waiting_blog(max_depth)
+    def next_waiting() -> dict[str, Any] | None:
+        row = get_state().repository.get_next_waiting_blog()
         return dict(row) if row else None
 
     @app.get("/internal/blogs/{blog_id}")

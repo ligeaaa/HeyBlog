@@ -15,6 +15,7 @@ from crawler.fetcher import Fetcher
 from crawler.fetcher import FetchResult
 from crawler.filters import decide_blog_candidate
 from crawler.normalizer import normalize_url
+from crawler.site_metadata import extract_site_metadata
 from crawler.utils import unique_in_order
 from crawler.export_service import ExportService
 from persistence_api.repository import RepositoryProtocol
@@ -55,7 +56,6 @@ class CrawlPipeline:
                     url=raw_url,
                     normalized_url=normalized.normalized_url,
                     domain=normalized.domain,
-                    depth=0,
                     source_blog_id=None,
                 )
                 created += int(inserted)
@@ -84,7 +84,7 @@ class CrawlPipeline:
         while processed < limit:
             if should_stop and should_stop():
                 break
-            blog = self.repository.get_next_waiting_blog(self.settings.max_depth)
+            blog = self.repository.get_next_waiting_blog()
             if blog is None:
                 break
             if on_blog_start is not None:
@@ -123,6 +123,7 @@ class CrawlPipeline:
     def _crawl_blog(self, blog: dict[str, Any]) -> int:
         """Crawl one blog and persist outgoing blog links."""
         homepage = self.fetcher.fetch(str(blog["url"]))
+        metadata = extract_site_metadata(homepage.url, homepage.text)
 
         # BFS step 1: homepage -> candidate friend-link pages.
         candidate_pages = self._discover_candidate_pages(homepage)
@@ -136,6 +137,8 @@ class CrawlPipeline:
             status_code=homepage.status_code,
             discovered_count=discovered_count,
             blog_url=str(blog["url"]),
+            title=metadata.title,
+            icon_url=metadata.icon_url,
         )
         return discovered_count
 
@@ -194,7 +197,6 @@ class CrawlPipeline:
                 url=link.url,
                 normalized_url=normalized.normalized_url,
                 domain=normalized.domain,
-                depth=int(blog["depth"]) + 1,
                 source_blog_id=int(blog["id"]),
             )
             self.repository.add_edge(
@@ -233,6 +235,8 @@ class CrawlPipeline:
         status_code: int,
         discovered_count: int,
         blog_url: str,
+        title: str | None,
+        icon_url: str | None,
     ) -> None:
         """Persist the crawl result for one processed blog."""
         self.repository.mark_blog_result(
@@ -240,6 +244,9 @@ class CrawlPipeline:
             crawl_status="FINISHED",
             status_code=status_code,
             friend_links_count=discovered_count,
+            metadata_captured=True,
+            title=title,
+            icon_url=icon_url,
         )
         self.repository.add_log(
             blog_id=blog_id,

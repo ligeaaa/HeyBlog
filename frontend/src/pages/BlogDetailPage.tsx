@@ -184,10 +184,6 @@ export function BlogDetailPage() {
             </dd>
           </div>
           <div>
-            <dt>深度</dt>
-            <dd>{blog.depth}</dd>
-          </div>
-          <div>
             <dt>友链数</dt>
             <dd>{blog.friend_links_count}</dd>
           </div>

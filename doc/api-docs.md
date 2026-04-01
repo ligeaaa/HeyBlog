@@ -145,7 +145,6 @@
 
 - `total_blogs`
 - `total_edges`
-- `max_depth`
 - `average_friend_links`
 - `status_counts`
 - `pending_tasks`
@@ -155,7 +154,6 @@
 
 字段语义：
 
-- `max_depth`: 当前已入库 blog 的最大深度
 - `average_friend_links`: blog 的平均友链发现数
 - `status_counts`: 按 `crawl_status` 分组后的原始计数
 
@@ -166,6 +164,14 @@
 用途：返回所有 blog 节点列表。
 
 返回数组元素结构见“数据模型”章节中的 `BlogRecord`。
+
+补充说明：
+
+- 每条记录都包含 `title` 与 `icon_url`。
+- `title` 来自站点主页的 `<title>`。
+- `icon_url` 优先使用主页里声明的 icon 链接；若页面未声明，当前实现会乐观回退到 `${origin}/favicon.ico`。
+- 这两个字段都允许为 `null`，前端应回退到 `domain` 与默认占位图标。
+- `source_blog_id` 保留为来源 lineage/provenance 信息，但当前不再参与队列调度、统计、前端展示或基于深度的任何行为。
 
 #### `GET /api/blogs/{blog_id}`
 
@@ -209,6 +215,7 @@
 
 - `nodes` 来自 blog 列表
 - `edges` 来自 edge 列表
+- `nodes` 中的每个 blog 记录同样包含 `title` 与 `icon_url`
 
 补充说明：
 
@@ -259,7 +266,7 @@
 
 说明：
 
-- `nodes` 元素在 `BlogRecord` 基础上额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
+- `nodes` 元素沿用 `BlogRecord`，并额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
 - 当 `has_stable_positions` 为 `true` 时，前端会优先使用这些坐标直接渲染，而不是首次实时跑力导布局
 - 当 `sample_mode != off` 时，会返回可复现的随机子图视图，但该模式只是辅助开关，不是默认主路径
 - 服务在返回前会检查底层 graph 是否已变化；若当前仓库数据与最新 snapshot 不一致，会先重建 snapshot，再返回最新视图
@@ -659,18 +666,14 @@
 
 用途：返回全部 blog 记录。
 
-### `GET /internal/queue/next?max_depth=...`
+### `GET /internal/queue/next`
 
 用途：取出下一个待处理 blog，并立即将其状态更新为 `PROCESSING`。
-
-查询参数：
-
-- `max_depth`: 最大抓取深度
 
 行为说明：
 
 - 只从 `crawl_status = 'WAITING'` 中选择
-- 按 `depth ASC, id ASC` 排序
+- 按 `id ASC` 排序
 - 选中后立刻更新为 `PROCESSING`
 
 ### `GET /internal/blogs/{blog_id}`
@@ -688,7 +691,6 @@
   "url": "https://example.com/",
   "normalized_url": "https://example.com/",
   "domain": "example.com",
-  "depth": 0,
   "source_blog_id": null
 }
 ```
@@ -790,7 +792,6 @@
 
 - `total_blogs`
 - `total_edges`
-- `max_depth`
 - `average_friend_links`
 - `status_counts`
 - `pending_tasks`
@@ -886,11 +887,12 @@
 | `url` | `string` | 原始 URL |
 | `normalized_url` | `string` | 归一化 URL，唯一键 |
 | `domain` | `string` | 域名 |
+| `title` | `string \| null` | 站点主页解析出的 `<title>`，缺失时为 `null` |
+| `icon_url` | `string \| null` | 站点标签页 icon URL；优先使用页面声明的 icon 链接，缺失时可能回退为 `${origin}/favicon.ico` |
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
 | `crawl_status` | `string` | 当前抓取状态，常见值有 `WAITING` `PROCESSING` `FAILED` `FINISHED` |
 | `friend_links_count` | `number` | 最近一次抓取发现的友链数 |
-| `depth` | `number` | 图遍历深度 |
-| `source_blog_id` | `number \| null` | 来源 blog id |
+| `source_blog_id` | `number \| null` | 来源 blog id，仅作为 lineage/provenance 使用 |
 | `last_crawled_at` | `string \| null` | 最近抓取时间 |
 | `created_at` | `string` | 创建时间 |
 | `updated_at` | `string` | 更新时间 |
@@ -947,7 +949,6 @@
 | --- | --- | --- |
 | `total_blogs` | `number` | blog 总数 |
 | `total_edges` | `number` | edge 总数 |
-| `max_depth` | `number` | 最大深度 |
 | `average_friend_links` | `number` | 平均友链数 |
 | `status_counts` | `Record<string, number>` | 各状态计数 |
 | `pending_tasks` | `number` | `WAITING` 数量 |

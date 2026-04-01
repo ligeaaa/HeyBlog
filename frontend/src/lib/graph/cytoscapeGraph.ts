@@ -6,11 +6,12 @@ export type GraphNodeDetails = {
   label: string;
   url: string;
   domain: string;
+  title: string | null;
+  iconUrl: string | null;
   friendLinks: number;
   outgoingCount: number;
   incomingCount: number;
   degree: number;
-  depth: number;
   crawlStatus: string;
   componentId: string | null;
   priorityScore: number;
@@ -25,8 +26,7 @@ export type GraphBundle = {
 };
 
 function labelForNode(node: GraphNodeRecord) {
-  const titledNode = node as GraphNodeRecord & { title?: string };
-  return titledNode.title?.trim() || node.domain;
+  return node.title?.trim() || node.domain;
 }
 
 function seedPosition(nodeIndex: number, nodeCount: number) {
@@ -83,18 +83,19 @@ export function buildCytoscapeGraph(
     const nodeId = String(node.id);
     const degree = node.degree ?? 0;
     const label = labelForNode(node);
-    const shouldShowLabel = degree >= 5 || node.depth === 0;
+    const shouldShowLabel = degree >= 5;
 
     detailsById.set(nodeId, {
       id: nodeId,
       label,
       url: node.url,
       domain: node.domain,
+      title: node.title ?? null,
+      iconUrl: node.icon_url ?? null,
       friendLinks: node.friend_links_count,
       outgoingCount: node.outgoing_count ?? 0,
       incomingCount: node.incoming_count ?? 0,
       degree,
-      depth: node.depth,
       crawlStatus: node.crawl_status,
       componentId: node.component_id ?? null,
       priorityScore: node.priority_score ?? 0,
@@ -111,7 +112,7 @@ export function buildCytoscapeGraph(
         id: nodeId,
         label,
         domain: node.domain,
-        depth: node.depth,
+        iconUrl: node.icon_url ?? "",
         degree,
         outgoingCount: node.outgoing_count ?? 0,
         incomingCount: node.incoming_count ?? 0,
@@ -120,7 +121,7 @@ export function buildCytoscapeGraph(
       classes: [
         degree >= 8 ? "graph-node-heavy" : "",
         shouldShowLabel ? "graph-node-labeled" : "",
-        node.depth === 0 ? "graph-node-root" : "",
+        node.icon_url ? "graph-node-has-icon" : "",
       ]
         .filter(Boolean)
         .join(" "),
@@ -149,6 +150,7 @@ export function buildCytoscapeGraph(
       graphFingerprint: payload?.meta.graph_fingerprint ?? null,
       selectedNodeIds: nodes.map((node) => node.id),
       selectedEdgeIds: edges.map((edge) => edge.id),
+      nodeLabels: nodes.map((node) => [node.id, node.title ?? node.domain, node.icon_url ?? null]),
       nodePositions: nodes.map((node) => [node.id, node.x ?? null, node.y ?? null]),
       sampleMode: payload?.meta.sample_mode ?? "off",
       sampleValue: payload?.meta.sample_value ?? null,
@@ -186,17 +188,20 @@ export const graphStylesheet: cytoscape.StylesheetJson = [
     },
   },
   {
-    selector: "node.graph-node-root",
-    style: {
-      "background-color": "#ffba6f",
-      width: "mapData(degree, 0, 20, 18, 44)",
-      height: "mapData(degree, 0, 20, 18, 44)",
-    },
-  },
-  {
     selector: "node.graph-node-heavy",
     style: {
       "background-color": "#78e6c7",
+    },
+  },
+  {
+    selector: "node.graph-node-has-icon",
+    style: {
+      "background-image": "data(iconUrl)",
+      "background-fit": "cover",
+      "background-clip": "node",
+      "background-width": "84%",
+      "background-height": "84%",
+      "background-image-opacity": 1,
     },
   },
   {
