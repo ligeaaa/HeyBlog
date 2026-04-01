@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS crawl_logs (
   created_at TEXT NOT NULL,
   FOREIGN KEY(blog_id) REFERENCES blogs(id) ON DELETE SET NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_blogs_crawl_status
+  ON blogs (crawl_status);
 """
 
 SQLITE_SCHEMA_SQL = f"""
@@ -96,6 +99,10 @@ POSTGRES_STATEMENTS = (
       created_at TIMESTAMPTZ NOT NULL,
       FOREIGN KEY(blog_id) REFERENCES blogs(id) ON DELETE SET NULL
     )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_blogs_crawl_status
+      ON blogs (crawl_status)
     """,
 )
 

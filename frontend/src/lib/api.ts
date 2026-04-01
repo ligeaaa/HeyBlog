@@ -109,6 +109,25 @@ export type BlogDetailPayload = BlogRecord & {
   outgoing_edges: EdgeRecord[];
 };
 
+export type BlogCatalogFilters = {
+  q: string | null;
+  site: string | null;
+  url: string | null;
+  status: string | null;
+};
+
+export type BlogCatalogPagePayload = {
+  items: BlogRecord[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+  filters: BlogCatalogFilters;
+  sort: string;
+};
+
 export type SearchPayload = {
   query: string;
   blogs: BlogRecord[];
@@ -179,6 +198,24 @@ function withQuery(path: string, params: Record<string, string | number | boolea
 
 export const api = {
   blogs: () => request<BlogRecord[]>("/api/blogs"),
+  blogCatalog: (params: {
+    page: number;
+    pageSize: number;
+    q?: string | null;
+    site?: string | null;
+    url?: string | null;
+    status?: string | null;
+  }) =>
+    request<BlogCatalogPagePayload>(
+      withQuery("/api/blogs/catalog", {
+        page: params.page,
+        page_size: params.pageSize,
+        q: params.q,
+        site: params.site,
+        url: params.url,
+        status: params.status,
+      }),
+    ),
   blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
   edges: () => request<EdgeRecord[]>("/api/edges"),
   status: () => request<StatusPayload>("/api/status"),

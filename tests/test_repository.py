@@ -278,7 +278,94 @@ def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_
     assert blog["source_blog_id"] is None
     assert "depth" not in blog
     assert len(repository.list_edges()) == 1
-    assert len(repository.list_logs()) == 1
+    logs = repository.list_logs()
+    assert len(logs) == 1
+    assert logs[0]["blog_id"] == 1
+    assert logs[0]["message"] == "legacy row"
+
+
+def test_sqlite_repository_blog_catalog_paginates_and_filters(tmp_path: Path) -> None:
+    """Catalog queries should paginate and filter on the server side."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    seeded: list[int] = []
+    for index in range(4):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://site-{index}.example/posts/{index}",
+            normalized_url=f"https://site-{index}.example/posts/{index}",
+            domain=f"site-{index}.example",
+            source_blog_id=None,
+        )
+        assert inserted is True
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED" if index % 2 == 0 else "FAILED",
+            status_code=200 if index % 2 == 0 else 500,
+            friend_links_count=index,
+            metadata_captured=True,
+            title=f"Example Site {index}",
+            icon_url=f"https://site-{index}.example/favicon.ico",
+        )
+        seeded.append(blog_id)
+
+    first_page = repository.list_blogs_catalog(page=1, page_size=2)
+    assert [row["id"] for row in first_page["items"]] == [seeded[3], seeded[2]]
+    assert first_page["page"] == 1
+    assert first_page["page_size"] == 2
+    assert first_page["total_items"] == 4
+    assert first_page["total_pages"] == 2
+    assert first_page["has_next"] is True
+    assert first_page["has_prev"] is False
+
+    second_page = repository.list_blogs_catalog(page=2, page_size=2)
+    assert [row["id"] for row in second_page["items"]] == [seeded[1], seeded[0]]
+    assert second_page["has_next"] is False
+    assert second_page["has_prev"] is True
+
+    site_filtered = repository.list_blogs_catalog(site="Site 2")
+    assert [row["id"] for row in site_filtered["items"]] == [seeded[2]]
+    domain_filtered = repository.list_blogs_catalog(site="site-1.example")
+    assert [row["id"] for row in domain_filtered["items"]] == [seeded[1]]
+    url_filtered = repository.list_blogs_catalog(url="/posts/3")
+    assert [row["id"] for row in url_filtered["items"]] == [seeded[3]]
+    normalized_url_filtered = repository.list_blogs_catalog(url="SITE-0.EXAMPLE")
+    assert [row["id"] for row in normalized_url_filtered["items"]] == [seeded[0]]
+    combined = repository.list_blogs_catalog(q="site", status="finished")
+    assert [row["id"] for row in combined["items"]] == [seeded[2], seeded[0]]
+
+
+def test_sqlite_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None:
+    """Catalog normalization should clamp paging and reject unsupported statuses."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    for index in range(3):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://normalize-{index}.example",
+            normalized_url=f"https://normalize-{index}.example",
+            domain=f"normalize-{index}.example",
+            source_blog_id=None,
+        )
+        assert inserted is True
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="WAITING" if index == 0 else "FINISHED",
+            status_code=200,
+            friend_links_count=0,
+        )
+
+    oversized = repository.list_blogs_catalog(page=0, page_size=999, site="   ", q="   ")
+    assert oversized["page"] == 1
+    assert oversized["page_size"] == 200
+    assert oversized["filters"] == {"q": None, "site": None, "url": None, "status": None}
+
+    last_page = repository.list_blogs_catalog(page=99, page_size=2)
+    assert last_page["page"] == 2
+    assert len(last_page["items"]) == 1
+
+    waiting = repository.list_blogs_catalog(status=" waiting ")
+    assert waiting["filters"]["status"] == "WAITING"
+    assert len(waiting["items"]) == 1
+
+    with pytest.raises(ValueError, match="Unsupported crawl status"):
+        repository.list_blogs_catalog(status="unknown")
 
 
 class _RecordingCursor:

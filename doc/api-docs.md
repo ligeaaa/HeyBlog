@@ -43,6 +43,7 @@
 - `GET /internal/health`
 - `GET /api/status`
 - `GET /api/blogs`
+- `GET /api/blogs/catalog`
 - `GET /api/blogs/{blog_id}`
 - `GET /api/edges`
 - `GET /api/graph`
@@ -172,6 +173,34 @@
 - `icon_url` 优先使用主页里声明的 icon 链接；若页面未声明，当前实现会乐观回退到 `${origin}/favicon.ico`。
 - 这两个字段都允许为 `null`，前端应回退到 `domain` 与默认占位图标。
 - `source_blog_id` 保留为来源 lineage/provenance 信息，但当前不再参与队列调度、统计、前端展示或基于深度的任何行为。
+- 这是 legacy 全量接口。当前 Blog 概览页主路径已经迁移到 `GET /api/blogs/catalog`，但博客详情页仍会结合 `GET /api/blogs` 与 `GET /api/edges` 计算入边与邻居名称映射。
+
+#### `GET /api/blogs/catalog`
+
+用途：为 Blog 概览页提供分页、搜索和条件筛选。
+
+查询参数：
+
+- `page`: 页码，默认 `1`，最小值为 `1`
+- `page_size`: 每页条数，默认 `50`，最终会被限制在 `1..200`
+- `q`: 通用模糊搜索，匹配 `title` / `domain` / `url`
+- `site`: 站点筛选，匹配 `title` / `domain`
+- `url`: URL 筛选，匹配 `url` / `normalized_url`
+- `status`: 抓取状态精确筛选；会先做 `trim + uppercase`，仅允许 `WAITING`、`PROCESSING`、`FINISHED`、`FAILED`
+
+归一化与排序规则：
+
+- 空白字符串会被视为未传参
+- 非法 `status` 返回 `422`
+- 当前版本固定按 `id DESC` 排序，不暴露自定义排序参数
+- 若请求页码超出最后一页且结果集非空，服务端会回退到最后一页，并在响应中返回实际生效页码
+
+响应结构见“数据模型”章节中的 `BlogCatalogPageRecord`。
+
+当前前端使用方式：
+
+- Blog 概览页只请求当前页，不再拉全量 blog 列表
+- 该请求默认不做 5 秒轮询，也不依赖窗口聚焦自动刷新
 
 #### `GET /api/blogs/{blog_id}`
 
@@ -666,6 +695,18 @@
 
 用途：返回全部 blog 记录。
 
+### `GET /internal/blogs/catalog`
+
+用途：为 backend 提供分页 blog catalog 查询。
+
+查询参数与返回 envelope 与 `GET /api/blogs/catalog` 一致。
+
+补充说明：
+
+- 归一化逻辑在 persistence 层统一处理，SQLite 与 PostgreSQL 共享同一套分页/筛选规则
+- 固定按 `id DESC` 排序
+- 当前版本不暴露排序切换参数
+
 ### `GET /internal/queue/next`
 
 用途：取出下一个待处理 blog，并立即将其状态更新为 `PROCESSING`。
@@ -876,8 +917,8 @@
 
 来源：
 
-- [persistence_api/repository.py](/Users/lige/code/HeyBlog/persistence_api/repository.py)
-- [frontend/src/lib/api.ts](/Users/lige/code/HeyBlog/frontend/src/lib/api.ts)
+- [persistence_api/repository.py](persistence_api/repository.py)
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
 
 字段：
 
@@ -897,7 +938,31 @@
 | `created_at` | `string` | 创建时间 |
 | `updated_at` | `string` | 更新时间 |
 
-### 5.2 EdgeRecord
+### 5.2 BlogCatalogPageRecord
+
+来源：
+
+- [persistence_api/repository.py](persistence_api/repository.py)
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `items` | `BlogRecord[]` | 当前页 blog 列表 |
+| `page` | `number` | 当前实际页码；超出范围时可能回退到最后一页 |
+| `page_size` | `number` | 当前实际每页大小 |
+| `total_items` | `number` | 满足筛选条件的总记录数 |
+| `total_pages` | `number` | 总页数；无结果时为 `0` |
+| `has_next` | `boolean` | 是否存在下一页 |
+| `has_prev` | `boolean` | 是否存在上一页 |
+| `filters.q` | `string \| null` | 通用搜索关键词，匹配 `title` / `domain` / `url` |
+| `filters.site` | `string \| null` | 站点筛选关键词，匹配 `title` / `domain` |
+| `filters.url` | `string \| null` | URL 筛选关键词，匹配 `url` / `normalized_url` |
+| `filters.status` | `string \| null` | 状态筛选值 |
+| `sort` | `string` | 当前固定为 `id_desc` |
+
+### 5.3 EdgeRecord
 
 字段：
 
@@ -910,7 +975,7 @@
 | `link_text` | `string \| null` | 链接文本 |
 | `discovered_at` | `string` | 发现时间 |
 
-### 5.3 LogRecord
+### 5.4 LogRecord
 
 字段：
 
@@ -923,7 +988,7 @@
 | `message` | `string` | 文本消息 |
 | `created_at` | `string` | 创建时间 |
 
-### 5.4 RuntimeSnapshot
+### 5.5 RuntimeSnapshot
 
 来源： [crawler/runtime.py](/Users/lige/code/HeyBlog/crawler/runtime.py)
 

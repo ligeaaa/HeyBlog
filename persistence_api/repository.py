@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from math import ceil
 from typing import Any
 from typing import Iterator
 from typing import Protocol
@@ -38,6 +39,76 @@ def _postgres_driver() -> tuple[Any, Any]:
 def now_iso() -> str:
     """Return the current UTC timestamp in ISO-8601 format."""
     return datetime.now(UTC).isoformat()
+
+
+BLOG_CATALOG_ALLOWED_STATUSES = frozenset({"WAITING", "PROCESSING", "FINISHED", "FAILED"})
+BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
+BLOG_CATALOG_MAX_PAGE_SIZE = 200
+BLOG_CATALOG_SORT = "id_desc"
+
+
+def _normalize_catalog_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _catalog_like_pattern(value: str) -> str:
+    return f"%{value}%"
+
+
+def normalize_blog_catalog_query(
+    *,
+    page: int = 1,
+    page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+    site: str | None = None,
+    url: str | None = None,
+    status: str | None = None,
+    q: str | None = None,
+) -> dict[str, Any]:
+    """Normalize public catalog query params into one shared spec."""
+    normalized_status = _normalize_catalog_text(status)
+    if normalized_status is not None:
+        normalized_status = normalized_status.upper()
+        if normalized_status not in BLOG_CATALOG_ALLOWED_STATUSES:
+            raise ValueError(f"Unsupported crawl status: {normalized_status}")
+
+    normalized_page_size = max(1, min(page_size, BLOG_CATALOG_MAX_PAGE_SIZE))
+    normalized_page = max(page, 1)
+
+    return {
+        "page": normalized_page,
+        "page_size": normalized_page_size,
+        "site": _normalize_catalog_text(site),
+        "url": _normalize_catalog_text(url),
+        "status": normalized_status,
+        "q": _normalize_catalog_text(q),
+        "sort": BLOG_CATALOG_SORT,
+    }
+
+
+def _catalog_response(
+    *,
+    items: list[dict[str, Any]],
+    page: int,
+    page_size: int,
+    total_items: int,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    total_pages = ceil(total_items / page_size) if total_items else 0
+    effective_page = 1 if total_pages == 0 else min(page, total_pages)
+    return {
+        "items": items,
+        "page": effective_page,
+        "page_size": page_size,
+        "total_items": total_items,
+        "total_pages": total_pages,
+        "has_next": total_pages > 0 and effective_page < total_pages,
+        "has_prev": total_pages > 0 and effective_page > 1,
+        "filters": filters,
+        "sort": BLOG_CATALOG_SORT,
+    }
 
 
 class RepositoryProtocol(Protocol):
@@ -80,6 +151,17 @@ class RepositoryProtocol(Protocol):
     ) -> None: ...
 
     def list_blogs(self) -> list[dict[str, Any]]: ...
+
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]: ...
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None: ...
 
@@ -280,6 +362,81 @@ class Repository:
                 """
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one page of blogs with server-side filtering."""
+        query = normalize_blog_catalog_query(
+            page=page,
+            page_size=page_size,
+            site=site,
+            url=url,
+            status=status,
+            q=q,
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query["site"] is not None:
+            pattern = _catalog_like_pattern(query["site"])
+            clauses.append("(LOWER(COALESCE(title, '')) LIKE LOWER(?) OR LOWER(domain) LIKE LOWER(?))")
+            params.extend([pattern, pattern])
+        if query["url"] is not None:
+            pattern = _catalog_like_pattern(query["url"])
+            clauses.append("(LOWER(url) LIKE LOWER(?) OR LOWER(normalized_url) LIKE LOWER(?))")
+            params.extend([pattern, pattern])
+        if query["status"] is not None:
+            clauses.append("crawl_status = ?")
+            params.append(query["status"])
+        if query["q"] is not None:
+            pattern = _catalog_like_pattern(query["q"])
+            clauses.append(
+                "(LOWER(COALESCE(title, '')) LIKE LOWER(?) OR LOWER(domain) LIKE LOWER(?) OR LOWER(url) LIKE LOWER(?))"
+            )
+            params.extend([pattern, pattern, pattern])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        select_sql = """
+            SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                   friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+            FROM blogs
+        """
+        with self.connect() as connection:
+            total_row = connection.execute(
+                f"SELECT COUNT(*) AS total_items FROM blogs {where_sql}",
+                params,
+            ).fetchone()
+            total_items = int(total_row["total_items"] or 0)
+            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
+            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
+            offset = (effective_page - 1) * query["page_size"]
+            rows = connection.execute(
+                f"""
+                {select_sql}
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, query["page_size"], offset],
+            ).fetchall()
+        return _catalog_response(
+            items=[dict(row) for row in rows],
+            page=effective_page,
+            page_size=query["page_size"],
+            total_items=total_items,
+            filters={
+                "q": query["q"],
+                "site": query["site"],
+                "url": query["url"],
+                "status": query["status"],
+            },
+        )
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         """Return one blog by id or None when absent."""
@@ -577,6 +734,79 @@ class PostgresRepository:
                 """
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one page of blogs with server-side filtering."""
+        query = normalize_blog_catalog_query(
+            page=page,
+            page_size=page_size,
+            site=site,
+            url=url,
+            status=status,
+            q=q,
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query["site"] is not None:
+            pattern = _catalog_like_pattern(query["site"])
+            clauses.append("(COALESCE(title, '') ILIKE %s OR domain ILIKE %s)")
+            params.extend([pattern, pattern])
+        if query["url"] is not None:
+            pattern = _catalog_like_pattern(query["url"])
+            clauses.append("(url ILIKE %s OR normalized_url ILIKE %s)")
+            params.extend([pattern, pattern])
+        if query["status"] is not None:
+            clauses.append("crawl_status = %s")
+            params.append(query["status"])
+        if query["q"] is not None:
+            pattern = _catalog_like_pattern(query["q"])
+            clauses.append("(COALESCE(title, '') ILIKE %s OR domain ILIKE %s OR url ILIKE %s)")
+            params.extend([pattern, pattern, pattern])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        select_sql = """
+            SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                   friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+            FROM blogs
+        """
+        with self.connect() as connection:
+            total_row = connection.execute(
+                f"SELECT COUNT(*) AS total_items FROM blogs {where_sql}",
+                params,
+            ).fetchone()
+            total_items = int(total_row["total_items"] or 0)
+            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
+            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
+            offset = (effective_page - 1) * query["page_size"]
+            rows = connection.execute(
+                f"""
+                {select_sql}
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+                """,
+                [*params, query["page_size"], offset],
+            ).fetchall()
+        return _catalog_response(
+            items=[dict(row) for row in rows],
+            page=effective_page,
+            page_size=query["page_size"],
+            total_items=total_items,
+            filters={
+                "q": query["q"],
+                "site": query["site"],
+                "url": query["url"],
+                "status": query["status"],
+            },
+        )
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         """Return one blog by id or None when absent."""
