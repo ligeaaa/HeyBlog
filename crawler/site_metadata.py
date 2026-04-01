@@ -40,6 +40,11 @@ def _icon_priority(rel_tokens: set[str]) -> int | None:
     return None
 
 
+def _is_http_url(candidate_url: str) -> bool:
+    parsed = urlsplit(candidate_url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def _pick_icon_url(page_url: str, soup: BeautifulSoup) -> str | None:
     ranked_candidates: list[tuple[int, int, str]] = []
     for index, link in enumerate(soup.find_all("link", href=True)):
@@ -48,15 +53,18 @@ def _pick_icon_url(page_url: str, soup: BeautifulSoup) -> str | None:
         href = str(link.get("href", "")).strip()
         if priority is None or not href:
             continue
-        ranked_candidates.append((priority, index, urljoin(page_url, href)))
+        resolved_href = urljoin(page_url, href)
+        if not _is_http_url(resolved_href):
+            continue
+        ranked_candidates.append((priority, index, resolved_href))
 
     if ranked_candidates:
         ranked_candidates.sort(key=lambda item: (item[0], item[1]))
         return ranked_candidates[0][2]
 
-    parsed = urlsplit(page_url)
-    if not parsed.scheme or not parsed.netloc:
+    if not _is_http_url(page_url):
         return None
+    parsed = urlsplit(page_url)
     return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
 
 

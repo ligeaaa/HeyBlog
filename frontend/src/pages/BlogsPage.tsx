@@ -28,7 +28,6 @@ export function BlogsPage() {
                   <th>站点</th>
                   <th>URL</th>
                   <th>Status</th>
-                  <th>Depth</th>
                   <th>Edges</th>
                   <th>Updated</th>
                 </tr>
@@ -57,7 +56,6 @@ export function BlogsPage() {
                         {blog.crawl_status}
                       </span>
                     </td>
-                    <td>{blog.depth}</td>
                     <td>{blog.friend_links_count}</td>
                     <td>{new Date(blog.updated_at).toLocaleString()}</td>
                   </tr>

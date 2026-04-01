@@ -20,7 +20,6 @@ def test_build_repository_uses_sqlite_when_psycopg_is_missing(
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
-        depth=0,
         source_blog_id=None,
     )
 
@@ -49,7 +48,6 @@ def test_sqlite_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) ->
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
-        depth=0,
         source_blog_id=None,
     )
     assert inserted is True
@@ -57,7 +55,6 @@ def test_sqlite_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) ->
         url="https://friend.example.com/",
         normalized_url="https://friend.example.com/",
         domain="friend.example.com",
-        depth=1,
         source_blog_id=first_blog_id,
     )
     assert inserted is True
@@ -92,7 +89,6 @@ def test_sqlite_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) ->
         url="https://reset.example.com/",
         normalized_url="https://reset.example.com/",
         domain="reset.example.com",
-        depth=0,
         source_blog_id=None,
     )
     assert inserted is True
@@ -106,7 +102,6 @@ def test_sqlite_repository_mark_blog_result_persists_site_metadata(tmp_path: Pat
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
-        depth=0,
         source_blog_id=None,
     )
     assert inserted is True
@@ -127,8 +122,65 @@ def test_sqlite_repository_mark_blog_result_persists_site_metadata(tmp_path: Pat
     assert blog["icon_url"] == "https://blog.example.com/favicon.ico"
 
 
-def test_build_repository_migrates_existing_sqlite_blog_table_with_metadata_columns(tmp_path: Path) -> None:
-    """Repository init should add title/icon columns to an existing SQLite blogs table."""
+def test_sqlite_repository_requeues_processing_blogs_on_restart(tmp_path: Path) -> None:
+    """Repository init should recover interrupted PROCESSING blogs back to WAITING."""
+    db_path = tmp_path / "db.sqlite"
+    repository = repository_module.build_repository(db_path=db_path)
+    blog_id, inserted = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+        source_blog_id=None,
+    )
+    assert inserted is True
+
+    claimed = repository.get_next_waiting_blog()
+    assert claimed is not None
+    assert claimed["id"] == blog_id
+    assert repository.stats()["processing_tasks"] == 1
+
+    recovered = repository_module.build_repository(db_path=db_path)
+
+    stats = recovered.stats()
+    assert stats["processing_tasks"] == 0
+    assert stats["pending_tasks"] == 1
+
+    blog = recovered.get_blog(blog_id)
+    assert blog is not None
+    assert blog["crawl_status"] == "WAITING"
+
+    reclaimed = recovered.get_next_waiting_blog()
+    assert reclaimed is not None
+    assert reclaimed["id"] == blog_id
+
+
+def test_sqlite_repository_claims_waiting_blogs_in_id_order(tmp_path: Path) -> None:
+    """Queue claiming should be a stable FIFO over WAITING rows."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    first_blog_id, _ = repository.upsert_blog(
+        url="https://first.example/",
+        normalized_url="https://first.example/",
+        domain="first.example",
+        source_blog_id=None,
+    )
+    second_blog_id, _ = repository.upsert_blog(
+        url="https://second.example/",
+        normalized_url="https://second.example/",
+        domain="second.example",
+        source_blog_id=first_blog_id,
+    )
+
+    first_claim = repository.get_next_waiting_blog()
+    second_claim = repository.get_next_waiting_blog()
+
+    assert first_claim is not None
+    assert second_claim is not None
+    assert first_claim["id"] == first_blog_id
+    assert second_claim["id"] == second_blog_id
+
+
+def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_path: Path) -> None:
+    """Repository init should rebuild legacy SQLite blog tables to drop depth."""
     db_path = tmp_path / "legacy.sqlite"
     connection = sqlite3.connect(db_path)
     connection.executescript(
@@ -167,10 +219,24 @@ def test_build_repository_migrates_existing_sqlite_blog_table_with_metadata_colu
         );
         """
     )
+    connection.execute(
+        """
+        INSERT INTO blogs (
+          id, url, normalized_url, domain, status_code, crawl_status,
+          friend_links_count, depth, source_blog_id, last_crawled_at,
+          created_at, updated_at
+        )
+        VALUES (
+          1, 'https://blog.example.com/', 'https://blog.example.com/', 'blog.example.com',
+          200, 'FINISHED', 2, 0, NULL, NULL,
+          '2026-03-31T00:00:00Z', '2026-03-31T00:00:00Z'
+        )
+        """
+    )
     connection.commit()
     connection.close()
 
-    repository_module.build_repository(db_path=db_path)
+    repository = repository_module.build_repository(db_path=db_path)
 
     migrated = sqlite3.connect(db_path)
     columns = {
@@ -181,3 +247,8 @@ def test_build_repository_migrates_existing_sqlite_blog_table_with_metadata_colu
 
     assert "title" in columns
     assert "icon_url" in columns
+    assert "depth" not in columns
+    blog = repository.get_blog(1)
+    assert blog is not None
+    assert blog["source_blog_id"] is None
+    assert "depth" not in blog

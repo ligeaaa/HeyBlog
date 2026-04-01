@@ -53,7 +53,6 @@ class PersistenceHttpClient:
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
         payload = self._post(
@@ -62,14 +61,13 @@ class PersistenceHttpClient:
                 "url": url,
                 "normalized_url": normalized_url,
                 "domain": domain,
-                "depth": depth,
                 "source_blog_id": source_blog_id,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next", {"max_depth": max_depth})
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        return self._get("/internal/queue/next")
 
     def mark_blog_result(
         self,

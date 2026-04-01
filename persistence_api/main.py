@@ -29,7 +29,6 @@ class UpsertBlogRequest(BaseModel):
     url: str
     normalized_url: str
     domain: str
-    depth: int
     source_blog_id: int | None
 
 
@@ -86,8 +85,8 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         return get_state().repository.list_blogs()
 
     @app.get("/internal/queue/next")
-    def next_waiting(max_depth: int) -> dict[str, Any] | None:
-        row = get_state().repository.get_next_waiting_blog(max_depth)
+    def next_waiting() -> dict[str, Any] | None:
+        row = get_state().repository.get_next_waiting_blog()
         return dict(row) if row else None
 
     @app.get("/internal/blogs/{blog_id}")

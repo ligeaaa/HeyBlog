@@ -56,7 +56,6 @@ class CrawlPipeline:
                     url=raw_url,
                     normalized_url=normalized.normalized_url,
                     domain=normalized.domain,
-                    depth=0,
                     source_blog_id=None,
                 )
                 created += int(inserted)
@@ -85,7 +84,7 @@ class CrawlPipeline:
         while processed < limit:
             if should_stop and should_stop():
                 break
-            blog = self.repository.get_next_waiting_blog(self.settings.max_depth)
+            blog = self.repository.get_next_waiting_blog()
             if blog is None:
                 break
             if on_blog_start is not None:
@@ -198,7 +197,6 @@ class CrawlPipeline:
                 url=link.url,
                 normalized_url=normalized.normalized_url,
                 domain=normalized.domain,
-                depth=int(blog["depth"]) + 1,
                 source_blog_id=int(blog["id"]),
             )
             self.repository.add_edge(

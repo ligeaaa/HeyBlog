@@ -145,7 +145,6 @@
 
 - `total_blogs`
 - `total_edges`
-- `max_depth`
 - `average_friend_links`
 - `status_counts`
 - `pending_tasks`
@@ -155,7 +154,6 @@
 
 字段语义：
 
-- `max_depth`: 当前已入库 blog 的最大深度
 - `average_friend_links`: blog 的平均友链发现数
 - `status_counts`: 按 `crawl_status` 分组后的原始计数
 
@@ -173,6 +171,7 @@
 - `title` 来自站点主页的 `<title>`。
 - `icon_url` 优先使用主页里声明的 icon 链接；若页面未声明，当前实现会乐观回退到 `${origin}/favicon.ico`。
 - 这两个字段都允许为 `null`，前端应回退到 `domain` 与默认占位图标。
+- `source_blog_id` 保留为来源 lineage/provenance 信息，但当前不再参与队列调度、统计、前端展示或基于深度的任何行为。
 
 #### `GET /api/blogs/{blog_id}`
 
@@ -667,18 +666,14 @@
 
 用途：返回全部 blog 记录。
 
-### `GET /internal/queue/next?max_depth=...`
+### `GET /internal/queue/next`
 
 用途：取出下一个待处理 blog，并立即将其状态更新为 `PROCESSING`。
-
-查询参数：
-
-- `max_depth`: 最大抓取深度
 
 行为说明：
 
 - 只从 `crawl_status = 'WAITING'` 中选择
-- 按 `depth ASC, id ASC` 排序
+- 按 `id ASC` 排序
 - 选中后立刻更新为 `PROCESSING`
 
 ### `GET /internal/blogs/{blog_id}`
@@ -696,7 +691,6 @@
   "url": "https://example.com/",
   "normalized_url": "https://example.com/",
   "domain": "example.com",
-  "depth": 0,
   "source_blog_id": null
 }
 ```
@@ -798,7 +792,6 @@
 
 - `total_blogs`
 - `total_edges`
-- `max_depth`
 - `average_friend_links`
 - `status_counts`
 - `pending_tasks`
@@ -899,8 +892,7 @@
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
 | `crawl_status` | `string` | 当前抓取状态，常见值有 `WAITING` `PROCESSING` `FAILED` `FINISHED` |
 | `friend_links_count` | `number` | 最近一次抓取发现的友链数 |
-| `depth` | `number` | 图遍历深度 |
-| `source_blog_id` | `number \| null` | 来源 blog id |
+| `source_blog_id` | `number \| null` | 来源 blog id，仅作为 lineage/provenance 使用 |
 | `last_crawled_at` | `string \| null` | 最近抓取时间 |
 | `created_at` | `string` | 创建时间 |
 | `updated_at` | `string` | 更新时间 |
@@ -957,7 +949,6 @@
 | --- | --- | --- |
 | `total_blogs` | `number` | blog 总数 |
 | `total_edges` | `number` | edge 总数 |
-| `max_depth` | `number` | 最大深度 |
 | `average_friend_links` | `number` | 平均友链数 |
 | `status_counts` | `Record<string, number>` | 各状态计数 |
 | `pending_tasks` | `number` | `WAITING` 数量 |

@@ -25,7 +25,6 @@ def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 3,
-            "depth": 0,
             "source_blog_id": None,
             "last_crawled_at": None,
             "created_at": "2026-03-31T00:00:00Z",
@@ -41,7 +40,6 @@ def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 2,
-            "depth": 1,
             "source_blog_id": 1,
             "last_crawled_at": None,
             "created_at": "2026-03-31T00:00:00Z",
@@ -57,7 +55,6 @@ def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 1,
-            "depth": 1,
             "source_blog_id": 1,
             "last_crawled_at": None,
             "created_at": "2026-03-31T00:00:00Z",
@@ -123,6 +120,28 @@ def test_core_view_sampling_is_deterministic() -> None:
 
     assert [node["id"] for node in first["nodes"]] == [node["id"] for node in second["nodes"]]
     assert first["meta"]["sampled"] is True
+
+
+def test_core_view_seed_strategy_prefers_lineage_roots() -> None:
+    blogs, edges = sample_graph()
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    payload = build_core_graph_view(snapshot, strategy="seed", limit=2)
+
+    assert payload["meta"]["strategy"] == "seed"
+    assert any(node["source_blog_id"] is None for node in payload["nodes"])
+
+
+def test_core_view_seed_strategy_falls_back_when_no_lineage_roots_exist() -> None:
+    blogs, edges = sample_graph()
+    for blog in blogs:
+        blog["source_blog_id"] = 99
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    payload = build_core_graph_view(snapshot, strategy="seed", limit=2)
+
+    assert payload["meta"]["strategy"] == "seed"
+    assert payload["nodes"]
 
 
 def test_neighborhood_view_keeps_focus_node() -> None:
@@ -203,7 +222,6 @@ def test_graph_service_refreshes_snapshot_when_repository_graph_changes(tmp_path
             "status_code": 200,
             "crawl_status": "FINISHED",
             "friend_links_count": 2,
-            "depth": 1,
             "source_blog_id": 1,
             "last_crawled_at": None,
             "created_at": "2026-03-31T00:05:00Z",

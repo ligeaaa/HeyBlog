@@ -20,7 +20,6 @@ export type BlogRecord = {
   status_code: number | null;
   crawl_status: string;
   friend_links_count: number;
-  depth: number;
   source_blog_id: number | null;
   last_crawled_at: string | null;
   created_at: string;
@@ -130,7 +129,6 @@ export type StatusPayload = {
 export type StatsPayload = {
   total_blogs: number;
   total_edges: number;
-  max_depth: number;
   average_friend_links: number;
   status_counts: Record<string, number>;
   pending_tasks: number;

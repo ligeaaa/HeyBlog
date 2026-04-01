@@ -34,7 +34,6 @@ beforeEach(() => {
           status_code: 200,
           crawl_status: "FINISHED",
           friend_links_count: 3,
-          depth: 0,
           source_blog_id: null,
           last_crawled_at: null,
           created_at: "2026-03-29T00:00:00Z",

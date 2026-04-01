@@ -53,11 +53,10 @@ class RepositoryProtocol(Protocol):
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]: ...
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None: ...
+    def get_next_waiting_blog(self) -> dict[str, Any] | None: ...
 
     def mark_blog_result(
         self,
@@ -102,6 +101,8 @@ class Repository:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             init_sqlite_db(connection)
+            self._requeue_processing_blogs(connection)
+            connection.commit()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -112,6 +113,17 @@ class Repository:
             yield connection
         finally:
             connection.close()
+
+    def _requeue_processing_blogs(self, connection: sqlite3.Connection) -> None:
+        """Recover rows left in PROCESSING after an unclean crawler shutdown."""
+        connection.execute(
+            """
+            UPDATE blogs
+            SET crawl_status = 'WAITING', updated_at = ?
+            WHERE crawl_status = 'PROCESSING'
+            """,
+            (now_iso(),),
+        )
 
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
@@ -133,7 +145,6 @@ class Repository:
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
         """Insert a blog if absent and return its id with insertion status."""
@@ -149,28 +160,27 @@ class Repository:
             cursor = connection.execute(
                 """
                 INSERT INTO blogs (
-                  url, normalized_url, domain, crawl_status, depth,
+                  url, normalized_url, domain, crawl_status,
                   source_blog_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 'WAITING', ?, ?, ?, ?)
+                VALUES (?, ?, ?, 'WAITING', ?, ?, ?)
                 """,
-                (url, normalized_url, domain, depth, source_blog_id, timestamp, timestamp),
+                (url, normalized_url, domain, source_blog_id, timestamp, timestamp),
             )
             connection.commit()
             return int(cursor.lastrowid), True
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None:
-        """Fetch and reserve the next waiting blog up to the provided depth."""
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        """Fetch and reserve the next waiting blog in stable insertion order."""
         with self.connect() as connection:
             row = connection.execute(
                 """
                 SELECT *
                 FROM blogs
-                WHERE crawl_status = 'WAITING' AND depth <= ?
-                ORDER BY depth ASC, id ASC
+                WHERE crawl_status = 'WAITING'
+                ORDER BY id ASC
                 LIMIT 1
                 """,
-                (max_depth,),
             ).fetchone()
             if row is None:
                 return None
@@ -263,7 +273,7 @@ class Repository:
             rows = connection.execute(
                 """
                 SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
-                       friend_links_count, depth, source_blog_id, last_crawled_at,
+                       friend_links_count, source_blog_id, last_crawled_at,
                        created_at, updated_at
                 FROM blogs
                 ORDER BY id ASC
@@ -275,7 +285,12 @@ class Repository:
         """Return one blog by id or None when absent."""
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM blogs WHERE id = ?",
+                """
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                       friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+                FROM blogs
+                WHERE id = ?
+                """,
                 (blog_id,),
             ).fetchone()
             return dict(row) if row else None
@@ -324,14 +339,12 @@ class Repository:
                 SELECT
                   (SELECT COUNT(*) FROM blogs) AS total_blogs,
                   (SELECT COUNT(*) FROM edges) AS total_edges,
-                  (SELECT MAX(depth) FROM blogs) AS max_depth,
                   (SELECT AVG(friend_links_count) FROM blogs) AS average_friend_links
                 """
             ).fetchone()
             return {
                 "total_blogs": int(summary["total_blogs"] or 0),
                 "total_edges": int(summary["total_edges"] or 0),
-                "max_depth": int(summary["max_depth"] or 0),
                 "average_friend_links": float(summary["average_friend_links"] or 0.0),
                 "status_counts": status_counts,
                 "pending_tasks": int(status_counts.get("WAITING", 0)),
@@ -374,6 +387,7 @@ class PostgresRepository:
         self.db_dsn = db_dsn
         with self.connect(wait_for_ready=True) as connection:
             init_postgres_db(connection)
+            self._requeue_processing_blogs(connection)
 
     @contextmanager
     def connect(self, *, wait_for_ready: bool = False) -> Iterator[psycopg.Connection[Any]]:
@@ -399,6 +413,17 @@ class PostgresRepository:
         assert last_error is not None
         raise last_error
 
+    def _requeue_processing_blogs(self, connection: psycopg.Connection[Any]) -> None:
+        """Recover rows left in PROCESSING after an unclean crawler shutdown."""
+        connection.execute(
+            """
+            UPDATE blogs
+            SET crawl_status = 'WAITING', updated_at = %s
+            WHERE crawl_status = 'PROCESSING'
+            """,
+            (now_iso(),),
+        )
+
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
     ) -> None:
@@ -418,7 +443,6 @@ class PostgresRepository:
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
         """Insert a blog if absent and return its id with insertion status."""
@@ -434,29 +458,28 @@ class PostgresRepository:
             created = connection.execute(
                 """
                 INSERT INTO blogs (
-                  url, normalized_url, domain, crawl_status, depth,
+                  url, normalized_url, domain, crawl_status,
                   source_blog_id, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, 'WAITING', %s, %s, %s, %s)
+                VALUES (%s, %s, %s, 'WAITING', %s, %s, %s)
                 RETURNING id
                 """,
-                (url, normalized_url, domain, depth, source_blog_id, timestamp, timestamp),
+                (url, normalized_url, domain, source_blog_id, timestamp, timestamp),
             ).fetchone()
             return int(created["id"]), True
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None:
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
         """Fetch and reserve the next waiting blog using row-level locks."""
         with self.connect() as connection:
             row = connection.execute(
                 """
                 SELECT *
                 FROM blogs
-                WHERE crawl_status = 'WAITING' AND depth <= %s
-                ORDER BY depth ASC, id ASC
+                WHERE crawl_status = 'WAITING'
+                ORDER BY id ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                (max_depth,),
             ).fetchone()
             if row is None:
                 return None
@@ -547,7 +570,7 @@ class PostgresRepository:
             rows = connection.execute(
                 """
                 SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
-                       friend_links_count, depth, source_blog_id, last_crawled_at,
+                       friend_links_count, source_blog_id, last_crawled_at,
                        created_at, updated_at
                 FROM blogs
                 ORDER BY id ASC
@@ -559,7 +582,12 @@ class PostgresRepository:
         """Return one blog by id or None when absent."""
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM blogs WHERE id = %s",
+                """
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                       friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+                FROM blogs
+                WHERE id = %s
+                """,
                 (blog_id,),
             ).fetchone()
             return dict(row) if row else None
@@ -608,14 +636,12 @@ class PostgresRepository:
                 SELECT
                   (SELECT COUNT(*) FROM blogs) AS total_blogs,
                   (SELECT COUNT(*) FROM edges) AS total_edges,
-                  (SELECT MAX(depth) FROM blogs) AS max_depth,
                   (SELECT AVG(friend_links_count) FROM blogs) AS average_friend_links
                 """
             ).fetchone()
             return {
                 "total_blogs": int(summary["total_blogs"] or 0),
                 "total_edges": int(summary["total_edges"] or 0),
-                "max_depth": int(summary["max_depth"] or 0),
                 "average_friend_links": float(summary["average_friend_links"] or 0.0),
                 "status_counts": status_counts,
                 "pending_tasks": int(status_counts.get("WAITING", 0)),

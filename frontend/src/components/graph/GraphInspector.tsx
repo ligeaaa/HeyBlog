@@ -33,7 +33,6 @@ export function GraphInspector({ details, lastUpdatedAt, viewMeta }: Props) {
             />
           </div>
           <dl className="graph-stat-grid">
-            <Stat label="Depth" value={details.depth} />
             <Stat label="Degree" value={details.degree} />
             <Stat label="Outgoing" value={details.outgoingCount} />
             <Stat label="Incoming" value={details.incomingCount} />

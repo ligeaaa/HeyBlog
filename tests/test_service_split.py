@@ -80,7 +80,6 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
             "url": "https://blog.example.com/",
             "normalized_url": "https://blog.example.com/",
             "domain": "blog.example.com",
-            "depth": 0,
             "source_blog_id": None,
         },
     )
@@ -144,7 +143,6 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "total_blogs": 3,
                 "total_edges": 4,
                 "status_counts": {},
-                "max_depth": 1,
                 "average_friend_links": 1.0,
             },
             "list_blogs": lambda self: [
@@ -335,7 +333,6 @@ def test_backend_database_reset_requires_idle_runtime() -> None:
                 "total_blogs": 0,
                 "total_edges": 0,
                 "status_counts": {},
-                "max_depth": 0,
                 "average_friend_links": 0.0,
             },
             "list_blogs": lambda self: [],
