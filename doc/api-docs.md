@@ -917,8 +917,8 @@
 
 来源：
 
-- [persistence_api/repository.py](/Users/lige/code/HeyBlog/persistence_api/repository.py)
-- [frontend/src/lib/api.ts](/Users/lige/code/HeyBlog/frontend/src/lib/api.ts)
+- [persistence_api/repository.py](persistence_api/repository.py)
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
 
 字段：
 
@@ -942,8 +942,8 @@
 
 来源：
 
-- [persistence_api/repository.py](/Users/lige/code/HeyBlog/persistence_api/repository.py)
-- [frontend/src/lib/api.ts](/Users/lige/code/HeyBlog/frontend/src/lib/api.ts)
+- [persistence_api/repository.py](persistence_api/repository.py)
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
 
 字段：
 

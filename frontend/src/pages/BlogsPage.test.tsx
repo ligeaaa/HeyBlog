@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
@@ -142,25 +142,26 @@ test("renders site identity from the catalog query", () => {
 });
 
 test("debounces filter changes and resets paging in the URL", async () => {
-  const user = userEvent.setup();
+  vi.useFakeTimers();
   const router = renderBlogsPage("/blogs?page=3&status=FAILED");
 
   const siteInput = screen.getByRole("searchbox", { name: "站点" });
-  await user.clear(siteInput);
-  await user.type(siteInput, "gamma");
+  fireEvent.change(siteInput, { target: { value: "gamma" } });
 
   expect(router.state.location.search).toBe("?page=3&status=FAILED");
 
-  await waitFor(() => {
-    expect(router.state.location.search).toBe("?site=gamma&status=FAILED");
-    expect(mockedUseBlogCatalog).toHaveBeenLastCalledWith({
-      page: 1,
-      pageSize: 50,
-      q: null,
-      site: "gamma",
-      url: null,
-      status: "FAILED",
-    });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+
+  expect(router.state.location.search).toBe("?site=gamma&status=FAILED");
+  expect(mockedUseBlogCatalog).toHaveBeenLastCalledWith({
+    page: 1,
+    pageSize: 50,
+    q: null,
+    site: "gamma",
+    url: null,
+    status: "FAILED",
   });
 });
 

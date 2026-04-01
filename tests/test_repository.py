@@ -278,6 +278,10 @@ def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_
     assert blog["source_blog_id"] is None
     assert "depth" not in blog
     assert len(repository.list_edges()) == 1
+    logs = repository.list_logs()
+    assert len(logs) == 1
+    assert logs[0]["blog_id"] == 1
+    assert logs[0]["message"] == "legacy row"
 
 
 def test_sqlite_repository_blog_catalog_paginates_and_filters(tmp_path: Path) -> None:

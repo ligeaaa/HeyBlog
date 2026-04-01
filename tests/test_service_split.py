@@ -91,7 +91,10 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert blogs.status_code == 200
     assert blogs.json()[0]["domain"] == "blog.example.com"
 
-    catalog = client.get("/internal/blogs/catalog?page=0&page_size=500&status= finished ")
+    catalog = client.get(
+        "/internal/blogs/catalog",
+        params={"page": 0, "page_size": 500, "status": " finished "},
+    )
     assert catalog.status_code == 200
     assert catalog.json()["page"] == 1
     assert catalog.json()["page_size"] == 200
