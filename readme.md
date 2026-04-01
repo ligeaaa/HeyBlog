@@ -1,101 +1,157 @@
 # HeyBlog
 
-HeyBlog is an MVP crawler for the blog friend-link ecosystem. It starts from a set
-of seed blog URLs, discovers friend-link pages, extracts outbound blog links,
-stores the resulting graph in SQLite for local monolith mode, and now ships with
-a split-service runtime topology for frontend, backend, crawler, search,
-`persistence-api`, and `persistence-db` Postgres workloads.
+HeyBlog is a split-service MVP for crawling the blog friend-link ecosystem. It starts
+from `seed.csv`, discovers friend-link pages, extracts outbound blog links, stores the
+resulting graph in SQLite or PostgreSQL, and serves a browser panel plus public API on
+top of `frontend` + `backend` + `crawler` + `search` + `persistence-api`.
 
-## Current MVP Scope
+## Runtime Model
 
-- Seed import from `seed.csv`
-- SQLite-backed persistence for blogs, edges, and crawl logs
-- HTTP-first crawl flow with friend-link discovery and extraction
-- REST APIs for status, blogs, blog detail, edges, graph, stats, and logs
-- Export support for `nodes.csv`, `edges.csv`, and `graph.json`
+The real implementation lives in the top-level service packages:
 
-## Quick Start
+- `frontend/`
+- `backend/`
+- `crawler/`
+- `search/`
+- `persistence_api/`
+- `shared/`
+
+`services/` is only a compatibility shim layer for startup entrypoints. New business
+logic should stay in the top-level service packages.
+
+## Choose A Start Path
+
+### 1. API-only / backend minimal path
+
+Use this when you want to debug HTTP contracts or backend behavior without the browser
+panel. The backend still depends on the three internal services, so the smallest useful
+local stack is `persistence-api + crawler + search + backend`.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-python -m uvicorn backend.main:app --reload
 ```
 
-The backend API will be available at `http://127.0.0.1:8000`, with interactive
-docs at `/docs`.
+Start the services in separate terminals:
 
-The split frontend panel is available at `http://127.0.0.1:3000/` when the
-frontend service is running. The runtime now uses the split topology with
-`persistence-api + persistence-db`.
+```bash
+python -m uvicorn persistence_api.main:app --reload --port 8030
+```
 
-## Seed Blogs
+```bash
+HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
+HEYBLOG_SEED_PATH=$(pwd)/seed.csv \
+HEYBLOG_EXPORT_DIR=$(pwd)/data/exports \
+python -m uvicorn crawler.main:app --reload --port 8010
+```
 
-The initial seed list in `seed.csv` contains:
+```bash
+HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
+HEYBLOG_SEARCH_CACHE_DIR=$(pwd)/data/search-cache \
+python -m uvicorn search.main:app --reload --port 8020
+```
 
-- `https://blog.elykia.cn/`
-- `https://www.qladgk.com/`
-- `https://www.imaegoo.com/`
+```bash
+HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
+HEYBLOG_CRAWLER_BASE_URL=http://127.0.0.1:8010 \
+HEYBLOG_SEARCH_BASE_URL=http://127.0.0.1:8020 \
+python -m uvicorn backend.main:app --reload --port 8000
+```
 
-## Suggested Flow
+Then verify the public API:
 
-1. Start the frontend, backend, crawler, search, persistence-api, and persistence-db services.
-2. Call `POST /api/crawl/bootstrap` through the frontend or backend.
-3. Call `POST /api/crawl/run` to process pending blogs.
-4. Use the read APIs to inspect status, nodes, edges, stats, logs, and search.
-5. Read exported graph artifacts under `volumes/exports/`.
+```bash
+curl http://127.0.0.1:8000/api/status
+```
 
-## Docker
+### 2. Docker split runtime
+
+Use this when you want the full local topology, including the browser panel and
+PostgreSQL-backed persistence:
 
 ```bash
 docker compose up --build
 ```
 
-This starts:
+Services and default ports:
 
-- `frontend` on `http://127.0.0.1:3000`
-- `backend` on `http://127.0.0.1:8000`
-- `crawler` on `http://127.0.0.1:8010`
-- `search` on `http://127.0.0.1:8020`
-- `persistence-api` on `http://127.0.0.1:8030`
-- `persistence-db` (PostgreSQL) on `127.0.0.1:5432`
+- `frontend`: `http://127.0.0.1:3000`
+- `backend`: `http://127.0.0.1:8000`
+- `crawler`: `http://127.0.0.1:8010`
+- `search`: `http://127.0.0.1:8020`
+- `persistence-api`: `http://127.0.0.1:8030`
+- `persistence-db`: `127.0.0.1:5432`
 
-The split services communicate over the shared Docker network and persist data to:
+Docker volumes persist runtime data under:
 
-- `./volumes/postgres`
-- `./volumes/exports`
-- `./volumes/search-cache`
+- `volumes/postgres`
+- `volumes/exports`
+- `volumes/search-cache`
+
+### 3. Frontend development path
+
+Use this when you are changing `frontend/src/` and want the panel plus the real backend
+API behind it.
+
+Install frontend dependencies once:
+
+```bash
+cd frontend
+npm install
+```
+
+Build the SPA bundle:
+
+```bash
+cd frontend
+npm run build
+```
+
+Serve the built frontend against the local backend:
+
+```bash
+HEYBLOG_BACKEND_BASE_URL=http://127.0.0.1:8000 \
+python -m uvicorn frontend.server:app --reload --port 3000
+```
+
+Current caveat: `frontend/src/lib/api.ts` uses same-origin `/api/*`, but
+`frontend/vite.config.ts` does not currently define a dev proxy. If you run
+`cd frontend && npm run dev`, you will need your own `/api` reverse proxy or mocked API.
+
+## Suggested Flow
+
+1. Import seeds with `POST /api/crawl/bootstrap`.
+2. Process pending blogs with `POST /api/crawl/run` or runtime batch controls.
+3. Inspect status, blogs, graph, search, and logs through the public `/api/*` surface.
+4. Read exported graph artifacts under `data/exports/` or `volumes/exports/`.
+
+## Documentation Map
+
+- [Project structure](doc/project-structure.md): directories, source-of-truth packages, and entrypoints
+- [Services overview](doc/services-overview.md): service responsibilities, dependencies, and edit boundaries
+- [Service architecture](doc/service-architecture.md): runtime call chains and data ownership
+- [API docs](doc/api-docs.md): public and internal HTTP contracts
+- [Config reference](doc/config-reference.md): environment variables, defaults, and service consumers
+- [Developer workflows](doc/developer-workflows.md): where to start for common tasks
+
+## Development Rules
+
+- If you change API routes, payload shapes, or calling patterns, update [doc/api-docs.md](doc/api-docs.md) in the same change.
+- Prefer implementation changes in `backend/`, `crawler/`, `search/`, `persistence_api/`, and `frontend/`, not under `services/`.
+- Keep `shared/` narrow: configuration, stable HTTP clients, and small cross-service helpers only.
 
 ## Tests
 
-The repository keeps tests centralized under `tests/`. New tests should prefer
-importing from the top-level packages such as `crawler/`, `backend/`, `search/`,
-`persistence_api/`, `frontend/`, and `shared/`.
+Python tests live under `tests/`:
 
-## Shared Boundary
+```bash
+pytest
+```
 
-`shared/` is intentionally narrow. Only stable, cross-service utilities belong
-there:
+Frontend tests live under `frontend/`:
 
-- runtime configuration
-- small reusable HTTP clients
-- pure data helpers or contracts
-
-Do not place service-specific business logic in `shared/`. If code only serves
-one deployable unit, it should live in that service package instead.
-
-## services/ Policy
-
-`services/` is retained only as the thinnest startup compatibility layer.
-
-- Allowed: service entrypoint shims such as `services/backend/main.py`
-- Not allowed: new business logic, runtime state, repository code, crawler logic,
-  or service-specific domain code
-
-Current decision:
-
-- Keep `services/*/main.py` as transitional entry shims for one migration window
-- Do not add new non-entrypoint modules under `services/`
-- Prefer top-level service packages (`backend/`, `crawler/`, `search/`,
-  `persistence_api/`, `frontend/`) for all new implementation code
+```bash
+cd frontend
+npm test
+```
