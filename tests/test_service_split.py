@@ -87,6 +87,18 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert created.status_code == 200
     assert created.json()["inserted"] is True
 
+    related = client.post(
+        "/internal/blogs/upsert",
+        json={
+            "url": "https://friend.example.com/",
+            "normalized_url": "https://friend.example.com/",
+            "domain": "friend.example.com",
+            "source_blog_id": 1,
+        },
+    )
+    assert related.status_code == 200
+    assert related.json()["inserted"] is True
+
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
     assert blogs.json()[0]["domain"] == "blog.example.com"
@@ -116,14 +128,48 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     )
     assert updated.status_code == 200
 
+    related_updated = client.post(
+        "/internal/blogs/2/result",
+        json={
+            "crawl_status": "FINISHED",
+            "status_code": 200,
+            "friend_links_count": 1,
+            "metadata_captured": True,
+            "title": "Friend Example",
+            "icon_url": "https://friend.example.com/favicon.ico",
+        },
+    )
+    assert related_updated.status_code == 200
+
+    edge = client.post(
+        "/internal/edges",
+        json={
+            "from_blog_id": 2,
+            "to_blog_id": 1,
+            "link_url_raw": "https://blog.example.com/",
+            "link_text": "Main blog",
+        },
+    )
+    assert edge.status_code == 200
+
     blog = client.get("/internal/blogs/1")
     assert blog.status_code == 200
     assert blog.json()["title"] == "Blog Example"
     assert blog.json()["icon_url"] == "https://blog.example.com/favicon.ico"
 
+    detail = client.get("/internal/blogs/1/detail")
+    assert detail.status_code == 200
+    assert detail.json()["incoming_edges"][0]["neighbor_blog"] == {
+        "id": 2,
+        "domain": "friend.example.com",
+        "title": "Friend Example",
+        "icon_url": "https://friend.example.com/favicon.ico",
+    }
+    assert detail.json()["outgoing_edges"] == []
+
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
-    assert reset.json()["blogs_deleted"] == 1
+    assert reset.json()["blogs_deleted"] == 2
 
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
@@ -194,6 +240,44 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "domain": "blog.example.com",
                 "title": "Blog Example",
                 "icon_url": "https://blog.example.com/favicon.ico",
+            },
+            "get_blog_detail": lambda self, blog_id: {
+                "id": blog_id,
+                "domain": "blog.example.com",
+                "title": "Blog Example",
+                "icon_url": "https://blog.example.com/favicon.ico",
+                "incoming_edges": [
+                    {
+                        "id": 10,
+                        "from_blog_id": 2,
+                        "to_blog_id": blog_id,
+                        "link_url_raw": "https://blog.example.com",
+                        "link_text": "Blog Example",
+                        "discovered_at": "2026-03-31T00:00:00Z",
+                        "neighbor_blog": {
+                            "id": 2,
+                            "domain": "friend.example.com",
+                            "title": "Friend Example",
+                            "icon_url": "https://friend.example.com/favicon.ico",
+                        },
+                    }
+                ],
+                "outgoing_edges": [
+                    {
+                        "id": 11,
+                        "from_blog_id": blog_id,
+                        "to_blog_id": 3,
+                        "link_url_raw": "https://catalog.example.com",
+                        "link_text": "Catalog Example",
+                        "discovered_at": "2026-03-31T00:00:00Z",
+                        "neighbor_blog": {
+                            "id": 3,
+                            "domain": "catalog.example.com",
+                            "title": "Catalog Example",
+                            "icon_url": "https://catalog.example.com/favicon.ico",
+                        },
+                    }
+                ],
             },
             "list_edges": lambda self: [],
             "graph": lambda self: {"nodes": [], "edges": []},
@@ -314,6 +398,11 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert blogs.status_code == 200
     assert blogs.json()[0]["title"] == "Blog Example"
     assert blogs.json()[0]["icon_url"] == "https://blog.example.com/favicon.ico"
+
+    detail = client.get("/api/blogs/1")
+    assert detail.status_code == 200
+    assert detail.json()["incoming_edges"][0]["neighbor_blog"]["domain"] == "friend.example.com"
+    assert detail.json()["outgoing_edges"][0]["neighbor_blog"]["domain"] == "catalog.example.com"
 
     catalog = client.get("/api/blogs/catalog?page=2&page_size=25&site=blog&status=FINISHED")
     assert catalog.status_code == 200

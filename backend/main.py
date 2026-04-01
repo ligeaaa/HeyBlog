@@ -122,12 +122,19 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.get("/api/blogs/{blog_id}")
     def get_blog(blog_id: int) -> dict[str, Any]:
-        blog = get_state().persistence.get_blog(blog_id)
+        try:
+            blog = get_state().persistence.get_blog_detail(blog_id)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            if exc.response.status_code == 404:
+                detail = "Blog not found"
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
         if blog is None:
             raise HTTPException(status_code=404, detail="Blog not found")
-        blog["outgoing_edges"] = [
-            edge for edge in get_state().persistence.list_edges() if edge["from_blog_id"] == blog_id
-        ]
         return blog
 
     @app.get("/api/edges")

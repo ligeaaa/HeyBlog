@@ -111,6 +111,30 @@ def _catalog_response(
     }
 
 
+def _neighbor_blog_payload(row: dict[str, Any]) -> dict[str, Any] | None:
+    neighbor_id = row.get("neighbor_id")
+    if neighbor_id is None:
+        return None
+    return {
+        "id": int(neighbor_id),
+        "domain": row.get("neighbor_domain"),
+        "title": row.get("neighbor_title"),
+        "icon_url": row.get("neighbor_icon_url"),
+    }
+
+
+def _relation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "from_blog_id": int(row["from_blog_id"]),
+        "to_blog_id": int(row["to_blog_id"]),
+        "link_url_raw": row["link_url_raw"],
+        "link_text": row["link_text"],
+        "discovered_at": row["discovered_at"],
+        "neighbor_blog": _neighbor_blog_payload(row),
+    }
+
+
 class RepositoryProtocol(Protocol):
     """Protocol shared by SQLite, PostgreSQL, and HTTP-backed repositories."""
 
@@ -164,6 +188,8 @@ class RepositoryProtocol(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None: ...
+
+    def get_blog_detail(self, blog_id: int) -> dict[str, Any] | None: ...
 
     def list_edges(self) -> list[dict[str, Any]]: ...
 
@@ -451,6 +477,60 @@ class Repository:
                 (blog_id,),
             ).fetchone()
             return dict(row) if row else None
+
+    def get_blog_detail(self, blog_id: int) -> dict[str, Any] | None:
+        """Return one blog plus its incoming/outgoing relationships."""
+        blog = self.get_blog(blog_id)
+        if blog is None:
+            return None
+
+        with self.connect() as connection:
+            outgoing_rows = connection.execute(
+                """
+                SELECT
+                  edges.id,
+                  edges.from_blog_id,
+                  edges.to_blog_id,
+                  edges.link_url_raw,
+                  edges.link_text,
+                  edges.discovered_at,
+                  neighbor.id AS neighbor_id,
+                  neighbor.domain AS neighbor_domain,
+                  neighbor.title AS neighbor_title,
+                  neighbor.icon_url AS neighbor_icon_url
+                FROM edges
+                LEFT JOIN blogs AS neighbor ON neighbor.id = edges.to_blog_id
+                WHERE edges.from_blog_id = ?
+                ORDER BY edges.id ASC
+                """,
+                (blog_id,),
+            ).fetchall()
+            incoming_rows = connection.execute(
+                """
+                SELECT
+                  edges.id,
+                  edges.from_blog_id,
+                  edges.to_blog_id,
+                  edges.link_url_raw,
+                  edges.link_text,
+                  edges.discovered_at,
+                  neighbor.id AS neighbor_id,
+                  neighbor.domain AS neighbor_domain,
+                  neighbor.title AS neighbor_title,
+                  neighbor.icon_url AS neighbor_icon_url
+                FROM edges
+                LEFT JOIN blogs AS neighbor ON neighbor.id = edges.from_blog_id
+                WHERE edges.to_blog_id = ?
+                ORDER BY edges.id ASC
+                """,
+                (blog_id,),
+            ).fetchall()
+
+        return {
+            **blog,
+            "incoming_edges": [_relation_payload(dict(row)) for row in incoming_rows],
+            "outgoing_edges": [_relation_payload(dict(row)) for row in outgoing_rows],
+        }
 
     def list_edges(self) -> list[dict[str, Any]]:
         """Return all stored graph edges ordered by id."""
@@ -821,6 +901,60 @@ class PostgresRepository:
                 (blog_id,),
             ).fetchone()
             return dict(row) if row else None
+
+    def get_blog_detail(self, blog_id: int) -> dict[str, Any] | None:
+        """Return one blog plus its incoming/outgoing relationships."""
+        blog = self.get_blog(blog_id)
+        if blog is None:
+            return None
+
+        with self.connect() as connection:
+            outgoing_rows = connection.execute(
+                """
+                SELECT
+                  edges.id,
+                  edges.from_blog_id,
+                  edges.to_blog_id,
+                  edges.link_url_raw,
+                  edges.link_text,
+                  edges.discovered_at,
+                  neighbor.id AS neighbor_id,
+                  neighbor.domain AS neighbor_domain,
+                  neighbor.title AS neighbor_title,
+                  neighbor.icon_url AS neighbor_icon_url
+                FROM edges
+                LEFT JOIN blogs AS neighbor ON neighbor.id = edges.to_blog_id
+                WHERE edges.from_blog_id = %s
+                ORDER BY edges.id ASC
+                """,
+                (blog_id,),
+            ).fetchall()
+            incoming_rows = connection.execute(
+                """
+                SELECT
+                  edges.id,
+                  edges.from_blog_id,
+                  edges.to_blog_id,
+                  edges.link_url_raw,
+                  edges.link_text,
+                  edges.discovered_at,
+                  neighbor.id AS neighbor_id,
+                  neighbor.domain AS neighbor_domain,
+                  neighbor.title AS neighbor_title,
+                  neighbor.icon_url AS neighbor_icon_url
+                FROM edges
+                LEFT JOIN blogs AS neighbor ON neighbor.id = edges.from_blog_id
+                WHERE edges.to_blog_id = %s
+                ORDER BY edges.id ASC
+                """,
+                (blog_id,),
+            ).fetchall()
+
+        return {
+            **blog,
+            "incoming_edges": [_relation_payload(dict(row)) for row in incoming_rows],
+            "outgoing_edges": [_relation_payload(dict(row)) for row in outgoing_rows],
+        }
 
     def list_edges(self) -> list[dict[str, Any]]:
         """Return all stored graph edges ordered by id."""

@@ -44,6 +44,12 @@ export type EdgeRecord = {
   discovered_at: string;
 };
 
+export type BlogNeighborSummary = Pick<BlogRecord, "id" | "domain" | "title" | "icon_url">;
+
+export type BlogRelationRecord = EdgeRecord & {
+  neighbor_blog: BlogNeighborSummary | null;
+};
+
 export type GraphPayload = {
   nodes: BlogRecord[];
   edges: EdgeRecord[];
@@ -106,7 +112,8 @@ export type GraphSnapshotPayload = GraphViewPayload & {
 };
 
 export type BlogDetailPayload = BlogRecord & {
-  outgoing_edges: EdgeRecord[];
+  incoming_edges: BlogRelationRecord[];
+  outgoing_edges: BlogRelationRecord[];
 };
 
 export type BlogCatalogFilters = {

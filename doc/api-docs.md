@@ -230,22 +230,30 @@
 
 #### `GET /api/blogs/{blog_id}`
 
-用途：返回单个 blog 详情，并追加该 blog 的出边列表。
+用途：返回单个 blog 详情，并追加该 blog 的双向关系聚合结果。
 
 行为说明：
 
 - 若 blog 不存在，返回 `404`
-- 返回内容基于单 blog 记录扩展了 `outgoing_edges`
+- 返回内容基于单 blog 记录扩展了 `incoming_edges` 与 `outgoing_edges`
 
 额外字段：
 
-- `outgoing_edges`: 所有 `from_blog_id == blog_id` 的边
+- `incoming_edges`: 所有 `to_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
+- `outgoing_edges`: 所有 `from_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
+
+其中 `neighbor_blog` 是详情页使用的邻居摘要，字段为：
+
+- `id`
+- `domain`
+- `title`
+- `icon_url`
 
 前端现状：
 
 - 当前博客详情页直接消费该接口作为主数据源
-- 首版详情页没有要求后端返回 `incoming_edges`
-- 页面会额外结合 `GET /api/blogs` 与 `GET /api/edges` 在前端计算入边与相邻博客名称映射
+- 详情页不再额外请求 `GET /api/blogs` 与 `GET /api/edges`
+- incoming/outgoing 关系以及邻居名称映射都由后端在该接口内聚合
 
 #### `GET /api/edges`
 
@@ -747,6 +755,10 @@
 
 用途：按 id 查询单个 blog。
 
+### `GET /internal/blogs/{blog_id}/detail`
+
+用途：按 id 查询单个 blog，并聚合详情页所需的 `incoming_edges` / `outgoing_edges` 与邻居摘要。
+
 ### `POST /internal/blogs/upsert`
 
 用途：插入 blog，若 `normalized_url` 已存在则直接返回已有 id。
@@ -1052,7 +1064,7 @@
 ### 6.1 读接口调用链
 
 - 前端 -> `backend /api/*`
-- `backend` -> `persistence-api` 获取 blogs、edges、graph、stats、logs
+- `backend` -> `persistence-api` 获取 blogs、blog detail、edges、graph、stats、logs
 - `backend` -> `search` 获取搜索结果
 - `backend` -> `crawler` 获取运行时状态
 

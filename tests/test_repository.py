@@ -368,6 +368,93 @@ def test_sqlite_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) 
         repository.list_blogs_catalog(status="unknown")
 
 
+def test_sqlite_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path: Path) -> None:
+    """Detail queries should inline incoming/outgoing edges with neighbor summaries."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    alpha_id, inserted = repository.upsert_blog(
+        url="https://alpha.example/",
+        normalized_url="https://alpha.example/",
+        domain="alpha.example",
+        source_blog_id=None,
+    )
+    assert inserted is True
+    beta_id, inserted = repository.upsert_blog(
+        url="https://beta.example/",
+        normalized_url="https://beta.example/",
+        domain="beta.example",
+        source_blog_id=alpha_id,
+    )
+    assert inserted is True
+    gamma_id, inserted = repository.upsert_blog(
+        url="https://gamma.example/",
+        normalized_url="https://gamma.example/",
+        domain="gamma.example",
+        source_blog_id=alpha_id,
+    )
+    assert inserted is True
+
+    for blog_id, domain in ((alpha_id, "alpha.example"), (beta_id, "beta.example"), (gamma_id, "gamma.example")):
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=1,
+            metadata_captured=True,
+            title=f"{domain} title",
+            icon_url=f"https://{domain}/favicon.ico",
+        )
+
+    repository.add_edge(
+        from_blog_id=alpha_id,
+        to_blog_id=beta_id,
+        link_url_raw="https://beta.example/",
+        link_text="Beta",
+    )
+    repository.add_edge(
+        from_blog_id=gamma_id,
+        to_blog_id=alpha_id,
+        link_url_raw="https://alpha.example/",
+        link_text="Alpha",
+    )
+
+    detail = repository.get_blog_detail(alpha_id)
+
+    assert detail is not None
+    assert detail["domain"] == "alpha.example"
+    assert detail["outgoing_edges"] == [
+        {
+            "id": 1,
+            "from_blog_id": alpha_id,
+            "to_blog_id": beta_id,
+            "link_url_raw": "https://beta.example/",
+            "link_text": "Beta",
+            "discovered_at": detail["outgoing_edges"][0]["discovered_at"],
+            "neighbor_blog": {
+                "id": beta_id,
+                "domain": "beta.example",
+                "title": "beta.example title",
+                "icon_url": "https://beta.example/favicon.ico",
+            },
+        }
+    ]
+    assert detail["incoming_edges"] == [
+        {
+            "id": 2,
+            "from_blog_id": gamma_id,
+            "to_blog_id": alpha_id,
+            "link_url_raw": "https://alpha.example/",
+            "link_text": "Alpha",
+            "discovered_at": detail["incoming_edges"][0]["discovered_at"],
+            "neighbor_blog": {
+                "id": gamma_id,
+                "domain": "gamma.example",
+                "title": "gamma.example title",
+                "icon_url": "https://gamma.example/favicon.ico",
+            },
+        }
+    ]
+
+
 class _RecordingCursor:
     def __init__(self, statements: list[str]) -> None:
         self._statements = statements
