@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BlogCatalogPagePayload, BlogRecord, EdgeRecord } from "./api";
+import { BlogCatalogPagePayload, BlogNeighborSummary, EdgeRecord } from "./api";
 import { api } from "./api";
 
 type QueryTuning = {
@@ -9,7 +9,7 @@ type QueryTuning = {
 };
 
 export type RelatedEdge = EdgeRecord & {
-  neighborBlog: BlogRecord | null;
+  neighborBlog: BlogNeighborSummary | null;
 };
 
 export const BLOG_CRAWL_STATUS_OPTIONS = ["WAITING", "PROCESSING", "FINISHED", "FAILED"] as const;
@@ -146,34 +146,17 @@ export function useBlogDetail(blogId: number | string | null) {
 
 export function useBlogDetailView(blogId: number | null) {
   const detail = useBlogDetail(blogId);
-  const blogs = useBlogs({
-    enabled: blogId != null,
-    refetchInterval: false,
-    staleTime: 600000,
-  });
-  const edges = useEdges({
-    enabled: blogId != null,
-    refetchInterval: false,
-    staleTime: 600000,
-  });
-
-  const blogMap = new Map((blogs.data ?? []).map((blog) => [blog.id, blog]));
   const outgoingEdges: RelatedEdge[] = (detail.data?.outgoing_edges ?? []).map((edge) => ({
     ...edge,
-    neighborBlog: blogMap.get(edge.to_blog_id) ?? null,
+    neighborBlog: edge.neighbor_blog ?? null,
   }));
-  const incomingEdges: RelatedEdge[] =
-    blogId == null
-      ? []
-      : (edges.data ?? [])
-          .filter((edge) => edge.to_blog_id === blogId)
-          .map((edge) => ({
-            ...edge,
-            neighborBlog: blogMap.get(edge.from_blog_id) ?? null,
-          }));
+  const incomingEdges: RelatedEdge[] = (detail.data?.incoming_edges ?? []).map((edge) => ({
+    ...edge,
+    neighborBlog: edge.neighbor_blog ?? null,
+  }));
 
-  const error = detail.error ?? blogs.error ?? edges.error ?? null;
-  const isLoading = detail.isLoading || (!detail.error && (blogs.isLoading || edges.isLoading));
+  const error = detail.error ?? null;
+  const isLoading = detail.isLoading;
 
   return {
     blog: detail.data ?? null,

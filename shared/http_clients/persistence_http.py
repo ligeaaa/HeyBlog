@@ -138,6 +138,9 @@ class PersistenceHttpClient:
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         return self._get(f"/internal/blogs/{blog_id}")
 
+    def get_blog_detail(self, blog_id: int) -> dict[str, Any]:
+        return self._get(f"/internal/blogs/{blog_id}/detail")
+
     def list_edges(self) -> list[dict[str, Any]]:
         return self._get("/internal/edges")
 

@@ -99,7 +99,7 @@ export function BlogDetailPage() {
           description="正在加载博客详情与关联关系。"
         />
         <Surface title="读取中">
-          <p>正在获取博客详情、相邻博客映射和入边关系…</p>
+          <p>正在获取博客详情和双向关系聚合…</p>
         </Surface>
       </div>
     );
@@ -205,7 +205,7 @@ export function BlogDetailPage() {
         </div>
       </div>
 
-      <Surface title="谁指向它" note="前端基于 /api/edges 计算">
+      <Surface title="谁指向它" note="来自 /api/blogs/{blog_id} 的 incoming_edges">
         <EdgeList
           edges={detailView.incomingEdges}
           direction="incoming"
@@ -213,7 +213,7 @@ export function BlogDetailPage() {
         />
       </Surface>
 
-      <Surface title="它指向谁" note="直接复用 /api/blogs/{blog_id} 的 outgoing_edges">
+      <Surface title="它指向谁" note="来自 /api/blogs/{blog_id} 的 outgoing_edges">
         <EdgeList
           edges={detailView.outgoingEdges}
           direction="outgoing"

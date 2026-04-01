@@ -115,6 +115,13 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def get_blog(blog_id: int) -> dict[str, Any] | None:
         return get_state().repository.get_blog(blog_id)
 
+    @app.get("/internal/blogs/{blog_id}/detail")
+    def get_blog_detail(blog_id: int) -> dict[str, Any]:
+        payload = get_state().repository.get_blog_detail(blog_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="blog_not_found")
+        return payload
+
     @app.post("/internal/blogs/upsert")
     def upsert_blog(payload: UpsertBlogRequest) -> dict[str, Any]:
         blog_id, inserted = get_state().repository.upsert_blog(**payload.model_dump())
