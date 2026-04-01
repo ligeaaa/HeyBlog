@@ -2,10 +2,12 @@
 
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 import pytest
 
 import persistence_api.repository as repository_module
+import persistence_api.schema as schema_module
 
 
 def test_build_repository_uses_sqlite_when_psycopg_is_missing(
@@ -206,7 +208,9 @@ def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_
           to_blog_id INTEGER NOT NULL,
           link_url_raw TEXT NOT NULL,
           link_text TEXT,
-          discovered_at TEXT NOT NULL
+          discovered_at TEXT NOT NULL,
+          FOREIGN KEY(from_blog_id) REFERENCES blogs(id) ON DELETE CASCADE,
+          FOREIGN KEY(to_blog_id) REFERENCES blogs(id) ON DELETE CASCADE
         );
 
         CREATE TABLE crawl_logs (
@@ -215,7 +219,8 @@ def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_
           stage TEXT NOT NULL,
           result TEXT NOT NULL,
           message TEXT NOT NULL,
-          created_at TEXT NOT NULL
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(blog_id) REFERENCES blogs(id) ON DELETE SET NULL
         );
         """
     )
@@ -230,6 +235,26 @@ def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_
           1, 'https://blog.example.com/', 'https://blog.example.com/', 'blog.example.com',
           200, 'FINISHED', 2, 0, NULL, NULL,
           '2026-03-31T00:00:00Z', '2026-03-31T00:00:00Z'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO edges (
+          id, from_blog_id, to_blog_id, link_url_raw, link_text, discovered_at
+        )
+        VALUES (
+          1, 1, 1, 'https://blog.example.com/', 'Self link', '2026-03-31T00:00:00Z'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO crawl_logs (
+          id, blog_id, stage, result, message, created_at
+        )
+        VALUES (
+          1, 1, 'crawl', 'ok', 'legacy row', '2026-03-31T00:00:00Z'
         )
         """
     )
@@ -252,3 +277,38 @@ def test_build_repository_rebuilds_existing_sqlite_blog_table_without_depth(tmp_
     assert blog is not None
     assert blog["source_blog_id"] is None
     assert "depth" not in blog
+    assert len(repository.list_edges()) == 1
+    assert len(repository.list_logs()) == 1
+
+
+class _RecordingCursor:
+    def __init__(self, statements: list[str]) -> None:
+        self._statements = statements
+
+    def __enter__(self) -> "_RecordingCursor":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+    def execute(self, statement: str) -> None:
+        self._statements.append(" ".join(statement.split()))
+
+
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def cursor(self) -> _RecordingCursor:
+        return _RecordingCursor(self.statements)
+
+
+def test_init_postgres_db_does_not_drop_depth_column_on_startup() -> None:
+    """Postgres init should avoid destructive DROP COLUMN DDL during normal boot."""
+    connection = _RecordingConnection()
+
+    schema_module.init_postgres_db(connection)
+
+    assert any("ADD COLUMN IF NOT EXISTS title" in statement for statement in connection.statements)
+    assert any("ADD COLUMN IF NOT EXISTS icon_url" in statement for statement in connection.statements)
+    assert all("DROP COLUMN IF EXISTS depth" not in statement for statement in connection.statements)

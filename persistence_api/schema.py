@@ -6,9 +6,7 @@ import sqlite3
 from typing import Any
 
 
-SQLITE_SCHEMA_SQL = """
-PRAGMA foreign_keys = ON;
-
+SQLITE_SCHEMA_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS blogs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url TEXT NOT NULL,
@@ -47,6 +45,12 @@ CREATE TABLE IF NOT EXISTS crawl_logs (
   created_at TEXT NOT NULL,
   FOREIGN KEY(blog_id) REFERENCES blogs(id) ON DELETE SET NULL
 );
+"""
+
+SQLITE_SCHEMA_SQL = f"""
+PRAGMA foreign_keys = ON;
+
+{SQLITE_SCHEMA_TABLES_SQL}
 """
 
 
@@ -146,7 +150,7 @@ def _rebuild_sqlite_blogs_without_depth(connection: sqlite3.Connection) -> None:
         ALTER TABLE blogs RENAME TO blogs_legacy_depth;
         """
     )
-    connection.executescript(SQLITE_SCHEMA_SQL)
+    connection.executescript(SQLITE_SCHEMA_TABLES_SQL)
     connection.execute(
         f"""
         INSERT INTO blogs (
@@ -177,9 +181,9 @@ def _rebuild_sqlite_blogs_without_depth(connection: sqlite3.Connection) -> None:
     )
     connection.executescript(
         """
-        DROP TABLE blogs_legacy_depth;
         DROP TABLE edges_legacy_depth;
         DROP TABLE crawl_logs_legacy_depth;
+        DROP TABLE blogs_legacy_depth;
         """
     )
     current_max_id = connection.execute("SELECT COALESCE(MAX(id), 0) FROM blogs").fetchone()
@@ -207,4 +211,3 @@ def init_postgres_db(connection: Any) -> None:
             cursor.execute(statement)
         cursor.execute("ALTER TABLE blogs ADD COLUMN IF NOT EXISTS title TEXT")
         cursor.execute("ALTER TABLE blogs ADD COLUMN IF NOT EXISTS icon_url TEXT")
-        cursor.execute("ALTER TABLE blogs DROP COLUMN IF EXISTS depth")
