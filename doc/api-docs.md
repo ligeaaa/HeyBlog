@@ -1,13 +1,37 @@
 # HeyBlog API 文档
 
+## 适合谁看
+
+- 想确认公共 API 和内部 API 契约的开发者
+- 准备新增、调整或核对 HTTP 路由与返回结构的读者
+
+## 建议前置阅读
+
+- [README](../readme.md)
+- [项目结构说明](./project-structure.md)
+- [服务调用架构](./service-architecture.md)
+
+## 不包含什么
+
+- 不重复讲目录和服务职责边界，那部分见 [project-structure.md](./project-structure.md) 与 [services-overview.md](./services-overview.md)
+- 不展开所有环境变量，那部分见 [config-reference.md](./config-reference.md)
+
+## 最后核对源码入口
+
+- [backend/main.py](../backend/main.py)
+- [crawler/main.py](../crawler/main.py)
+- [search/main.py](../search/main.py)
+- [persistence_api/main.py](../persistence_api/main.py)
+- [frontend/src/lib/api.ts](../frontend/src/lib/api.ts)
+
 ## 1. 文档目的
 
-这份文档基于当前仓库源码整理 HeyBlog 已实现的 HTTP API，目标是帮助后续统筹时快速看清：
+这份文档基于当前仓库源码整理 HeyBlog 已实现的 HTTP API，重点说明：
 
-- 哪些是前端/外部应该调用的公共 API
+- 哪些是前端或外部调用方应该依赖的公共 API
 - 哪些是拆分服务之间使用的内部 API
 - 每个接口的请求参数、返回结构和职责边界
-- 服务之间的调用链与典型执行流程
+- 与接口直接相关的服务调用关系
 
 当前代码实现对应的服务分层如下：
 
@@ -18,13 +42,15 @@
 - `persistence-api`：持久化读写接口
 - `persistence-db`：PostgreSQL 数据库
 
-如果需要先从服务视角阅读，再回来看接口细节，建议配合下面两份文档：
+配套文档：
 
-- [project-structure.md](/Users/lige/code/HeyBlog/doc/project-structure.md)
-- [services-overview.md](/Users/lige/code/HeyBlog/doc/services-overview.md)
-- [service-architecture.md](/Users/lige/code/HeyBlog/doc/service-architecture.md)
+- [project-structure.md](./project-structure.md)
+- [services-overview.md](./services-overview.md)
+- [service-architecture.md](./service-architecture.md)
+- [config-reference.md](./config-reference.md)
+- [developer-workflows.md](./developer-workflows.md)
 
-默认端口来自 [docker-compose.yml](/Users/lige/code/HeyBlog/docker-compose.yml)：
+默认端口来自 [docker-compose.yml](../docker-compose.yml)：
 
 - `frontend`: `3000`
 - `backend`: `8000`
@@ -63,12 +89,12 @@
 - `POST /api/runtime/run-batch`
 - `POST /api/database/reset`
 
-源码位置： [backend/main.py](/Users/lige/code/HeyBlog/backend/main.py)
+源码位置： [backend/main.py](../backend/main.py)
 
 补充说明：
 
 - 浏览器实际访问的是 `frontend` 服务。
-- [frontend/server.py](/Users/lige/code/HeyBlog/frontend/server.py) 会把 `/api/*` 代理到 `backend`。
+- [frontend/server.py](../frontend/server.py) 会把 `/api/*` 代理到 `backend`。
 - 因此“公共 API 由 backend 提供”与“浏览器经 frontend 访问 API”这两件事同时成立。
 
 ### 2.2 内部服务 API
@@ -560,7 +586,7 @@
 
 ### 4.1 Crawler 服务
 
-源码位置： [crawler/main.py](/Users/lige/code/HeyBlog/crawler/main.py)
+源码位置： [crawler/main.py](../crawler/main.py)
 
 基础信息：
 
@@ -625,7 +651,7 @@
 
 ### 4.2 Search 服务
 
-源码位置： [search/main.py](/Users/lige/code/HeyBlog/search/main.py)
+源码位置： [search/main.py](../search/main.py)
 
 基础信息：
 
@@ -672,7 +698,7 @@
 
 ### 4.3 Persistence API 服务
 
-源码位置： [persistence_api/main.py](/Users/lige/code/HeyBlog/persistence_api/main.py)
+源码位置： [persistence_api/main.py](../persistence_api/main.py)
 
 基础信息：
 
@@ -990,7 +1016,7 @@
 
 ### 5.5 RuntimeSnapshot
 
-来源： [crawler/runtime.py](/Users/lige/code/HeyBlog/crawler/runtime.py)
+来源： [crawler/runtime.py](../crawler/runtime.py)
 
 字段：
 
@@ -1071,12 +1097,12 @@
 
 ## 8. 主要源码索引
 
-- 后端聚合服务： [backend/main.py](/Users/lige/code/HeyBlog/backend/main.py)
-- 爬虫服务： [crawler/main.py](/Users/lige/code/HeyBlog/crawler/main.py)
-- 运行时控制： [crawler/runtime.py](/Users/lige/code/HeyBlog/crawler/runtime.py)
-- 爬虫主流程： [crawler/pipeline.py](/Users/lige/code/HeyBlog/crawler/pipeline.py)
-- 搜索服务： [search/main.py](/Users/lige/code/HeyBlog/search/main.py)
-- 持久化服务： [persistence_api/main.py](/Users/lige/code/HeyBlog/persistence_api/main.py)
-- 仓储实现： [persistence_api/repository.py](/Users/lige/code/HeyBlog/persistence_api/repository.py)
-- 数据库 schema： [persistence_api/schema.py](/Users/lige/code/HeyBlog/persistence_api/schema.py)
-- 前端 API 类型： [frontend/src/lib/api.ts](/Users/lige/code/HeyBlog/frontend/src/lib/api.ts)
+- 后端聚合服务： [backend/main.py](../backend/main.py)
+- 爬虫服务： [crawler/main.py](../crawler/main.py)
+- 运行时控制： [crawler/runtime.py](../crawler/runtime.py)
+- 爬虫主流程： [crawler/pipeline.py](../crawler/pipeline.py)
+- 搜索服务： [search/main.py](../search/main.py)
+- 持久化服务： [persistence_api/main.py](../persistence_api/main.py)
+- 仓储实现： [persistence_api/repository.py](../persistence_api/repository.py)
+- 数据库 schema： [persistence_api/schema.py](../persistence_api/schema.py)
+- 前端 API 类型： [frontend/src/lib/api.ts](../frontend/src/lib/api.ts)

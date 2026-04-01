@@ -1,5 +1,29 @@
 # HeyBlog 服务调用架构
 
+## 适合谁看
+
+- 想理解一次请求会穿过哪些服务的开发者
+- 想查运行时数据流、状态归属和调用方向的读者
+
+## 建议前置阅读
+
+- [README](../readme.md)
+- [项目结构说明](./project-structure.md)
+- [服务总览](./services-overview.md)
+
+## 不包含什么
+
+- 不逐条展开 API 字段，那部分见 [api-docs.md](./api-docs.md)
+- 不重复讲每个服务的职责介绍，那部分见 [services-overview.md](./services-overview.md)
+
+## 最后核对源码入口
+
+- [frontend/server.py](../frontend/server.py)
+- [backend/main.py](../backend/main.py)
+- [crawler/runtime.py](../crawler/runtime.py)
+- [crawler/pipeline.py](../crawler/pipeline.py)
+- [persistence_api/graph_service.py](../persistence_api/graph_service.py)
+
 ## 1. 总体拓扑
 
 当前仓库的主运行形态是拆分服务：
@@ -17,10 +41,10 @@ crawler -> persistence-api
 search  -> persistence-api
 ```
 
-其中：
+关键边界：
 
-- 浏览器只需要访问 `frontend`
-- `frontend` 不直连数据库，也不直连 `crawler` / `search` / `persistence-api`
+- 浏览器只访问 `frontend`
+- `frontend` 不直接连数据库，也不直接调用 `crawler`、`search`、`persistence-api`
 - `backend` 是公共 API 聚合层
 - `persistence-api` 是系统事实来源边界
 - `search` 是可重建缓存层，不是主库
@@ -29,74 +53,62 @@ search  -> persistence-api
 
 | 调用方 | 被调用方 | 方式 | 目的 |
 | --- | --- | --- | --- |
-| 浏览器 | `frontend` | HTTP | 获取页面资源与调用统一 `/api/*` 入口 |
-| `frontend` | `backend` | HTTP 代理 | 转发浏览器的 `/api/*` 请求 |
-| `backend` | `crawler` | HTTP client | 执行种子导入、批处理、运行时控制 |
+| 浏览器 | `frontend` | HTTP | 获取页面资源与统一 `/api/*` 入口 |
+| `frontend` | `backend` | HTTP 代理 | 转发浏览器的公共 API 请求 |
+| `backend` | `crawler` | HTTP client | 执行种子导入、同步 crawl、运行时控制 |
 | `backend` | `search` | HTTP client | 搜索查询、重建索引 |
-| `backend` | `persistence-api` | HTTP client | 读取 blogs、edges、logs、stats、graph，执行 reset |
+| `backend` | `persistence-api` | HTTP client | 读取 blogs、edges、logs、stats、graph、snapshot |
 | `crawler` | `persistence-api` | HTTP client | 领取任务、写 blog、写 edge、写日志、导出图 |
-| `search` | `persistence-api` | HTTP client | 拉取全量搜索快照 |
-| `persistence-api` | SQLite / PostgreSQL | Repository | 持久化 blogs、edges、crawl_logs |
+| `search` | `persistence-api` | HTTP client | 拉取搜索快照 |
+| `persistence-api` | SQLite / PostgreSQL | Repository | 持久化事实数据与聚合读模型 |
 
-## 3. 真实代码中的调用边界
+## 3. 真实代码中的边界
 
 ### 3.1 frontend -> backend
 
-[frontend/server.py](/Users/lige/code/HeyBlog/frontend/server.py) 中的 `proxy_api()` 会把：
+[frontend/server.py](../frontend/server.py) 的 `proxy_api()` 目前只代理：
 
 - `GET /api/{path}`
 - `POST /api/{path}`
 
-转发到 `HEYBLOG_BACKEND_BASE_URL/api/{path}`。
-
-这意味着在当前实现里，浏览器拿到的是一个“静态资源服务 + API 代理层”的组合入口。
+浏览器实际拿到的是“静态资源服务 + API 代理层”的统一入口。
 
 ### 3.2 backend -> 内部服务
 
-[backend/main.py](/Users/lige/code/HeyBlog/backend/main.py) 通过这三个 client 工作：
+[backend/main.py](../backend/main.py) 通过三个 client 工作：
 
-- [shared/http_clients/crawler_http.py](/Users/lige/code/HeyBlog/shared/http_clients/crawler_http.py)
-- [shared/http_clients/search_http.py](/Users/lige/code/HeyBlog/shared/http_clients/search_http.py)
-- [shared/http_clients/persistence_http.py](/Users/lige/code/HeyBlog/shared/http_clients/persistence_http.py)
+- [shared/http_clients/crawler_http.py](../shared/http_clients/crawler_http.py)
+- [shared/http_clients/search_http.py](../shared/http_clients/search_http.py)
+- [shared/http_clients/persistence_http.py](../shared/http_clients/persistence_http.py)
 
-它本身不直接操作仓储，也不直接 import `crawler` 的业务逻辑。
+它不直接 import crawler 业务逻辑，也不直接操作数据库。
 
-### 3.3 crawler/search -> persistence-api
+### 3.3 crawler / search -> persistence-api
 
-`crawler` 和 `search` 都不直接访问数据库：
-
-- `crawler` 通过 `PersistenceHttpClient` 调 `persistence-api`
-- `search` 也通过 `PersistenceHttpClient` 调 `persistence-api`
-
-因此数据库实现差异被集中收口在 `persistence_api/repository.py`。
+`crawler` 和 `search` 都不直接访问数据库，它们都通过 `PersistenceHttpClient`
+调用 `persistence-api`。这让 SQLite / PostgreSQL 差异被集中收口在
+[persistence_api/repository.py](../persistence_api/repository.py)。
 
 ### 3.4 persistence-api -> 存储后端
 
-[persistence_api/repository.py](/Users/lige/code/HeyBlog/persistence_api/repository.py) 中：
+`persistence-api` 内部根据 [shared/config.py](../shared/config.py) 选择后端：
 
 - 未设置 `HEYBLOG_DB_DSN` 时使用 SQLite
 - 设置了 `HEYBLOG_DB_DSN` 时使用 PostgreSQL
 
-这让上游服务都只依赖 HTTP 契约，不依赖底层数据库细节。
-
 ## 4. 典型调用链
 
-### 4.1 访问统计页
+### 4.1 浏览器打开统计页
 
 ```text
 浏览器
   -> frontend /stats
   -> 前端页面调用 /api/status 与 /api/stats
   -> frontend 代理到 backend
-  -> backend 分别调用 persistence-api /internal/stats
-  -> backend 额外调用 crawler /internal/runtime/status 组装 /api/status
-  -> 返回给浏览器
+  -> backend 调用 persistence-api /internal/stats
+  -> backend 调用 crawler /internal/runtime/status
+  -> 返回聚合结果给浏览器
 ```
-
-补充：
-
-- `StatsPage` 同时消费 `/api/status` 与 `/api/stats`
-- `status.is_running` 并不是数据库字段，而是由 `crawler` 运行态推导
 
 ### 4.2 导入种子
 
@@ -109,11 +121,6 @@ search  -> persistence-api
   -> crawler -> persistence-api /internal/blogs/upsert
   -> crawler -> persistence-api /internal/logs
 ```
-
-结果：
-
-- `blogs` 表新增待抓取种子
-- `crawl_logs` 表记录一次 `bootstrap` 日志
 
 ### 4.3 执行一次同步 crawl
 
@@ -132,11 +139,6 @@ search  -> persistence-api
   -> backend 尝试调用 search /internal/search/reindex
 ```
 
-关键点：
-
-- `queue/next` 同时完成“领取任务 + 标记为 PROCESSING”
-- 搜索重建是尽力而为，失败不会让 crawl 主请求失败
-
 ### 4.4 启动后台运行器
 
 ```text
@@ -149,27 +151,17 @@ search  -> persistence-api
   -> 无待处理任务或收到 stop 信号后回到 idle
 ```
 
-说明：
-
-- 运行器状态只保存在 `crawler` 进程内存中
-- `current_blog_id`、`current_url`、`current_stage` 都来自 `CrawlerRuntimeService`
-
 ### 4.5 查询图谱
 
 ```text
 浏览器 / GraphPage
-  -> GET /api/graph
+  -> GET /api/graph/views/core 或 /api/graph/nodes/{id}/neighbors
   -> frontend 代理到 backend
-  -> backend -> persistence-api /internal/graph
+  -> backend -> persistence-api 图相关内部接口
   -> persistence-api.graph_service 读取 blogs + edges
-  -> 返回 nodes/edges 给前端
+  -> 返回节点、边和视图元数据
   -> 前端用 Cytoscape 渲染
 ```
-
-说明：
-
-- 图数据的组装在 `persistence-api` 内部完成
-- `backend` 只是暴露稳定的公共接口，不再重复拼装图结构
 
 ### 4.6 搜索
 
@@ -182,30 +174,7 @@ search  -> persistence-api
   -> 返回 blogs / edges / logs 匹配结果
 ```
 
-说明：
-
-- 搜索服务是“可重建缓存层”
-- 搜索页当前把 `blogs` 作为主结果区块，`edges/logs` 作为辅助信息区块
-
-### 4.7 博客详情页
-
-```text
-浏览器 / BlogDetailPage
-  -> GET /api/blogs/{blogId}
-  -> GET /api/blogs
-  -> GET /api/edges
-  -> frontend 代理到 backend
-  -> backend -> persistence-api 读取单 blog、全部 blogs、全部 edges
-  -> 前端用 /api/blogs/{blogId} 渲染基础信息与 outgoing_edges
-  -> 前端再基于 /api/blogs 建立 id -> domain 映射，并基于 /api/edges 计算 incoming_edges
-```
-
-说明：
-
-- 当前详情页首版没有新增后端协议，而是在前端补齐入边展示
-- 这是一个有意接受的 MVP 取舍；若边规模变大，可把 `incoming_edges` 下沉到后端
-
-### 4.8 重置数据库
+### 4.7 重置数据库
 
 ```text
 浏览器 / 控制页
@@ -217,43 +186,27 @@ search  -> persistence-api
   -> backend 再尽力调用 search /internal/search/reindex
 ```
 
-关键点：
-
-- 重置动作由 `backend` 负责串起“运行态保护 + 数据重置 + 搜索重建”
-- `persistence-api` 只负责自己的数据库边界
-
 ## 5. 数据归属
 
-| 数据/状态 | 归属服务 | 说明 |
+| 数据 / 状态 | 归属服务 | 说明 |
 | --- | --- | --- |
 | `blogs` / `edges` / `crawl_logs` | `persistence-api` | 系统事实来源 |
-| `stats` / `graph` | `persistence-api` | 基于事实数据组装出的读模型 |
+| `stats` / `graph` / graph snapshots | `persistence-api` | 基于事实数据组装出的读模型 |
 | `search-index.json` | `search` | 可重建缓存 |
 | `RuntimeSnapshot` | `crawler` | 进程内内存态，不是持久化状态 |
 | 页面路由与视图状态 | `frontend` | 浏览器界面层状态 |
 
 ## 6. 配置如何驱动调用关系
 
-[shared/config.py](/Users/lige/code/HeyBlog/shared/config.py) 统一定义服务间地址与运行参数。当前关键环境变量包括：
-
-- `HEYBLOG_BACKEND_BASE_URL`
-- `HEYBLOG_CRAWLER_BASE_URL`
-- `HEYBLOG_SEARCH_BASE_URL`
-- `HEYBLOG_PERSISTENCE_BASE_URL`
-- `HEYBLOG_DB_DSN`
-- `HEYBLOG_DB_PATH`
-- `HEYBLOG_SEED_PATH`
-- `HEYBLOG_EXPORT_DIR`
-- `HEYBLOG_SEARCH_CACHE_DIR`
-
-这意味着：
+[shared/config.py](../shared/config.py) 统一定义服务地址与运行参数。配置明细见
+[config-reference.md](./config-reference.md)，这里只记住两个事实：
 
 - 服务间耦合主要通过 HTTP 地址注入，而不是模块直接引用
-- 本地 SQLite 与容器内 PostgreSQL 的切换，主要由 `persistence-api` 内部吸收
+- SQLite 与 PostgreSQL 的切换主要由 `persistence-api` 内部吸收
 
 ## 7. 当前架构的实现观察
 
-- `frontend` 代理层当前只支持 `GET` / `POST`，如果未来公共 API 增加 `PUT`、`PATCH`、`DELETE`，这里也需要同步扩展。
-- `backend` 已经比较薄，更多像“公共协议门面 + 工作流串联器”。
-- `crawler` 与 `search` 都通过 `persistence-api` 访问数据，这让数据边界保持集中，但也意味着 `persistence-api` 是整个系统的关键枢纽。
-- 当前前端已覆盖统计、博客列表、博客详情、搜索、图谱、运行时与控制页；日志与全部 edge 列表仍主要停留在 API 层。
+- `frontend` 代理层当前只支持 `GET` / `POST`；如果公共 API 新增 `PUT`、`PATCH`、`DELETE`，这里需要同步扩展。
+- `backend` 已经比较薄，更像“公共协议门面 + 工作流串联器”。
+- `persistence-api` 是整个系统的数据枢纽，因此图、统计、搜索快照等变化通常都会落到这一层。
+- 图页主路径已经偏向 graph view / snapshot，而不是只依赖 legacy 的全量 `/api/graph`。
