@@ -9,7 +9,6 @@ from pathlib import Path
 DEFAULT_USER_AGENT = "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_NODES_PER_RUN = 10
-DEFAULT_MAX_DEPTH = 2
 DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 
@@ -38,7 +37,6 @@ class Settings:
     user_agent: str = DEFAULT_USER_AGENT
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
-    max_depth: int = DEFAULT_MAX_DEPTH
     max_path_probes_per_blog: int = DEFAULT_MAX_PATH_PROBES_PER_BLOG
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     friend_link_domain_blocklist: tuple[str, ...] = ()
@@ -73,7 +71,6 @@ class Settings:
             max_nodes_per_run=int(
                 os.getenv("HEYBLOG_MAX_NODES_PER_RUN", str(DEFAULT_MAX_NODES_PER_RUN))
             ),
-            max_depth=int(os.getenv("HEYBLOG_MAX_DEPTH", str(DEFAULT_MAX_DEPTH))),
             max_path_probes_per_blog=int(
                 os.getenv(
                     "HEYBLOG_MAX_PATH_PROBES_PER_BLOG",

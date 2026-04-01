@@ -246,12 +246,7 @@ def build_graph_snapshot_payload(
     for node in available_nodes:
         node_id = int(node["id"])
         degree = incoming[node_id] + outgoing[node_id]
-        priority_score = (
-            degree * 100
-            + int(node.get("friend_links_count") or 0) * 10
-            - int(node.get("depth") or 0) * 3
-            + (25 if int(node.get("depth") or 0) == 0 else 0)
-        )
+        priority_score = degree * 100 + int(node.get("friend_links_count") or 0) * 10
         node["incoming_count"] = incoming[node_id]
         node["outgoing_count"] = outgoing[node_id]
         node["degree"] = degree
@@ -408,7 +403,7 @@ def build_core_graph_view(
     adjacency, _, _ = _build_adjacency(filtered_nodes, edges)
     ordered_nodes = _sorted_nodes(filtered_nodes)
     if strategy == "seed":
-        seed_nodes = [node for node in ordered_nodes if int(node.get("depth") or 0) == 0]
+        seed_nodes = [node for node in ordered_nodes if node.get("source_blog_id") is None]
         if not seed_nodes:
             seed_nodes = ordered_nodes[: min(len(ordered_nodes), 18)]
     else:

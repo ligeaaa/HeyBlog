@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from math import ceil
 from typing import Any
 from typing import Iterator
 from typing import Protocol
@@ -40,6 +41,76 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+BLOG_CATALOG_ALLOWED_STATUSES = frozenset({"WAITING", "PROCESSING", "FINISHED", "FAILED"})
+BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
+BLOG_CATALOG_MAX_PAGE_SIZE = 200
+BLOG_CATALOG_SORT = "id_desc"
+
+
+def _normalize_catalog_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _catalog_like_pattern(value: str) -> str:
+    return f"%{value}%"
+
+
+def normalize_blog_catalog_query(
+    *,
+    page: int = 1,
+    page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+    site: str | None = None,
+    url: str | None = None,
+    status: str | None = None,
+    q: str | None = None,
+) -> dict[str, Any]:
+    """Normalize public catalog query params into one shared spec."""
+    normalized_status = _normalize_catalog_text(status)
+    if normalized_status is not None:
+        normalized_status = normalized_status.upper()
+        if normalized_status not in BLOG_CATALOG_ALLOWED_STATUSES:
+            raise ValueError(f"Unsupported crawl status: {normalized_status}")
+
+    normalized_page_size = max(1, min(page_size, BLOG_CATALOG_MAX_PAGE_SIZE))
+    normalized_page = max(page, 1)
+
+    return {
+        "page": normalized_page,
+        "page_size": normalized_page_size,
+        "site": _normalize_catalog_text(site),
+        "url": _normalize_catalog_text(url),
+        "status": normalized_status,
+        "q": _normalize_catalog_text(q),
+        "sort": BLOG_CATALOG_SORT,
+    }
+
+
+def _catalog_response(
+    *,
+    items: list[dict[str, Any]],
+    page: int,
+    page_size: int,
+    total_items: int,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    total_pages = ceil(total_items / page_size) if total_items else 0
+    effective_page = 1 if total_pages == 0 else min(page, total_pages)
+    return {
+        "items": items,
+        "page": effective_page,
+        "page_size": page_size,
+        "total_items": total_items,
+        "total_pages": total_pages,
+        "has_next": total_pages > 0 and effective_page < total_pages,
+        "has_prev": total_pages > 0 and effective_page > 1,
+        "filters": filters,
+        "sort": BLOG_CATALOG_SORT,
+    }
+
+
 class RepositoryProtocol(Protocol):
     """Protocol shared by SQLite, PostgreSQL, and HTTP-backed repositories."""
 
@@ -53,11 +124,10 @@ class RepositoryProtocol(Protocol):
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]: ...
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None: ...
+    def get_next_waiting_blog(self) -> dict[str, Any] | None: ...
 
     def mark_blog_result(
         self,
@@ -66,6 +136,9 @@ class RepositoryProtocol(Protocol):
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None: ...
 
     def add_edge(
@@ -78,6 +151,17 @@ class RepositoryProtocol(Protocol):
     ) -> None: ...
 
     def list_blogs(self) -> list[dict[str, Any]]: ...
+
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]: ...
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None: ...
 
@@ -99,6 +183,8 @@ class Repository:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             init_sqlite_db(connection)
+            self._requeue_processing_blogs(connection)
+            connection.commit()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -109,6 +195,17 @@ class Repository:
             yield connection
         finally:
             connection.close()
+
+    def _requeue_processing_blogs(self, connection: sqlite3.Connection) -> None:
+        """Recover rows left in PROCESSING after an unclean crawler shutdown."""
+        connection.execute(
+            """
+            UPDATE blogs
+            SET crawl_status = 'WAITING', updated_at = ?
+            WHERE crawl_status = 'PROCESSING'
+            """,
+            (now_iso(),),
+        )
 
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
@@ -130,7 +227,6 @@ class Repository:
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
         """Insert a blog if absent and return its id with insertion status."""
@@ -146,28 +242,27 @@ class Repository:
             cursor = connection.execute(
                 """
                 INSERT INTO blogs (
-                  url, normalized_url, domain, crawl_status, depth,
+                  url, normalized_url, domain, crawl_status,
                   source_blog_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 'WAITING', ?, ?, ?, ?)
+                VALUES (?, ?, ?, 'WAITING', ?, ?, ?)
                 """,
-                (url, normalized_url, domain, depth, source_blog_id, timestamp, timestamp),
+                (url, normalized_url, domain, source_blog_id, timestamp, timestamp),
             )
             connection.commit()
             return int(cursor.lastrowid), True
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None:
-        """Fetch and reserve the next waiting blog up to the provided depth."""
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        """Fetch and reserve the next waiting blog in stable insertion order."""
         with self.connect() as connection:
             row = connection.execute(
                 """
                 SELECT *
                 FROM blogs
-                WHERE crawl_status = 'WAITING' AND depth <= ?
-                ORDER BY depth ASC, id ASC
+                WHERE crawl_status = 'WAITING'
+                ORDER BY id ASC
                 LIMIT 1
                 """,
-                (max_depth,),
             ).fetchone()
             if row is None:
                 return None
@@ -189,25 +284,48 @@ class Repository:
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None:
         """Store crawl result metadata for one blog."""
         with self.connect() as connection:
-            connection.execute(
-                """
-                UPDATE blogs
-                SET crawl_status = ?, status_code = ?, friend_links_count = ?,
-                    last_crawled_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    crawl_status,
-                    status_code,
-                    friend_links_count,
-                    now_iso(),
-                    now_iso(),
-                    blog_id,
-                ),
-            )
+            if metadata_captured:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = ?, status_code = ?, friend_links_count = ?,
+                        title = ?, icon_url = ?, last_crawled_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        title,
+                        icon_url,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = ?, status_code = ?, friend_links_count = ?,
+                        last_crawled_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
             connection.commit()
 
     def add_edge(
@@ -236,8 +354,8 @@ class Repository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, url, normalized_url, domain, status_code, crawl_status,
-                       friend_links_count, depth, source_blog_id, last_crawled_at,
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                       friend_links_count, source_blog_id, last_crawled_at,
                        created_at, updated_at
                 FROM blogs
                 ORDER BY id ASC
@@ -245,11 +363,91 @@ class Repository:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one page of blogs with server-side filtering."""
+        query = normalize_blog_catalog_query(
+            page=page,
+            page_size=page_size,
+            site=site,
+            url=url,
+            status=status,
+            q=q,
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query["site"] is not None:
+            pattern = _catalog_like_pattern(query["site"])
+            clauses.append("(LOWER(COALESCE(title, '')) LIKE LOWER(?) OR LOWER(domain) LIKE LOWER(?))")
+            params.extend([pattern, pattern])
+        if query["url"] is not None:
+            pattern = _catalog_like_pattern(query["url"])
+            clauses.append("(LOWER(url) LIKE LOWER(?) OR LOWER(normalized_url) LIKE LOWER(?))")
+            params.extend([pattern, pattern])
+        if query["status"] is not None:
+            clauses.append("crawl_status = ?")
+            params.append(query["status"])
+        if query["q"] is not None:
+            pattern = _catalog_like_pattern(query["q"])
+            clauses.append(
+                "(LOWER(COALESCE(title, '')) LIKE LOWER(?) OR LOWER(domain) LIKE LOWER(?) OR LOWER(url) LIKE LOWER(?))"
+            )
+            params.extend([pattern, pattern, pattern])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        select_sql = """
+            SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                   friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+            FROM blogs
+        """
+        with self.connect() as connection:
+            total_row = connection.execute(
+                f"SELECT COUNT(*) AS total_items FROM blogs {where_sql}",
+                params,
+            ).fetchone()
+            total_items = int(total_row["total_items"] or 0)
+            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
+            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
+            offset = (effective_page - 1) * query["page_size"]
+            rows = connection.execute(
+                f"""
+                {select_sql}
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, query["page_size"], offset],
+            ).fetchall()
+        return _catalog_response(
+            items=[dict(row) for row in rows],
+            page=effective_page,
+            page_size=query["page_size"],
+            total_items=total_items,
+            filters={
+                "q": query["q"],
+                "site": query["site"],
+                "url": query["url"],
+                "status": query["status"],
+            },
+        )
+
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         """Return one blog by id or None when absent."""
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM blogs WHERE id = ?",
+                """
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                       friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+                FROM blogs
+                WHERE id = ?
+                """,
                 (blog_id,),
             ).fetchone()
             return dict(row) if row else None
@@ -298,14 +496,12 @@ class Repository:
                 SELECT
                   (SELECT COUNT(*) FROM blogs) AS total_blogs,
                   (SELECT COUNT(*) FROM edges) AS total_edges,
-                  (SELECT MAX(depth) FROM blogs) AS max_depth,
                   (SELECT AVG(friend_links_count) FROM blogs) AS average_friend_links
                 """
             ).fetchone()
             return {
                 "total_blogs": int(summary["total_blogs"] or 0),
                 "total_edges": int(summary["total_edges"] or 0),
-                "max_depth": int(summary["max_depth"] or 0),
                 "average_friend_links": float(summary["average_friend_links"] or 0.0),
                 "status_counts": status_counts,
                 "pending_tasks": int(status_counts.get("WAITING", 0)),
@@ -348,6 +544,7 @@ class PostgresRepository:
         self.db_dsn = db_dsn
         with self.connect(wait_for_ready=True) as connection:
             init_postgres_db(connection)
+            self._requeue_processing_blogs(connection)
 
     @contextmanager
     def connect(self, *, wait_for_ready: bool = False) -> Iterator[psycopg.Connection[Any]]:
@@ -373,6 +570,17 @@ class PostgresRepository:
         assert last_error is not None
         raise last_error
 
+    def _requeue_processing_blogs(self, connection: psycopg.Connection[Any]) -> None:
+        """Recover rows left in PROCESSING after an unclean crawler shutdown."""
+        connection.execute(
+            """
+            UPDATE blogs
+            SET crawl_status = 'WAITING', updated_at = %s
+            WHERE crawl_status = 'PROCESSING'
+            """,
+            (now_iso(),),
+        )
+
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
     ) -> None:
@@ -392,7 +600,6 @@ class PostgresRepository:
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
         """Insert a blog if absent and return its id with insertion status."""
@@ -408,29 +615,28 @@ class PostgresRepository:
             created = connection.execute(
                 """
                 INSERT INTO blogs (
-                  url, normalized_url, domain, crawl_status, depth,
+                  url, normalized_url, domain, crawl_status,
                   source_blog_id, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, 'WAITING', %s, %s, %s, %s)
+                VALUES (%s, %s, %s, 'WAITING', %s, %s, %s)
                 RETURNING id
                 """,
-                (url, normalized_url, domain, depth, source_blog_id, timestamp, timestamp),
+                (url, normalized_url, domain, source_blog_id, timestamp, timestamp),
             ).fetchone()
             return int(created["id"]), True
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None:
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
         """Fetch and reserve the next waiting blog using row-level locks."""
         with self.connect() as connection:
             row = connection.execute(
                 """
                 SELECT *
                 FROM blogs
-                WHERE crawl_status = 'WAITING' AND depth <= %s
-                ORDER BY depth ASC, id ASC
+                WHERE crawl_status = 'WAITING'
+                ORDER BY id ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                (max_depth,),
             ).fetchone()
             if row is None:
                 return None
@@ -451,25 +657,48 @@ class PostgresRepository:
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None:
         """Store crawl result metadata for one blog."""
         with self.connect() as connection:
-            connection.execute(
-                """
-                UPDATE blogs
-                SET crawl_status = %s, status_code = %s, friend_links_count = %s,
-                    last_crawled_at = %s, updated_at = %s
-                WHERE id = %s
-                """,
-                (
-                    crawl_status,
-                    status_code,
-                    friend_links_count,
-                    now_iso(),
-                    now_iso(),
-                    blog_id,
-                ),
-            )
+            if metadata_captured:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = %s, status_code = %s, friend_links_count = %s,
+                        title = %s, icon_url = %s, last_crawled_at = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        title,
+                        icon_url,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE blogs
+                    SET crawl_status = %s, status_code = %s, friend_links_count = %s,
+                        last_crawled_at = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        crawl_status,
+                        status_code,
+                        friend_links_count,
+                        now_iso(),
+                        now_iso(),
+                        blog_id,
+                    ),
+                )
 
     def add_edge(
         self,
@@ -497,8 +726,8 @@ class PostgresRepository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, url, normalized_url, domain, status_code, crawl_status,
-                       friend_links_count, depth, source_blog_id, last_crawled_at,
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                       friend_links_count, source_blog_id, last_crawled_at,
                        created_at, updated_at
                 FROM blogs
                 ORDER BY id ASC
@@ -506,11 +735,89 @@ class PostgresRepository:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one page of blogs with server-side filtering."""
+        query = normalize_blog_catalog_query(
+            page=page,
+            page_size=page_size,
+            site=site,
+            url=url,
+            status=status,
+            q=q,
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query["site"] is not None:
+            pattern = _catalog_like_pattern(query["site"])
+            clauses.append("(COALESCE(title, '') ILIKE %s OR domain ILIKE %s)")
+            params.extend([pattern, pattern])
+        if query["url"] is not None:
+            pattern = _catalog_like_pattern(query["url"])
+            clauses.append("(url ILIKE %s OR normalized_url ILIKE %s)")
+            params.extend([pattern, pattern])
+        if query["status"] is not None:
+            clauses.append("crawl_status = %s")
+            params.append(query["status"])
+        if query["q"] is not None:
+            pattern = _catalog_like_pattern(query["q"])
+            clauses.append("(COALESCE(title, '') ILIKE %s OR domain ILIKE %s OR url ILIKE %s)")
+            params.extend([pattern, pattern, pattern])
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        select_sql = """
+            SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                   friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+            FROM blogs
+        """
+        with self.connect() as connection:
+            total_row = connection.execute(
+                f"SELECT COUNT(*) AS total_items FROM blogs {where_sql}",
+                params,
+            ).fetchone()
+            total_items = int(total_row["total_items"] or 0)
+            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
+            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
+            offset = (effective_page - 1) * query["page_size"]
+            rows = connection.execute(
+                f"""
+                {select_sql}
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+                """,
+                [*params, query["page_size"], offset],
+            ).fetchall()
+        return _catalog_response(
+            items=[dict(row) for row in rows],
+            page=effective_page,
+            page_size=query["page_size"],
+            total_items=total_items,
+            filters={
+                "q": query["q"],
+                "site": query["site"],
+                "url": query["url"],
+                "status": query["status"],
+            },
+        )
+
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         """Return one blog by id or None when absent."""
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM blogs WHERE id = %s",
+                """
+                SELECT id, url, normalized_url, domain, title, icon_url, status_code, crawl_status,
+                       friend_links_count, source_blog_id, last_crawled_at, created_at, updated_at
+                FROM blogs
+                WHERE id = %s
+                """,
                 (blog_id,),
             ).fetchone()
             return dict(row) if row else None
@@ -559,14 +866,12 @@ class PostgresRepository:
                 SELECT
                   (SELECT COUNT(*) FROM blogs) AS total_blogs,
                   (SELECT COUNT(*) FROM edges) AS total_edges,
-                  (SELECT MAX(depth) FROM blogs) AS max_depth,
                   (SELECT AVG(friend_links_count) FROM blogs) AS average_friend_links
                 """
             ).fetchone()
             return {
                 "total_blogs": int(summary["total_blogs"] or 0),
                 "total_edges": int(summary["total_edges"] or 0),
-                "max_depth": int(summary["max_depth"] or 0),
                 "average_friend_links": float(summary["average_friend_links"] or 0.0),
                 "status_counts": status_counts,
                 "pending_tasks": int(status_counts.get("WAITING", 0)),

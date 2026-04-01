@@ -53,7 +53,6 @@ class PersistenceHttpClient:
         url: str,
         normalized_url: str,
         domain: str,
-        depth: int,
         source_blog_id: int | None,
     ) -> tuple[int, bool]:
         payload = self._post(
@@ -62,14 +61,13 @@ class PersistenceHttpClient:
                 "url": url,
                 "normalized_url": normalized_url,
                 "domain": domain,
-                "depth": depth,
                 "source_blog_id": source_blog_id,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
 
-    def get_next_waiting_blog(self, max_depth: int) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next", {"max_depth": max_depth})
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        return self._get("/internal/queue/next")
 
     def mark_blog_result(
         self,
@@ -78,6 +76,9 @@ class PersistenceHttpClient:
         crawl_status: str,
         status_code: int | None,
         friend_links_count: int,
+        metadata_captured: bool = False,
+        title: str | None = None,
+        icon_url: str | None = None,
     ) -> None:
         self._post(
             f"/internal/blogs/{blog_id}/result",
@@ -85,6 +86,9 @@ class PersistenceHttpClient:
                 "crawl_status": crawl_status,
                 "status_code": status_code,
                 "friend_links_count": friend_links_count,
+                "metadata_captured": metadata_captured,
+                "title": title,
+                "icon_url": icon_url,
             },
         )
 
@@ -108,6 +112,28 @@ class PersistenceHttpClient:
 
     def list_blogs(self) -> list[dict[str, Any]]:
         return self._get("/internal/blogs")
+
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        return self._get(
+            "/internal/blogs/catalog",
+            {
+                "page": page,
+                "page_size": page_size,
+                "site": site,
+                "url": url,
+                "status": status,
+                "q": q,
+            },
+        )
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         return self._get(f"/internal/blogs/{blog_id}")

@@ -106,9 +106,7 @@ export function SearchPage() {
                       {blog.domain}
                     </Link>
                     <p className="page-copy">{blog.url}</p>
-                    <p className="meta-copy">
-                      ID {blog.id} · 深度 {blog.depth} · 状态 {blog.crawl_status}
-                    </p>
+                    <p className="meta-copy">ID {blog.id} · 状态 {blog.crawl_status}</p>
                   </li>
                 ))}
               </ul>

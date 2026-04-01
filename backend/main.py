@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -92,6 +93,32 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     @app.get("/api/blogs")
     def get_blogs() -> list[dict[str, Any]]:
         return get_state().persistence.list_blogs()
+
+    @app.get("/api/blogs/catalog")
+    def get_blogs_catalog(
+        page: int = 1,
+        page_size: int = 50,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return get_state().persistence.list_blogs_catalog(
+                page=page,
+                page_size=page_size,
+                site=site,
+                url=url,
+                status=status,
+                q=q,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/blogs/{blog_id}")
     def get_blog(blog_id: int) -> dict[str, Any]:

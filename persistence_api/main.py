@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
 from persistence_api.graph_service import GraphService
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
@@ -29,7 +30,6 @@ class UpsertBlogRequest(BaseModel):
     url: str
     normalized_url: str
     domain: str
-    depth: int
     source_blog_id: int | None
 
 
@@ -37,6 +37,9 @@ class BlogResultRequest(BaseModel):
     crawl_status: str
     status_code: int | None
     friend_links_count: int
+    metadata_captured: bool = False
+    title: str | None = None
+    icon_url: str | None = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -82,9 +85,30 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def list_blogs() -> list[dict[str, Any]]:
         return get_state().repository.list_blogs()
 
+    @app.get("/internal/blogs/catalog")
+    def list_blogs_catalog(
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return get_state().repository.list_blogs_catalog(
+                page=page,
+                page_size=page_size,
+                site=site,
+                url=url,
+                status=status,
+                q=q,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/internal/queue/next")
-    def next_waiting(max_depth: int) -> dict[str, Any] | None:
-        row = get_state().repository.get_next_waiting_blog(max_depth)
+    def next_waiting() -> dict[str, Any] | None:
+        row = get_state().repository.get_next_waiting_blog()
         return dict(row) if row else None
 
     @app.get("/internal/blogs/{blog_id}")

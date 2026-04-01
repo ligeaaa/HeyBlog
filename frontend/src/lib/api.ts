@@ -15,10 +15,11 @@ export type BlogRecord = {
   url: string;
   normalized_url: string;
   domain: string;
+  title: string | null;
+  icon_url: string | null;
   status_code: number | null;
   crawl_status: string;
   friend_links_count: number;
-  depth: number;
   source_blog_id: number | null;
   last_crawled_at: string | null;
   created_at: string;
@@ -108,6 +109,25 @@ export type BlogDetailPayload = BlogRecord & {
   outgoing_edges: EdgeRecord[];
 };
 
+export type BlogCatalogFilters = {
+  q: string | null;
+  site: string | null;
+  url: string | null;
+  status: string | null;
+};
+
+export type BlogCatalogPagePayload = {
+  items: BlogRecord[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+  filters: BlogCatalogFilters;
+  sort: string;
+};
+
 export type SearchPayload = {
   query: string;
   blogs: BlogRecord[];
@@ -128,7 +148,6 @@ export type StatusPayload = {
 export type StatsPayload = {
   total_blogs: number;
   total_edges: number;
-  max_depth: number;
   average_friend_links: number;
   status_counts: Record<string, number>;
   pending_tasks: number;
@@ -179,6 +198,24 @@ function withQuery(path: string, params: Record<string, string | number | boolea
 
 export const api = {
   blogs: () => request<BlogRecord[]>("/api/blogs"),
+  blogCatalog: (params: {
+    page: number;
+    pageSize: number;
+    q?: string | null;
+    site?: string | null;
+    url?: string | null;
+    status?: string | null;
+  }) =>
+    request<BlogCatalogPagePayload>(
+      withQuery("/api/blogs/catalog", {
+        page: params.page,
+        page_size: params.pageSize,
+        q: params.q,
+        site: params.site,
+        url: params.url,
+        status: params.status,
+      }),
+    ),
   blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
   edges: () => request<EdgeRecord[]>("/api/edges"),
   status: () => request<StatusPayload>("/api/status"),

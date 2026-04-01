@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from backend.main import BackendState
@@ -80,7 +81,6 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
             "url": "https://blog.example.com/",
             "normalized_url": "https://blog.example.com/",
             "domain": "blog.example.com",
-            "depth": 0,
             "source_blog_id": None,
         },
     )
@@ -90,6 +90,36 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
     assert blogs.json()[0]["domain"] == "blog.example.com"
+
+    catalog = client.get(
+        "/internal/blogs/catalog",
+        params={"page": 0, "page_size": 500, "status": " finished "},
+    )
+    assert catalog.status_code == 200
+    assert catalog.json()["page"] == 1
+    assert catalog.json()["page_size"] == 200
+    assert catalog.json()["filters"]["status"] == "FINISHED"
+
+    invalid_catalog = client.get("/internal/blogs/catalog?status=invalid")
+    assert invalid_catalog.status_code == 422
+
+    updated = client.post(
+        "/internal/blogs/1/result",
+        json={
+            "crawl_status": "FINISHED",
+            "status_code": 200,
+            "friend_links_count": 3,
+            "metadata_captured": True,
+            "title": "Blog Example",
+            "icon_url": "https://blog.example.com/favicon.ico",
+        },
+    )
+    assert updated.status_code == 200
+
+    blog = client.get("/internal/blogs/1")
+    assert blog.status_code == 200
+    assert blog.json()["title"] == "Blog Example"
+    assert blog.json()["icon_url"] == "https://blog.example.com/favicon.ico"
 
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
@@ -126,11 +156,45 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "total_blogs": 3,
                 "total_edges": 4,
                 "status_counts": {},
-                "max_depth": 1,
                 "average_friend_links": 1.0,
             },
-            "list_blogs": lambda self: [{"id": 1, "domain": "blog.example.com"}],
-            "get_blog": lambda self, blog_id: {"id": blog_id, "domain": "blog.example.com"},
+            "list_blogs": lambda self: [
+                {
+                    "id": 1,
+                    "domain": "blog.example.com",
+                    "title": "Blog Example",
+                    "icon_url": "https://blog.example.com/favicon.ico",
+                }
+            ],
+            "list_blogs_catalog": lambda self, **kwargs: {
+                "items": [
+                    {
+                        "id": 3,
+                        "domain": "catalog.example.com",
+                        "title": "Catalog Example",
+                        "icon_url": "https://catalog.example.com/favicon.ico",
+                    }
+                ],
+                "page": kwargs.get("page", 1),
+                "page_size": kwargs.get("page_size", 50),
+                "total_items": 1,
+                "total_pages": 1,
+                "has_next": False,
+                "has_prev": False,
+                "filters": {
+                    "q": kwargs.get("q"),
+                    "site": kwargs.get("site"),
+                    "url": kwargs.get("url"),
+                    "status": kwargs.get("status"),
+                },
+                "sort": "id_desc",
+            },
+            "get_blog": lambda self, blog_id: {
+                "id": blog_id,
+                "domain": "blog.example.com",
+                "title": "Blog Example",
+                "icon_url": "https://blog.example.com/favicon.ico",
+            },
             "list_edges": lambda self: [],
             "graph": lambda self: {"nodes": [], "edges": []},
             "graph_view": lambda self, **kwargs: {
@@ -158,7 +222,14 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 },
             },
             "graph_neighbors": lambda self, blog_id, hops=1, limit=120: {
-                "nodes": [{"id": blog_id, "domain": "blog.example.com"}],
+                "nodes": [
+                    {
+                        "id": blog_id,
+                        "domain": "blog.example.com",
+                        "title": "Blog Example",
+                        "icon_url": "https://blog.example.com/favicon.ico",
+                    }
+                ],
                 "edges": [],
                 "meta": {
                     "strategy": "neighborhood",
@@ -239,6 +310,18 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
 
+    blogs = client.get("/api/blogs")
+    assert blogs.status_code == 200
+    assert blogs.json()[0]["title"] == "Blog Example"
+    assert blogs.json()[0]["icon_url"] == "https://blog.example.com/favicon.ico"
+
+    catalog = client.get("/api/blogs/catalog?page=2&page_size=25&site=blog&status=FINISHED")
+    assert catalog.status_code == 200
+    assert catalog.json()["page"] == 2
+    assert catalog.json()["page_size"] == 25
+    assert catalog.json()["filters"]["site"] == "blog"
+    assert catalog.json()["filters"]["status"] == "FINISHED"
+
     core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
     assert core_view.status_code == 200
     assert core_view.json()["meta"]["limit"] == 80
@@ -246,6 +329,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
     neighbors = client.get("/api/graph/nodes/1/neighbors?hops=2&limit=40")
     assert neighbors.status_code == 200
     assert neighbors.json()["meta"]["focus_node_id"] == 1
+    assert neighbors.json()["nodes"][0]["title"] == "Blog Example"
 
     latest_snapshot = client.get("/api/graph/snapshots/latest")
     assert latest_snapshot.status_code == 200
@@ -271,6 +355,67 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert search.reindex_calls == 3
 
 
+def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
+    """Public catalog endpoint should preserve upstream 422 validation failures."""
+
+    class CatalogValidationStub:
+        def stats(self) -> dict[str, object]:
+            return {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "average_friend_links": 0.0,
+            }
+
+        def list_blogs(self) -> list[dict[str, object]]:
+            return []
+
+        def list_blogs_catalog(self, **_: object) -> dict[str, object]:
+            request = httpx.Request("GET", "http://persistence/internal/blogs/catalog")
+            response = httpx.Response(422, request=request, json={"detail": "Unsupported crawl status: BAD"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def get_blog(self, blog_id: int) -> None:
+            return None
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return []
+
+        def graph(self) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+        def graph_view(self, **_: object) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def graph_neighbors(self, blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def latest_graph_snapshot(self) -> dict[str, object]:
+            return {"version": "v1"}
+
+        def graph_snapshot(self, version: str) -> dict[str, object]:
+            return {"version": version, "nodes": [], "edges": [], "meta": {}}
+
+        def list_logs(self) -> list[dict[str, object]]:
+            return []
+
+        def reset(self) -> dict[str, object]:
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+
+    app = create_backend_app(
+        BackendState(persistence=CatalogValidationStub(), crawler=StubCrawler(), search=StubSearch())
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/blogs/catalog?status=bad")
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unsupported crawl status: BAD"
+
+
 def test_backend_database_reset_requires_idle_runtime() -> None:
     """Database reset should be rejected while the crawler runtime is busy."""
 
@@ -292,7 +437,6 @@ def test_backend_database_reset_requires_idle_runtime() -> None:
                 "total_blogs": 0,
                 "total_edges": 0,
                 "status_counts": {},
-                "max_depth": 0,
                 "average_friend_links": 0.0,
             },
             "list_blogs": lambda self: [],

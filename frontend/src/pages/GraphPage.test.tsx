@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { forwardRef, useImperativeHandle } from "react";
 import { GraphPage } from "./GraphPage";
 import { useGraphView } from "../lib/hooks";
 import { api } from "../lib/api";
@@ -22,10 +23,11 @@ vi.mock("../lib/api", async () => {
             url: "https://alpha.example",
             normalized_url: "https://alpha.example",
             domain: "alpha.example",
+            title: "Alpha Blog",
+            icon_url: "https://alpha.example/favicon.ico",
             status_code: 200,
             crawl_status: "FINISHED",
             friend_links_count: 3,
-            depth: 0,
             source_blog_id: null,
             last_crawled_at: null,
             created_at: "2026-03-29T00:00:00Z",
@@ -43,10 +45,11 @@ vi.mock("../lib/api", async () => {
             url: "https://beta.example",
             normalized_url: "https://beta.example",
             domain: "beta.example",
+            title: "Beta Blog",
+            icon_url: "https://beta.example/favicon.ico",
             status_code: 200,
             crawl_status: "FINISHED",
             friend_links_count: 1,
-            depth: 1,
             source_blog_id: 1,
             last_crawled_at: null,
             created_at: "2026-03-31T00:00:00Z",
@@ -95,113 +98,44 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const mockCySpies = {
-  fit: vi.fn(),
-  layoutRun: vi.fn(),
+const mockRendererSpies = {
+  captureViewport: vi.fn(() => ({ x: 0, y: 0, k: 1 })),
+  restoreViewport: vi.fn(),
+  fitView: vi.fn(),
+  requestRelayout: vi.fn(),
+  clearSelection: vi.fn(),
 };
 
-vi.mock("react-cytoscapejs", async () => {
-  const React = await import("react");
-
+vi.mock("../components/graph/D3GraphCanvas", () => {
   return {
-    default: function MockCytoscapeComponent(props: {
-      elements: Array<{ data: Record<string, string> }>;
-      cy?: (instance: {
-        scratch: (key: string, value?: unknown) => unknown;
-        on: (...args: unknown[]) => void;
-        elements: () => { length: number; unselect: () => void; forEach: (fn: (value: unknown) => void) => void };
-        layout: () => { run: () => void };
-        fit: () => void;
-        center: () => void;
-        zoom: (() => number) & ((value: number) => void);
-        pan: (() => { x: number; y: number }) & ((value: { x: number; y: number }) => void);
-        nodes: () => Array<{ id: () => string; position: () => { x: number; y: number } }>;
-        $: () => { first: () => { nonempty: () => boolean; id: () => string } };
-        $id: (id: string) => { nonempty: () => boolean; select: () => void };
-      }) => void;
-    }) {
-      const handlersRef = React.useRef(new Map<string, (event: unknown) => void>());
-      const scratchRef = React.useRef(new Map<string, unknown>());
-      const selectedRef = React.useRef<string | null>(null);
-
-      React.useEffect(() => {
-        const collection = props.elements.map((element) => ({
-          isNode: () => element.data.source == null,
-          id: () => String(element.data.id),
-          position: () => ({ x: 100, y: 120 }),
-        })) as Array<{
-          isNode: () => boolean;
-          id: () => string;
-          position: () => { x: number; y: number };
-        }> & { unselect: () => void };
-
-        collection.unselect = () => {
-          selectedRef.current = null;
-        };
-
-        const instance = {
-          scratch: (key: string, value?: unknown) => {
-            if (value !== undefined) {
-              scratchRef.current.set(key, value);
-            }
-            return scratchRef.current.get(key);
-          },
-          on: (...args: unknown[]) => {
-            const eventName = String(args[0]);
-            const handler = args[args.length - 1] as (event: unknown) => void;
-            handlersRef.current.set(eventName, handler);
-          },
-          elements: () => collection,
-          layout: () => ({ run: mockCySpies.layoutRun }),
-          fit: mockCySpies.fit,
-          center: () => undefined,
-          zoom: ((value?: number) => (value == null ? 1 : undefined)) as (() => number) & ((value: number) => void),
-          pan: ((value?: { x: number; y: number }) => (value == null ? { x: 0, y: 0 } : undefined)) as (() => {
-            x: number;
-            y: number;
-          }) &
-            ((value: { x: number; y: number }) => void),
-          nodes: () => collection.filter((element) => element.isNode()),
-          $: () => ({
-            first: () => ({
-              nonempty: () => selectedRef.current != null,
-              id: () => selectedRef.current ?? "",
-            }),
-          }),
-          $id: (id: string) => ({
-            nonempty: () => props.elements.some((element) => String(element.data.id) === id),
-            select: () => {
-              selectedRef.current = id;
-            },
-          }),
-        };
-
-        props.cy?.(instance);
-      }, [props]);
-
-      const nodeElements = props.elements.filter((element) => element.data.source == null);
+    D3GraphCanvas: forwardRef(function MockD3GraphCanvas(
+      props: {
+        scene: { nodes: Array<{ id: string; label: string }> };
+        onSelect: (nodeId: string | null) => void;
+      },
+      ref,
+    ) {
+      useImperativeHandle(ref, () => ({
+        captureViewport: mockRendererSpies.captureViewport,
+        restoreViewport: mockRendererSpies.restoreViewport,
+        fitView: mockRendererSpies.fitView,
+        requestRelayout: mockRendererSpies.requestRelayout,
+        clearSelection: mockRendererSpies.clearSelection,
+      }));
 
       return (
-        <div data-testid="mock-cytoscape">
-          {nodeElements.map((element) => (
-            <button
-              key={String(element.data.id)}
-              type="button"
-              onClick={() => {
-                selectedRef.current = String(element.data.id);
-                handlersRef.current.get("select")?.({
-                  target: {
-                    id: () => String(element.data.id),
-                  },
-                });
-              }}
-            >
-              {String(element.data.label)}
+        <div>
+          <button type="button" onClick={() => props.onSelect(null)}>
+            clear selection
+          </button>
+          {props.scene.nodes.map((node) => (
+            <button key={node.id} type="button" onClick={() => props.onSelect(node.id)}>
+              {node.label}
             </button>
           ))}
         </div>
       );
-    },
+    }),
   };
 });
 
@@ -217,10 +151,11 @@ function buildQueryResult() {
           url: "https://alpha.example",
           normalized_url: "https://alpha.example",
           domain: "alpha.example",
+          title: "Alpha Blog",
+          icon_url: "https://alpha.example/favicon.ico",
           status_code: 200,
           crawl_status: "FINISHED",
           friend_links_count: 3,
-          depth: 0,
           source_blog_id: null,
           last_crawled_at: null,
           created_at: "2026-03-29T00:00:00Z",
@@ -266,8 +201,12 @@ function buildQueryResult() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockCySpies.fit.mockReset();
-  mockCySpies.layoutRun.mockReset();
+  mockRendererSpies.captureViewport.mockReset();
+  mockRendererSpies.captureViewport.mockReturnValue({ x: 0, y: 0, k: 1 });
+  mockRendererSpies.restoreViewport.mockReset();
+  mockRendererSpies.fitView.mockReset();
+  mockRendererSpies.requestRelayout.mockReset();
+  mockRendererSpies.clearSelection.mockReset();
   mockedUseGraphView.mockReturnValue(buildQueryResult() as unknown as ReturnType<typeof useGraphView>);
 });
 
@@ -289,10 +228,12 @@ test("manual refresh button triggers refetch", async () => {
 test("selecting a node updates the inspector", async () => {
   render(<GraphPage />);
 
-  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
 
   expect(screen.getByText("Selected Node")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "alpha.example" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Alpha Blog" })).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Alpha Blog icon" })).toBeInTheDocument();
+  expect(screen.getByText("alpha.example")).toBeInTheDocument();
   expect(screen.getByText("https://alpha.example")).toBeInTheDocument();
 });
 
@@ -308,7 +249,7 @@ test("sampling controls become visible when random mode is enabled", async () =>
 test("expanding a selected node requests neighborhood data", async () => {
   render(<GraphPage />);
 
-  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
   await userEvent.click(screen.getByRole("button", { name: "展开 1 跳" }));
 
   expect(mockedApi.graphNeighbors).toHaveBeenCalledWith("1", { hops: 1, limit: 180 });
@@ -317,22 +258,33 @@ test("expanding a selected node requests neighborhood data", async () => {
 test("reset restores the core graph after neighborhood expansion", async () => {
   render(<GraphPage />);
 
-  await userEvent.click(screen.getByRole("button", { name: "alpha.example" }));
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
   await userEvent.click(screen.getByRole("button", { name: "展开 1 跳" }));
 
-  expect(await screen.findByRole("button", { name: "beta.example" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Beta Blog" })).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole("button", { name: "重置为核心视图" }));
 
-  expect(screen.queryByRole("button", { name: "beta.example" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Beta Blog" })).not.toBeInTheDocument();
 });
 
-test("fit and relayout controls call the Cytoscape instance", async () => {
+test("fit and relayout controls call the renderer contract", async () => {
   render(<GraphPage />);
 
   await userEvent.click(screen.getByRole("button", { name: "适配视图" }));
   await userEvent.click(screen.getByRole("button", { name: "重新布局" }));
 
-  expect(mockCySpies.fit).toHaveBeenCalled();
-  expect(mockCySpies.layoutRun).toHaveBeenCalled();
+  expect(mockRendererSpies.fitView).toHaveBeenCalled();
+  expect(mockRendererSpies.requestRelayout).toHaveBeenCalledWith("full");
+});
+
+test("clicking the background clears the current selection", async () => {
+  render(<GraphPage />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
+  expect(screen.getByRole("heading", { name: "Alpha Blog" })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "clear selection" }));
+
+  expect(screen.queryByRole("heading", { name: "Alpha Blog" })).not.toBeInTheDocument();
 });

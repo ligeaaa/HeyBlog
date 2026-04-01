@@ -1,5 +1,6 @@
-import type { GraphNodeDetails } from "../../lib/graph/cytoscapeGraph";
+import type { GraphNodeDetails } from "../../lib/graph/graphScene";
 import type { GraphViewMeta } from "../../lib/api";
+import { SiteIdentity } from "../SiteIdentity";
 
 type Props = {
   details: GraphNodeDetails | null;
@@ -23,11 +24,15 @@ export function GraphInspector({ details, lastUpdatedAt, viewMeta }: Props) {
         <>
           <div className="graph-panel-head">
             <p className="eyebrow">Selected Node</p>
-            <h3>{details.label}</h3>
-            <p className="graph-panel-subtle">{details.domain}</p>
+            <SiteIdentity
+              className="graph-site-identity"
+              title={details.title}
+              domain={details.domain}
+              iconUrl={details.iconUrl}
+              nameElement="h3"
+            />
           </div>
           <dl className="graph-stat-grid">
-            <Stat label="Depth" value={details.depth} />
             <Stat label="Degree" value={details.degree} />
             <Stat label="Outgoing" value={details.outgoingCount} />
             <Stat label="Incoming" value={details.incomingCount} />
@@ -44,7 +49,7 @@ export function GraphInspector({ details, lastUpdatedAt, viewMeta }: Props) {
           <p className="eyebrow">Inspector</p>
           <h3>选择一个 blog 节点</h3>
           <p className="page-copy">
-            图谱交互由 Cytoscape 驱动。你可以拖拽节点、缩放视图，并用右上角按钮手动刷新或重新布局。
+            图谱支持拖拽节点、缩放视图，并可通过右上角操作进行刷新、重置核心视图和手动重新布局。
           </p>
         </div>
       )}

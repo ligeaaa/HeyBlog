@@ -75,7 +75,6 @@ def seed_blog(repository: Repository) -> dict[str, Any]:
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
-        depth=0,
         source_blog_id=None,
     )
     blog = repository.get_blog(blog_id)
@@ -130,6 +129,119 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     edges = repository.list_edges()
     assert len(edges) == 1
     assert edges[0]["link_url_raw"] == "https://friend.example/"
+    blogs = repository.list_blogs()
+    assert len(blogs) == 2
+    child_blog = next(blog_row for blog_row in blogs if blog_row["id"] != blog["id"])
+    assert child_blog["source_blog_id"] == blog["id"]
+    assert "depth" not in child_blog
+
+
+def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
+    """Homepage crawl should persist title and icon metadata onto the source blog."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    homepage_html = """
+    <html>
+      <head>
+        <title>Alpha Blog</title>
+        <link rel="icon" href="/static/favicon.png" />
+      </head>
+      <body>
+        <footer><a href="/friends">友情链接</a></footer>
+      </body>
+    </html>
+    """
+    friend_page_html = """
+    <html><body><section><h2>友情链接</h2>
+      <a href="https://friend.example/">Friend</a>
+    </section></body></html>
+    """
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text=homepage_html,
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends",
+                status_code=200,
+                text=friend_page_html,
+            ),
+        }
+    )
+
+    pipeline._crawl_blog(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["title"] == "Alpha Blog"
+    assert refreshed["icon_url"] == "https://blog.example.com/static/favicon.png"
+
+
+def test_pipeline_falls_back_to_origin_favicon_when_page_has_no_icon_link(tmp_path: Path) -> None:
+    """Missing explicit icon markup should still produce an origin favicon candidate."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="<html><head><title>Plain Blog</title></head><body></body></html>",
+            ),
+        }
+    )
+
+    pipeline._crawl_blog(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["title"] == "Plain Blog"
+    assert refreshed["icon_url"] == "https://blog.example.com/favicon.ico"
+
+
+def test_pipeline_enqueues_discovered_children_without_depth_gating(tmp_path: Path) -> None:
+    """Crawler should persist discovered children without any depth-based suppression."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="""
+                <html>
+                  <body>
+                    <footer><a href="/friends">友情链接</a></footer>
+                  </body>
+                </html>
+                """,
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends",
+                status_code=200,
+                text="""
+                <html><body><section><h2>友情链接</h2>
+                  <a href="https://friend.example/">Friend</a>
+                </section></body></html>
+                """,
+            ),
+        }
+    )
+
+    discovered = pipeline._crawl_blog(blog)
+
+    assert discovered == 1
+    edges = repository.list_edges()
+    assert len(edges) == 1
+    blogs = repository.list_blogs()
+    assert len(blogs) == 2
+    assert blogs[1]["source_blog_id"] == blog["id"]
+    assert blogs[1]["crawl_status"] == "WAITING"
 
 
 def test_pipeline_uses_fallback_paths_when_homepage_has_no_friend_link_entry(tmp_path: Path) -> None:
