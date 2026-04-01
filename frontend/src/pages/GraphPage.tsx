@@ -1,26 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import CytoscapeComponent from "react-cytoscapejs";
-import cytoscape from "cytoscape";
-import fcose from "cytoscape-fcose";
 import { PageHeader } from "../components/PageHeader";
 import { Surface } from "../components/Surface";
+import { D3GraphCanvas } from "../components/graph/D3GraphCanvas";
 import { GraphInspector } from "../components/graph/GraphInspector";
 import { api, type GraphViewPayload } from "../lib/api";
+import { DEFAULT_GRAPH_VIEWPORT, type GraphRendererHandle } from "../lib/graph/graphRenderer";
 import {
-  buildCytoscapeGraph,
-  createFcoseLayout,
-  graphStylesheet,
+  buildGraphScene,
+  createEmptyGraphOverlay,
   mergeGraphViewPayload,
-} from "../lib/graph/cytoscapeGraph";
+} from "../lib/graph/graphScene";
 import { useGraphView } from "../lib/hooks";
-
-cytoscape.use(fcose);
-
-type ViewportSnapshot = {
-  zoom: number;
-  pan: cytoscape.Position;
-  selectedNodeId: string | null;
-};
 
 type SamplingMode = "off" | "count" | "percent";
 
@@ -58,14 +48,10 @@ export function GraphPage() {
   const [graphPayload, setGraphPayload] = useState<GraphViewPayload | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isExpanding, setIsExpanding] = useState(false);
-  const cyRef = useRef<cytoscape.Core | null>(null);
-  const positionsRef = useRef(new Map<string, { x: number; y: number }>());
+  const rendererRef = useRef<GraphRendererHandle | null>(null);
+  const overlayRef = useRef(createEmptyGraphOverlay());
   const hasInitializedViewportRef = useRef(false);
-  const viewportRef = useRef<ViewportSnapshot>({
-    zoom: 1,
-    pan: { x: 0, y: 0 },
-    selectedNodeId: null,
-  });
+  const viewportRef = useRef(DEFAULT_GRAPH_VIEWPORT);
 
   useEffect(() => {
     if (graph.data) {
@@ -75,12 +61,8 @@ export function GraphPage() {
 
   useEffect(() => {
     hasInitializedViewportRef.current = false;
-    positionsRef.current = new Map();
-    viewportRef.current = {
-      zoom: 1,
-      pan: { x: 0, y: 0 },
-      selectedNodeId: null,
-    };
+    overlayRef.current = createEmptyGraphOverlay();
+    viewportRef.current = DEFAULT_GRAPH_VIEWPORT;
     setSelectedNodeId(null);
   }, [
     viewOptions.strategy,
@@ -90,32 +72,15 @@ export function GraphPage() {
     viewOptions.sampleSeed,
   ]);
 
-  const graphBundle = useMemo(
-    () => buildCytoscapeGraph(graphPayload, positionsRef.current),
-    [graphPayload],
-  );
+  const graphBundle = useMemo(() => buildGraphScene(graphPayload, overlayRef.current), [graphPayload]);
   const selectedDetails = selectedNodeId ? graphBundle.detailsById.get(selectedNodeId) ?? null : null;
 
-  function cacheSceneState(cy: cytoscape.Core) {
-    const positionMap = new Map<string, { x: number; y: number }>();
-    cy.nodes().forEach((node) => {
-      positionMap.set(node.id(), node.position());
-    });
-    const selectedElement = cy.$("node:selected").first();
-    positionsRef.current = positionMap;
-    viewportRef.current = {
-      zoom: cy.zoom(),
-      pan: cy.pan(),
-      selectedNodeId: selectedElement.nonempty() ? selectedElement.id() : null,
-    };
-  }
-
-  function runLayout(animate = false) {
-    const cy = cyRef.current;
-    if (!cy) {
+  function captureViewport() {
+    const renderer = rendererRef.current;
+    if (!renderer) {
       return;
     }
-    cy.layout(createFcoseLayout({ animate })).run();
+    viewportRef.current = renderer.captureViewport();
   }
 
   async function expandSelectedNode(hops: 1 | 2) {
@@ -124,6 +89,7 @@ export function GraphPage() {
     }
     setIsExpanding(true);
     try {
+      captureViewport();
       const payload = await api.graphNeighbors(selectedNodeId, {
         hops,
         limit: Math.max(80, Math.min(viewOptions.limit, 240)),
@@ -141,47 +107,25 @@ export function GraphPage() {
   }, [graphBundle.detailsById, selectedNodeId]);
 
   useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy || graphBundle.elements.length === 0) {
+    const renderer = rendererRef.current;
+    if (!renderer || graphBundle.nodes.length === 0) {
       return;
     }
 
-    if (!graphBundle.hasStablePositions) {
-      cy.elements().forEach((element) => {
-        if (!element.isNode()) {
-          return;
-        }
-        const cachedPosition = positionsRef.current.get(element.id());
-        if (cachedPosition) {
-          element.position(cachedPosition);
-        }
-      });
-    }
-
     if (!hasInitializedViewportRef.current) {
+      renderer.fitView();
       if (graphBundle.shouldRunLayout) {
-        runLayout(false);
+        renderer.requestRelayout("soft");
       }
-      cy.fit(undefined, 60);
-      cacheSceneState(cy);
       hasInitializedViewportRef.current = true;
-    } else {
-      cy.zoom(viewportRef.current.zoom);
-      cy.pan(viewportRef.current.pan);
-      if (graphBundle.shouldRunLayout) {
-        runLayout(false);
-      } else {
-        cacheSceneState(cy);
-      }
+      return;
     }
 
-    if (viewportRef.current.selectedNodeId) {
-      const selectedElement = cy.$id(viewportRef.current.selectedNodeId);
-      if (selectedElement.nonempty()) {
-        selectedElement.select();
-      }
+    renderer.restoreViewport(viewportRef.current);
+    if (graphBundle.shouldRunLayout) {
+      renderer.requestRelayout("soft");
     }
-  }, [graphBundle.signature, graphBundle.shouldRunLayout, graphBundle.hasStablePositions, graphBundle.elements.length]);
+  }, [graphBundle.signature, graphBundle.shouldRunLayout, graphBundle.nodes.length]);
 
   return (
     <div className="page-stack">
@@ -193,10 +137,10 @@ export function GraphPage() {
       <Surface title="Graph Explorer" note="默认来自 /api/graph/views/core；若 snapshot 可用则优先复用稳定坐标。">
         {graph.isLoading ? <p>正在加载图谱…</p> : null}
         {graph.error ? <p className="error-copy">图谱加载失败：{graph.error.message}</p> : null}
-        {!graph.isLoading && !graph.error && graphBundle.elements.length === 0 ? <p>暂无图谱数据。</p> : null}
+        {!graph.isLoading && !graph.error && graphBundle.nodes.length === 0 ? <p>暂无图谱数据。</p> : null}
 
-        {graphBundle.elements.length > 0 ? (
-          <div className="graph-layout graph-layout-cyto">
+        {graphBundle.nodes.length > 0 ? (
+          <div className="graph-layout">
             <div className="graph-workbench">
               <div className="graph-toolbar">
                 <div>
@@ -212,9 +156,7 @@ export function GraphPage() {
                     className="secondary-button"
                     disabled={graph.isFetching}
                     onClick={async () => {
-                      if (cyRef.current) {
-                        cacheSceneState(cyRef.current);
-                      }
+                      captureViewport();
                       await graph.refetch();
                     }}
                   >
@@ -226,12 +168,8 @@ export function GraphPage() {
                     disabled={!graph.data}
                     onClick={() => {
                       setGraphPayload(graph.data ?? null);
-                      positionsRef.current = new Map();
-                      viewportRef.current = {
-                        zoom: 1,
-                        pan: { x: 0, y: 0 },
-                        selectedNodeId: null,
-                      };
+                      overlayRef.current = createEmptyGraphOverlay();
+                      viewportRef.current = DEFAULT_GRAPH_VIEWPORT;
                       setSelectedNodeId(null);
                       hasInitializedViewportRef.current = false;
                     }}
@@ -242,7 +180,7 @@ export function GraphPage() {
                     type="button"
                     className="secondary-button"
                     onClick={() => {
-                      runLayout(true);
+                      rendererRef.current?.requestRelayout("full");
                     }}
                   >
                     重新布局
@@ -251,12 +189,7 @@ export function GraphPage() {
                     type="button"
                     className="secondary-button"
                     onClick={() => {
-                      const cy = cyRef.current;
-                      if (!cy) {
-                        return;
-                      }
-                      cy.fit(undefined, 60);
-                      cacheSceneState(cy);
+                      rendererRef.current?.fitView();
                     }}
                   >
                     适配视图
@@ -327,7 +260,7 @@ export function GraphPage() {
                       <span>{viewOptions.sampleMode === "count" ? "采样数量" : "采样比例 (%)"}</span>
                       <input
                         type="number"
-                        min={viewOptions.sampleMode === "count" ? 1 : 1}
+                        min={1}
                         max={viewOptions.sampleMode === "count" ? 1000 : 100}
                         value={viewOptions.sampleValue ?? ""}
                         onChange={(event) => {
@@ -392,44 +325,18 @@ export function GraphPage() {
                 </div>
               </div>
 
-              <div className="graph-cyto-shell">
-                <CytoscapeComponent
-                  elements={graphBundle.elements}
-                  stylesheet={graphStylesheet}
-                  style={{ width: "100%", height: "100%" }}
-                  minZoom={0.25}
-                  maxZoom={2.5}
-                  layout={{ name: "preset", fit: false, padding: 60 }}
-                  pixelRatio={1}
-                  hideEdgesOnViewport={graphBundle.elements.length > 800}
-                  textureOnViewport={graphBundle.elements.length > 1200}
-                  cy={(cy: cytoscape.Core) => {
-                    cyRef.current = cy;
-
-                    if (cy.scratch("heyblog-events-bound")) {
-                      return;
-                    }
-
-                    cy.scratch("heyblog-events-bound", true);
-                    cy.on("select", "node", (event: cytoscape.EventObject) => {
-                      setSelectedNodeId(event.target.id());
-                    });
-                    cy.on("unselect", "node", () => {
-                      const nextSelected = cy.$("node:selected").first();
-                      setSelectedNodeId(nextSelected.nonempty() ? nextSelected.id() : null);
-                    });
-                    cy.on("tap", (event: cytoscape.EventObject) => {
-                      if (event.target === cy) {
-                        cy.elements().unselect();
-                        setSelectedNodeId(null);
-                      }
-                    });
-                    cy.on("zoom pan dragfree layoutstop", () => {
-                      cacheSceneState(cy);
-                    });
-                  }}
-                />
-              </div>
+              <D3GraphCanvas
+                ref={rendererRef}
+                scene={graphBundle}
+                selectedNodeId={selectedNodeId}
+                onSelect={setSelectedNodeId}
+                onViewportChange={(snapshot) => {
+                  viewportRef.current = snapshot;
+                }}
+                onOverlayChange={(overlay) => {
+                  overlayRef.current = overlay;
+                }}
+              />
             </div>
 
             <GraphInspector

@@ -1,4 +1,4 @@
-import type { GraphNodeDetails } from "../../lib/graph/cytoscapeGraph";
+import type { GraphNodeDetails } from "../../lib/graph/graphScene";
 import type { GraphViewMeta } from "../../lib/api";
 import { SiteIdentity } from "../SiteIdentity";
 
@@ -49,7 +49,7 @@ export function GraphInspector({ details, lastUpdatedAt, viewMeta }: Props) {
           <p className="eyebrow">Inspector</p>
           <h3>选择一个 blog 节点</h3>
           <p className="page-copy">
-            图谱交互由 Cytoscape 驱动。你可以拖拽节点、缩放视图，并用右上角按钮手动刷新或重新布局。
+            图谱支持拖拽节点、缩放视图，并可通过右上角操作进行刷新、重置核心视图和手动重新布局。
           </p>
         </div>
       )}

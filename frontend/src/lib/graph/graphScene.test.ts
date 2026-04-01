@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildCytoscapeGraph, mergeGraphViewPayload } from "./cytoscapeGraph";
+import { buildGraphScene, mergeGraphViewPayload, type GraphPositionOverlay } from "./graphScene";
 import type { GraphViewPayload } from "../api";
 
 const payload: GraphViewPayload = {
@@ -51,30 +51,63 @@ const payload: GraphViewPayload = {
   },
 };
 
-describe("buildCytoscapeGraph", () => {
-  test("uses stable snapshot coordinates and labels important nodes", () => {
-    const bundle = buildCytoscapeGraph(payload);
+describe("buildGraphScene", () => {
+  test("uses stable snapshot coordinates and captures node details", () => {
+    const scene = buildGraphScene(payload);
 
-    expect(bundle.hasStablePositions).toBe(true);
-    expect(bundle.shouldRunLayout).toBe(false);
-    expect(bundle.detailsById.get("1")?.outgoingCount).toBe(4);
-    expect(bundle.detailsById.get("1")?.iconUrl).toBe("https://alpha.example/favicon.ico");
-    expect(bundle.elements[0]).toMatchObject({
-      data: {
-        id: "1",
-        label: "Alpha Blog",
-        iconUrl: "https://alpha.example/favicon.ico",
-      },
-      position: {
-        x: 10,
-        y: 20,
+    expect(scene.hasStablePositions).toBe(true);
+    expect(scene.shouldRunLayout).toBe(false);
+    expect(scene.detailsById.get("1")?.outgoingCount).toBe(4);
+    expect(scene.detailsById.get("1")?.iconUrl).toBe("https://alpha.example/favicon.ico");
+    expect(scene.nodes[0]).toMatchObject({
+      id: "1",
+      label: "Alpha Blog",
+      position: { x: 10, y: 20 },
+      visual: {
+        showLabel: true,
+        hasIcon: true,
       },
     });
   });
 
+  test("uses overlay positions only when the fingerprint matches", () => {
+    const overlay: GraphPositionOverlay = {
+      graphFingerprint: "graph-v1",
+      positions: new Map([["1", { x: 210, y: 320 }]]),
+    };
+
+    const restoredScene = buildGraphScene(payload, overlay);
+    const staleOverlayScene = buildGraphScene(payload, {
+      graphFingerprint: "graph-v2",
+      positions: overlay.positions,
+    });
+
+    expect(restoredScene.nodes[0]?.position).toEqual({ x: 210, y: 320 });
+    expect(staleOverlayScene.nodes[0]?.position).toEqual({ x: 10, y: 20 });
+  });
+
+  test("falls back to seeded positions when stable coordinates are unavailable", () => {
+    const scene = buildGraphScene({
+      ...payload,
+      nodes: payload.nodes.map((node) => ({
+        ...node,
+        x: undefined,
+        y: undefined,
+      })),
+      meta: {
+        ...payload.meta,
+        has_stable_positions: false,
+      },
+    });
+
+    expect(scene.shouldRunLayout).toBe(true);
+    expect(scene.nodes[0]?.position.x).toBeGreaterThan(0);
+    expect(scene.nodes[0]?.position.y).toBeGreaterThan(0);
+  });
+
   test("signature changes when the underlying view identity changes", () => {
-    const bundle = buildCytoscapeGraph(payload);
-    const refocusedBundle = buildCytoscapeGraph({
+    const scene = buildGraphScene(payload);
+    const refocusedScene = buildGraphScene({
       ...payload,
       meta: {
         ...payload.meta,
@@ -85,7 +118,7 @@ describe("buildCytoscapeGraph", () => {
       },
     });
 
-    expect(refocusedBundle.signature).not.toBe(bundle.signature);
+    expect(refocusedScene.signature).not.toBe(scene.signature);
   });
 });
 
@@ -102,6 +135,8 @@ describe("mergeGraphViewPayload", () => {
           icon_url: "https://beta.example/favicon.ico",
           url: "https://beta.example",
           normalized_url: "https://beta.example",
+          x: 160,
+          y: 140,
         },
       ],
       edges: [
@@ -127,5 +162,6 @@ describe("mergeGraphViewPayload", () => {
     expect(merged.nodes).toHaveLength(2);
     expect(merged.edges).toHaveLength(1);
     expect(merged.meta.strategy).toBe("neighborhood");
+    expect(merged.meta.selected_nodes).toBe(2);
   });
 });
