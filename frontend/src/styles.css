@@ -425,10 +425,6 @@ td {
   gap: 16px;
 }
 
-.graph-layout-cyto {
-  align-items: start;
-}
-
 .graph-workbench {
   display: grid;
   gap: 14px;
@@ -488,7 +484,7 @@ td {
   color: var(--ink);
 }
 
-.graph-cyto-shell {
+.graph-canvas-shell {
   min-height: 620px;
   border-radius: 24px;
   overflow: hidden;
@@ -556,27 +552,61 @@ td {
 
 .graph-canvas {
   width: 100%;
-  min-height: 420px;
-  border-radius: 18px;
-  border: 1px solid rgba(214, 200, 172, 0.8);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.65), rgba(251, 247, 240, 0.95));
+  height: 100%;
+  min-height: 620px;
+  display: block;
 }
 
-.graph-edge {
-  stroke: rgba(111, 92, 68, 0.45);
+.graph-link {
+  stroke: rgba(141, 181, 255, 0.24);
   stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+.graph-link.is-deemphasized {
+  stroke: rgba(141, 181, 255, 0.16);
+  stroke-width: 0.8;
 }
 
 .graph-node {
-  fill: rgba(194, 96, 31, 0.85);
-  stroke: rgba(158, 65, 18, 0.95);
-  stroke-width: 1.5;
   cursor: pointer;
-  transition: transform 120ms ease;
+  outline: none;
 }
 
-.graph-node:hover {
-  fill: rgba(158, 65, 18, 0.95);
+.graph-node:focus-visible .graph-node-circle {
+  stroke: #ffffff;
+  stroke-width: 3.2;
+}
+
+.graph-node-circle {
+  stroke: rgba(237, 244, 255, 0.9);
+  stroke-width: 1.75;
+  transition:
+    fill 120ms ease,
+    stroke-width 120ms ease;
+}
+
+.graph-node-icon {
+  pointer-events: none;
+}
+
+.graph-node.is-selected .graph-node-circle {
+  stroke: #ffffff;
+  stroke-width: 2.8;
+}
+
+.graph-label {
+  fill: #f5f8ff;
+  font-size: 10px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: rgba(9, 16, 33, 0.72);
+  stroke-width: 2px;
+  pointer-events: none;
+}
+
+.graph-label.is-selected {
+  fill: #ffe49b;
 }
 
 .graph-tooltip {
@@ -597,7 +627,11 @@ td {
     flex-direction: column;
   }
 
-  .graph-cyto-shell {
+  .graph-canvas-shell {
+    min-height: 500px;
+  }
+
+  .graph-canvas {
     min-height: 500px;
   }
 }

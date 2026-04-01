@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { forwardRef, useImperativeHandle } from "react";
 import { GraphPage } from "./GraphPage";
 import { useGraphView } from "../lib/hooks";
 import { api } from "../lib/api";
@@ -97,113 +98,44 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const mockCySpies = {
-  fit: vi.fn(),
-  layoutRun: vi.fn(),
+const mockRendererSpies = {
+  captureViewport: vi.fn(() => ({ x: 0, y: 0, k: 1 })),
+  restoreViewport: vi.fn(),
+  fitView: vi.fn(),
+  requestRelayout: vi.fn(),
+  clearSelection: vi.fn(),
 };
 
-vi.mock("react-cytoscapejs", async () => {
-  const React = await import("react");
-
+vi.mock("../components/graph/D3GraphCanvas", () => {
   return {
-    default: function MockCytoscapeComponent(props: {
-      elements: Array<{ data: Record<string, string> }>;
-      cy?: (instance: {
-        scratch: (key: string, value?: unknown) => unknown;
-        on: (...args: unknown[]) => void;
-        elements: () => { length: number; unselect: () => void; forEach: (fn: (value: unknown) => void) => void };
-        layout: () => { run: () => void };
-        fit: () => void;
-        center: () => void;
-        zoom: (() => number) & ((value: number) => void);
-        pan: (() => { x: number; y: number }) & ((value: { x: number; y: number }) => void);
-        nodes: () => Array<{ id: () => string; position: () => { x: number; y: number } }>;
-        $: () => { first: () => { nonempty: () => boolean; id: () => string } };
-        $id: (id: string) => { nonempty: () => boolean; select: () => void };
-      }) => void;
-    }) {
-      const handlersRef = React.useRef(new Map<string, (event: unknown) => void>());
-      const scratchRef = React.useRef(new Map<string, unknown>());
-      const selectedRef = React.useRef<string | null>(null);
-
-      React.useEffect(() => {
-        const collection = props.elements.map((element) => ({
-          isNode: () => element.data.source == null,
-          id: () => String(element.data.id),
-          position: () => ({ x: 100, y: 120 }),
-        })) as Array<{
-          isNode: () => boolean;
-          id: () => string;
-          position: () => { x: number; y: number };
-        }> & { unselect: () => void };
-
-        collection.unselect = () => {
-          selectedRef.current = null;
-        };
-
-        const instance = {
-          scratch: (key: string, value?: unknown) => {
-            if (value !== undefined) {
-              scratchRef.current.set(key, value);
-            }
-            return scratchRef.current.get(key);
-          },
-          on: (...args: unknown[]) => {
-            const eventName = String(args[0]);
-            const handler = args[args.length - 1] as (event: unknown) => void;
-            handlersRef.current.set(eventName, handler);
-          },
-          elements: () => collection,
-          layout: () => ({ run: mockCySpies.layoutRun }),
-          fit: mockCySpies.fit,
-          center: () => undefined,
-          zoom: ((value?: number) => (value == null ? 1 : undefined)) as (() => number) & ((value: number) => void),
-          pan: ((value?: { x: number; y: number }) => (value == null ? { x: 0, y: 0 } : undefined)) as (() => {
-            x: number;
-            y: number;
-          }) &
-            ((value: { x: number; y: number }) => void),
-          nodes: () => collection.filter((element) => element.isNode()),
-          $: () => ({
-            first: () => ({
-              nonempty: () => selectedRef.current != null,
-              id: () => selectedRef.current ?? "",
-            }),
-          }),
-          $id: (id: string) => ({
-            nonempty: () => props.elements.some((element) => String(element.data.id) === id),
-            select: () => {
-              selectedRef.current = id;
-            },
-          }),
-        };
-
-        props.cy?.(instance);
-      }, [props]);
-
-      const nodeElements = props.elements.filter((element) => element.data.source == null);
+    D3GraphCanvas: forwardRef(function MockD3GraphCanvas(
+      props: {
+        scene: { nodes: Array<{ id: string; label: string }> };
+        onSelect: (nodeId: string | null) => void;
+      },
+      ref,
+    ) {
+      useImperativeHandle(ref, () => ({
+        captureViewport: mockRendererSpies.captureViewport,
+        restoreViewport: mockRendererSpies.restoreViewport,
+        fitView: mockRendererSpies.fitView,
+        requestRelayout: mockRendererSpies.requestRelayout,
+        clearSelection: mockRendererSpies.clearSelection,
+      }));
 
       return (
-        <div data-testid="mock-cytoscape">
-          {nodeElements.map((element) => (
-            <button
-              key={String(element.data.id)}
-              type="button"
-              onClick={() => {
-                selectedRef.current = String(element.data.id);
-                handlersRef.current.get("select")?.({
-                  target: {
-                    id: () => String(element.data.id),
-                  },
-                });
-              }}
-            >
-              {String(element.data.label)}
+        <div>
+          <button type="button" onClick={() => props.onSelect(null)}>
+            clear selection
+          </button>
+          {props.scene.nodes.map((node) => (
+            <button key={node.id} type="button" onClick={() => props.onSelect(node.id)}>
+              {node.label}
             </button>
           ))}
         </div>
       );
-    },
+    }),
   };
 });
 
@@ -269,8 +201,12 @@ function buildQueryResult() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockCySpies.fit.mockReset();
-  mockCySpies.layoutRun.mockReset();
+  mockRendererSpies.captureViewport.mockReset();
+  mockRendererSpies.captureViewport.mockReturnValue({ x: 0, y: 0, k: 1 });
+  mockRendererSpies.restoreViewport.mockReset();
+  mockRendererSpies.fitView.mockReset();
+  mockRendererSpies.requestRelayout.mockReset();
+  mockRendererSpies.clearSelection.mockReset();
   mockedUseGraphView.mockReturnValue(buildQueryResult() as unknown as ReturnType<typeof useGraphView>);
 });
 
@@ -332,12 +268,23 @@ test("reset restores the core graph after neighborhood expansion", async () => {
   expect(screen.queryByRole("button", { name: "Beta Blog" })).not.toBeInTheDocument();
 });
 
-test("fit and relayout controls call the Cytoscape instance", async () => {
+test("fit and relayout controls call the renderer contract", async () => {
   render(<GraphPage />);
 
   await userEvent.click(screen.getByRole("button", { name: "适配视图" }));
   await userEvent.click(screen.getByRole("button", { name: "重新布局" }));
 
-  expect(mockCySpies.fit).toHaveBeenCalled();
-  expect(mockCySpies.layoutRun).toHaveBeenCalled();
+  expect(mockRendererSpies.fitView).toHaveBeenCalled();
+  expect(mockRendererSpies.requestRelayout).toHaveBeenCalledWith("full");
+});
+
+test("clicking the background clears the current selection", async () => {
+  render(<GraphPage />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Alpha Blog" }));
+  expect(screen.getByRole("heading", { name: "Alpha Blog" })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "clear selection" }));
+
+  expect(screen.queryByRole("heading", { name: "Alpha Blog" })).not.toBeInTheDocument();
 });
