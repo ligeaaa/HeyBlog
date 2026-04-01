@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
 from persistence_api.graph_service import GraphService
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
@@ -83,6 +84,27 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.get("/internal/blogs")
     def list_blogs() -> list[dict[str, Any]]:
         return get_state().repository.list_blogs()
+
+    @app.get("/internal/blogs/catalog")
+    def list_blogs_catalog(
+        page: int = 1,
+        page_size: int = BLOG_CATALOG_DEFAULT_PAGE_SIZE,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return get_state().repository.list_blogs_catalog(
+                page=page,
+                page_size=page_size,
+                site=site,
+                url=url,
+                status=status,
+                q=q,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/internal/queue/next")
     def next_waiting() -> dict[str, Any] | None:

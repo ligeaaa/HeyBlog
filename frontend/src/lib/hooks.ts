@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BlogRecord, EdgeRecord } from "./api";
+import { BlogCatalogPagePayload, BlogRecord, EdgeRecord } from "./api";
 import { api } from "./api";
 
 type QueryTuning = {
@@ -12,6 +12,8 @@ export type RelatedEdge = EdgeRecord & {
   neighborBlog: BlogRecord | null;
 };
 
+export const BLOG_CRAWL_STATUS_OPTIONS = ["WAITING", "PROCESSING", "FINISHED", "FAILED"] as const;
+
 export function useBlogs(options: QueryTuning = {}) {
   return useQuery({
     queryKey: ["blogs"],
@@ -19,6 +21,47 @@ export function useBlogs(options: QueryTuning = {}) {
     enabled: options.enabled ?? true,
     refetchInterval: options.refetchInterval ?? 5000,
     staleTime: options.staleTime,
+  });
+}
+
+export type BlogCatalogOptions = {
+  page: number;
+  pageSize?: number;
+  q?: string | null;
+  site?: string | null;
+  url?: string | null;
+  status?: string | null;
+  enabled?: boolean;
+};
+
+export function useBlogCatalog(options: BlogCatalogOptions) {
+  const pageSize = options.pageSize ?? 50;
+  const queryOptions = {
+    page: options.page,
+    pageSize,
+    q: options.q ?? null,
+    site: options.site ?? null,
+    url: options.url ?? null,
+    status: options.status ?? null,
+  };
+
+  return useQuery({
+    queryKey: ["blog-catalog", queryOptions],
+    queryFn: () =>
+      api.blogCatalog({
+        page: queryOptions.page,
+        pageSize: queryOptions.pageSize,
+        q: queryOptions.q,
+        site: queryOptions.site,
+        url: queryOptions.url,
+        status: queryOptions.status,
+      }),
+    enabled: options.enabled ?? true,
+    staleTime: 30000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    placeholderData: (previousData: BlogCatalogPagePayload | undefined) => previousData,
   });
 }
 
@@ -163,6 +206,7 @@ export function useCrawlerActions() {
   const invalidateAll = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["blogs"] }),
+      queryClient.invalidateQueries({ queryKey: ["blog-catalog"] }),
       queryClient.invalidateQueries({ queryKey: ["edges"] }),
       queryClient.invalidateQueries({ queryKey: ["status"] }),
       queryClient.invalidateQueries({ queryKey: ["stats"] }),

@@ -113,6 +113,28 @@ class PersistenceHttpClient:
     def list_blogs(self) -> list[dict[str, Any]]:
         return self._get("/internal/blogs")
 
+    def list_blogs_catalog(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        site: str | None = None,
+        url: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        return self._get(
+            "/internal/blogs/catalog",
+            {
+                "page": page,
+                "page_size": page_size,
+                "site": site,
+                "url": url,
+                "status": status,
+                "q": q,
+            },
+        )
+
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         return self._get(f"/internal/blogs/{blog_id}")
 
