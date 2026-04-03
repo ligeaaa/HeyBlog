@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC
+from datetime import datetime
 from threading import Event
 from threading import Lock
 from threading import Thread
 from typing import Any
 from uuid import uuid4
 
-from crawler.pipeline import CrawlPipeline
+from crawler.contracts.runtime import RuntimeAggregate
+from crawler.contracts.runtime import RuntimeSnapshot
+from crawler.runtime.executor import SerialRuntimeExecutor
 
 
 def utc_now() -> str:
@@ -19,26 +20,12 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-@dataclass(slots=True)
-class RuntimeSnapshot:
-    """Represent crawler runtime state for UI and API consumers."""
-
-    runner_status: str = "idle"
-    active_run_id: str | None = None
-    current_blog_id: int | None = None
-    current_url: str | None = None
-    current_stage: str | None = None
-    last_started_at: str | None = None
-    last_stopped_at: str | None = None
-    last_error: str | None = None
-    last_result: dict[str, Any] | None = None
-
-
 class CrawlerRuntimeService:
     """Manage crawler execution state and control actions."""
 
-    def __init__(self, pipeline: CrawlPipeline) -> None:
+    def __init__(self, pipeline: Any, executor: SerialRuntimeExecutor | None = None) -> None:
         self.pipeline = pipeline
+        self.executor = executor or SerialRuntimeExecutor()
         self._snapshot = RuntimeSnapshot()
         self._lock = Lock()
         self._stop_event = Event()
@@ -47,7 +34,7 @@ class CrawlerRuntimeService:
     def status(self) -> dict[str, Any]:
         """Return the current runtime snapshot."""
         with self._lock:
-            return asdict(self._snapshot)
+            return self._snapshot.as_dict()
 
     def current(self) -> dict[str, Any]:
         """Return the active blog currently being processed."""
@@ -66,28 +53,22 @@ class CrawlerRuntimeService:
         """Start the background crawler loop."""
         with self._lock:
             if self._snapshot.runner_status in {"starting", "running", "stopping"}:
-                return asdict(self._snapshot)
+                return self._snapshot.as_dict()
 
             self._stop_event.clear()
-            self._snapshot.runner_status = "starting"
-            self._snapshot.active_run_id = str(uuid4())
-            self._snapshot.last_started_at = utc_now()
-            self._snapshot.last_error = None
-            self._snapshot.last_result = None
-
-            self._thread = Thread(target=self._run_background_loop, daemon=True)
-            self._thread.start()
-            return asdict(self._snapshot)
+            self._begin_run_locked("starting")
+            self._thread = self.executor.start(self._run_background_loop)
+            return self._snapshot.as_dict()
 
     def stop(self) -> dict[str, Any]:
         """Request the background loop to stop after the current safe checkpoint."""
         with self._lock:
             if self._snapshot.runner_status == "idle":
-                return asdict(self._snapshot)
+                return self._snapshot.as_dict()
 
             self._stop_event.set()
             self._snapshot.runner_status = "stopping"
-            return asdict(self._snapshot)
+            return self._snapshot.as_dict()
 
     def run_batch(self, max_nodes: int) -> dict[str, Any]:
         """Run a synchronous batch when the background loop is idle."""
@@ -96,13 +77,9 @@ class CrawlerRuntimeService:
                 return {
                     "accepted": False,
                     "reason": "runtime_busy",
-                    "runtime": asdict(self._snapshot),
+                    "runtime": self._snapshot.as_dict(),
                 }
-            self._snapshot.runner_status = "running"
-            self._snapshot.active_run_id = str(uuid4())
-            self._snapshot.last_started_at = utc_now()
-            self._snapshot.last_error = None
-            self._snapshot.last_result = None
+            self._begin_run_locked("running")
 
         try:
             result = self.pipeline.run_once(
@@ -123,7 +100,7 @@ class CrawlerRuntimeService:
                     "accepted": True,
                     "mode": "batch",
                     "result": result,
-                    "runtime": asdict(self._snapshot),
+                    "runtime": self._snapshot.as_dict(),
                 }
         except Exception as exc:  # noqa: BLE001
             with self._lock:
@@ -148,11 +125,7 @@ class CrawlerRuntimeService:
                     on_blog_error=self._on_blog_error,
                     should_stop=self._stop_event.is_set,
                 )
-                aggregate["processed"] += int(result["processed"])
-                aggregate["discovered"] += int(result["discovered"])
-                aggregate["failed"] += int(result["failed"])
-                aggregate["exports"] = result["exports"]
-
+                aggregate.include(result)
                 if result["processed"] == 0:
                     break
         except Exception as exc:  # noqa: BLE001
@@ -194,3 +167,34 @@ class CrawlerRuntimeService:
             self._snapshot.current_url = str(blog["url"])
             self._snapshot.current_stage = "error"
             self._snapshot.last_error = str(error)
+
+    def _begin_run_locked(self, status: str) -> None:
+        self._snapshot.runner_status = status
+        self._snapshot.active_run_id = str(uuid4())
+        self._snapshot.last_started_at = utc_now()
+        self._snapshot.last_error = None
+        self._snapshot.last_result = None
+        self._clear_current_blog_locked()
+
+    def _finish_run_locked(self, result: dict[str, Any]) -> None:
+        self._snapshot.runner_status = "idle"
+        self._snapshot.last_stopped_at = utc_now()
+        self._snapshot.last_result = result
+        self._clear_current_blog_locked()
+
+    def _record_error_locked(self, error: Exception) -> None:
+        self._snapshot.runner_status = "error"
+        self._snapshot.last_error = str(error)
+        self._snapshot.last_stopped_at = utc_now()
+        self._clear_current_blog_locked()
+
+    def _set_current_blog_locked(self, blog: dict[str, Any], *, stage: str) -> None:
+        self._snapshot.current_blog_id = int(blog["id"])
+        self._snapshot.current_url = str(blog["url"])
+        self._snapshot.current_stage = stage
+
+    def _clear_current_blog_locked(self) -> None:
+        self._snapshot.current_blog_id = None
+        self._snapshot.current_url = None
+        self._snapshot.current_stage = None
+
