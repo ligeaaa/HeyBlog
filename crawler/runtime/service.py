@@ -31,10 +31,13 @@ class CrawlerRuntimeService:
         executor: SerialRuntimeExecutor | None = None,
         *,
         worker_count: int = 1,
+        priority_seed_normal_queue_slots: int = 2,
     ) -> None:
         self.pipeline = pipeline
         self.executor = executor or SerialRuntimeExecutor()
         self.worker_count = max(1, worker_count)
+        self.priority_seed_normal_queue_slots = max(1, priority_seed_normal_queue_slots)
+        self._normal_slots_remaining_after_priority = 0
         self._snapshot = RuntimeSnapshot(
             worker_count=self.worker_count,
             workers=[
@@ -107,6 +110,7 @@ class CrawlerRuntimeService:
                     "runtime": self._snapshot.as_dict(),
                 }
             self._stop_event.clear()
+            self._normal_slots_remaining_after_priority = 0
             self._begin_run_locked("running")
 
         try:
@@ -129,6 +133,7 @@ class CrawlerRuntimeService:
         """Run the crawler continuously until idle or stop is requested."""
         with self._lock:
             self._snapshot.runner_status = "running"
+            self._normal_slots_remaining_after_priority = 0
 
         try:
             result = self._run_worker_pool(max_nodes=None)
@@ -260,7 +265,38 @@ class CrawlerRuntimeService:
     def _claim_next_waiting_blog(self) -> dict[str, Any] | None:
         """Claim exactly one waiting blog under a runtime-local lock."""
         with self._claim_lock:
-            return self.pipeline.repository.get_next_waiting_blog()
+            if self._normal_slots_remaining_after_priority <= 0:
+                priority_row = self._get_next_priority_blog()
+                if priority_row is not None:
+                    self._normal_slots_remaining_after_priority = self.priority_seed_normal_queue_slots
+                    return priority_row
+
+            row = self._get_next_waiting_blog(include_priority=self._normal_slots_remaining_after_priority <= 0)
+            if row is not None:
+                if self._normal_slots_remaining_after_priority > 0:
+                    self._normal_slots_remaining_after_priority -= 1
+                return row
+
+            if self._normal_slots_remaining_after_priority > 0:
+                priority_row = self._get_next_priority_blog()
+                if priority_row is not None:
+                    self._normal_slots_remaining_after_priority = self.priority_seed_normal_queue_slots
+                    return priority_row
+                self._normal_slots_remaining_after_priority = 0
+            return None
+
+    def _get_next_priority_blog(self) -> dict[str, Any] | None:
+        getter = getattr(self.pipeline.repository, "get_next_priority_blog", None)
+        if getter is None:
+            return None
+        return getter()
+
+    def _get_next_waiting_blog(self, *, include_priority: bool) -> dict[str, Any] | None:
+        getter = self.pipeline.repository.get_next_waiting_blog
+        try:
+            return getter(include_priority=include_priority)
+        except TypeError:
+            return getter()
 
     def _on_blog_start(self, worker_index: int, blog: dict[str, Any]) -> None:
         with self._lock:

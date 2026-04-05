@@ -30,6 +30,12 @@ class UpsertBlogRequest(BaseModel):
     url: str
     normalized_url: str
     domain: str
+    email: str | None = None
+
+
+class CreateIngestionRequest(BaseModel):
+    homepage_url: str
+    email: str
 
 
 class BlogResultRequest(BaseModel):
@@ -114,8 +120,13 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/internal/queue/next")
-    def next_waiting() -> dict[str, Any] | None:
-        row = get_state().repository.get_next_waiting_blog()
+    def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:
+        row = get_state().repository.get_next_waiting_blog(include_priority=include_priority)
+        return dict(row) if row else None
+
+    @app.get("/internal/queue/priority-next")
+    def next_priority_waiting() -> dict[str, Any] | None:
+        row = get_state().repository.get_next_priority_blog()
         return dict(row) if row else None
 
     @app.get("/internal/blogs/{blog_id}")
@@ -128,6 +139,28 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         if payload is None:
             raise HTTPException(status_code=404, detail="blog_not_found")
         return payload
+
+    @app.post("/internal/ingestion-requests")
+    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.create_ingestion_request(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/ingestion-requests/{request_id}")
+    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
+        payload = get_state().repository.get_ingestion_request(
+            request_id=request_id,
+            request_token=request_token,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="ingestion_request_not_found")
+        return payload
+
+    @app.post("/internal/ingestion-requests/by-blog/{blog_id}/crawling")
+    def mark_ingestion_request_crawling(blog_id: int) -> dict[str, bool]:
+        get_state().repository.mark_ingestion_request_crawling(blog_id=blog_id)
+        return {"ok": True}
 
     @app.post("/internal/blogs/upsert")
     def upsert_blog(payload: UpsertBlogRequest) -> dict[str, Any]:

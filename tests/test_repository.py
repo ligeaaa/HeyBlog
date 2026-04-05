@@ -55,6 +55,7 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
         "blogs_deleted": 2,
         "edges_deleted": 1,
         "logs_deleted": 0,
+        "ingestion_requests_deleted": 0,
     }
     assert repository.list_blogs() == []
     assert repository.list_edges() == []
@@ -95,6 +96,87 @@ def test_repository_mark_blog_result_persists_site_metadata(tmp_path: Path) -> N
     assert blog is not None
     assert blog["title"] == "Blog Example"
     assert blog["icon_url"] == "https://blog.example.com/favicon.ico"
+
+
+def test_repository_defaults_blog_email_to_none(tmp_path: Path) -> None:
+    """New blogs should keep a nullable email field until claimed by a user."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+    assert inserted is True
+
+    blog = repository.get_blog(blog_id)
+    assert blog is not None
+    assert blog["email"] is None
+
+
+def test_repository_creates_ingestion_request_and_persists_blog_email(tmp_path: Path) -> None:
+    """Self-serve ingestion should capture the requester email onto the seed blog."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    created = repository.create_ingestion_request(
+        homepage_url="https://blog.example.com/",
+        email="owner@example.com",
+    )
+
+    assert created["status"] == "QUEUED"
+    assert created["request_id"] == created["id"]
+    assert created["email"] == "owner@example.com"
+    assert created["blog"]["email"] == "owner@example.com"
+
+    fetched = repository.get_ingestion_request(
+        request_id=created["request_id"],
+        request_token=created["request_token"],
+    )
+    assert fetched is not None
+    assert fetched["normalized_url"] == "https://blog.example.com/"
+    assert fetched["seed_blog_id"] == created["seed_blog_id"]
+
+
+def test_repository_dedupes_ingestion_request_by_normalized_url(tmp_path: Path) -> None:
+    """Repeated requests for the same blog should reuse one active ingestion request."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    first = repository.create_ingestion_request(
+        homepage_url="https://blog.example.com/?utm_source=test",
+        email="owner@example.com",
+    )
+    second = repository.create_ingestion_request(
+        homepage_url="https://blog.example.com/",
+        email="owner@example.com",
+    )
+
+    assert first["request_id"] == second["request_id"]
+    assert len(repository.list_blogs()) == 1
+
+
+def test_repository_dedupes_existing_finished_blog_before_creating_request(tmp_path: Path) -> None:
+    """Already-finished blogs should short-circuit to a DEDUPED_EXISTING response."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+    )
+
+    response = repository.create_ingestion_request(
+        homepage_url="https://blog.example.com/",
+        email="owner@example.com",
+    )
+
+    assert response["status"] == "DEDUPED_EXISTING"
+    assert response["blog_id"] == blog_id
+    assert response["request_id"] is None
 
 
 def test_repository_requeues_processing_blogs_on_restart(tmp_path: Path) -> None:
@@ -396,6 +478,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
                 "url": "https://delta.example/",
                 "normalized_url": "https://delta.example/",
                 "domain": "delta.example",
+                "email": None,
                 "title": "delta.example title",
                 "icon_url": "https://delta.example/favicon.ico",
                 "status_code": 200,

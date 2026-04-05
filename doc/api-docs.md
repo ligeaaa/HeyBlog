@@ -82,6 +82,8 @@
 - `POST /api/crawl/bootstrap`
 - `POST /api/crawl/run`
 - `GET /api/search`
+- `POST /api/ingestion-requests`
+- `GET /api/ingestion-requests/{request_id}`
 - `GET /api/runtime/status`
 - `GET /api/runtime/current`
 - `POST /api/runtime/start`
@@ -458,6 +460,47 @@
 - 若本地搜索缓存为空，search 服务会回退到 persistence 快照进行查询
 - 当前前端搜索页已直接消费该接口，并同时展示博客结果与关系结果
 
+#### `POST /api/ingestion-requests`
+
+用途：当搜索未命中时，由最终用户提交博客首页 URL 与联系邮箱，触发优先录入请求。
+
+请求体：
+
+```json
+{
+  "homepage_url": "https://example.com/",
+  "email": "owner@example.com"
+}
+```
+
+响应分两类：
+
+- 已收录时：直接返回 `DEDUPED_EXISTING` 与现有 `blog_id`
+- 未收录时：返回请求状态、`request_id`、`request_token`、seed blog 关联信息
+
+补充说明：
+
+- 后端会先做 URL normalize 与 email 基础校验
+- 同一 `normalized_url` 的活跃请求会复用，而不是重复创建 crawl
+- `request_token` 是无账号体系下查询请求状态所需的轻量凭证
+
+#### `GET /api/ingestion-requests/{request_id}?request_token=...`
+
+用途：查询某个自助录入请求的当前状态。
+
+当前返回字段重点包括：
+
+- `status`: 当前请求状态，常见值有 `QUEUED`、`CRAWLING_SEED`、`COMPLETED`、`FAILED`
+- `seed_blog_id`: 当前请求绑定的 seed blog
+- `matched_blog_id`: 若已完成并命中 blog，则返回该 blog id
+- `blog`: 当前关联 blog 的摘要信息
+- `request_token`: 创建请求时返回的状态查询 token
+
+补充说明：
+
+- 当前首版未引入账号系统，因此状态查询依赖 `request_id + request_token`
+- 若 `request_token` 不匹配，返回 `404`
+
 ### 3.5 爬取执行接口
 
 #### `POST /api/crawl/bootstrap`
@@ -777,6 +820,10 @@
 
 用途：返回全部 blog 记录。
 
+补充说明：
+
+- 当前 `BlogRecord` 已包含可空的 `email` 字段，用于记录博主在自助优先录入时留下的联系邮箱
+
 ### `GET /internal/blogs/catalog`
 
 用途：为 backend 提供分页 blog catalog 查询。
@@ -796,8 +843,18 @@
 行为说明：
 
 - 只从 `crawl_status = 'WAITING'` 中选择
-- 按 `id ASC` 排序
+- 默认允许包含 priority seed；也可以通过 `include_priority=false` 只领取普通队列
 - 选中后立刻更新为 `PROCESSING`
+
+### `GET /internal/queue/priority-next`
+
+用途：只领取由 `ingestion_requests` 驱动的高优先级 seed blog。
+
+行为说明：
+
+- 仅选择仍处于 `QUEUED` 的请求对应 seed
+- 按 `priority DESC, created_at ASC, blog.id ASC` 领取
+- 选中后立刻把 blog 更新为 `PROCESSING`
 
 ### `GET /internal/blogs/{blog_id}`
 
@@ -817,9 +874,12 @@
 {
   "url": "https://example.com/",
   "normalized_url": "https://example.com/",
-  "domain": "example.com"
+  "domain": "example.com",
+  "email": "owner@example.com"
 }
 ```
+
+其中 `email` 为可选字段。
 
 响应：
 
@@ -995,6 +1055,40 @@
 }
 ```
 
+补充说明：
+
+- 若该 blog 是某个活跃 `ingestion_request` 的 seed，写回结果时会同步推进请求状态为 `COMPLETED` 或 `FAILED`
+
+### `POST /internal/ingestion-requests`
+
+用途：创建或复用一个用户自助优先录入请求。
+
+请求体：
+
+```json
+{
+  "homepage_url": "https://example.com/",
+  "email": "owner@example.com"
+}
+```
+
+返回：
+
+- 已收录时：`DEDUPED_EXISTING`
+- 新建或复用请求时：请求 payload，包含 `request_id`、`request_token`、`status`、`seed_blog_id`
+
+### `GET /internal/ingestion-requests/{request_id}`
+
+用途：通过 `request_id + request_token` 查询请求状态。
+
+查询参数：
+
+- `request_token`: 创建请求时生成的查询 token
+
+### `POST /internal/ingestion-requests/by-blog/{blog_id}/crawling`
+
+用途：当 crawler 真正开始处理某个 seed blog 时，把关联请求推进到 `CRAWLING_SEED`。
+
 ## 5. 数据模型整理
 
 以下字段来自当前仓库实现与前端类型定义，适合作为现阶段统一理解口径。
@@ -1014,6 +1108,7 @@
 | `url` | `string` | 原始 URL |
 | `normalized_url` | `string` | 归一化 URL，唯一键 |
 | `domain` | `string` | 域名 |
+| `email` | `string \| null` | 博主联系邮箱；仅在用户自助优先录入时写入，默认 `null` |
 | `title` | `string \| null` | 站点主页解析出的 `<title>`，缺失时为 `null` |
 | `icon_url` | `string \| null` | 站点标签页 icon URL；优先使用页面声明的 icon 链接，缺失时可能回退为 `${origin}/favicon.ico` |
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
@@ -1056,7 +1151,34 @@
 | `filters.min_connections` | `number` | 最小连接度阈值 |
 | `sort` | `string` | 当前生效排序；与 `filters.sort` 保持一致 |
 
-### 5.3 BlogDetailPayload
+### 5.3 IngestionRequestPayload
+
+来源：
+
+- [persistence_api/repository.py](persistence_api/repository.py)
+- [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` / `request_id` | `number` | 请求主键 |
+| `requested_url` | `string` | 用户提交的原始首页 URL |
+| `normalized_url` | `string` | 归一化后的 URL |
+| `email` | `string` | 用户提交的联系邮箱 |
+| `status` | `string` | 请求状态 |
+| `priority` | `number` | 当前固定优先级值 |
+| `seed_blog_id` | `number \| null` | 绑定的 seed blog |
+| `matched_blog_id` | `number \| null` | 已完成时关联的最终 blog |
+| `blog_id` | `number \| null` | 便于前端跳转的当前关联 blog id |
+| `request_token` | `string` | 无账号状态查询 token |
+| `seed_blog` | `BlogRecord \| null` | seed blog 摘要 |
+| `matched_blog` | `BlogRecord \| null` | 已匹配 blog 摘要 |
+| `blog` | `BlogRecord \| null` | 前端使用的当前 blog 视图 |
+| `error_message` | `string \| null` | 失败时的错误摘要 |
+| `created_at` / `updated_at` | `string` | 请求创建/更新时间 |
+
+### 5.4 BlogDetailPayload
 
 字段：
 

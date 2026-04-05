@@ -41,6 +41,7 @@ def build_crawler_state(settings: Settings | None = None) -> CrawlerState:
         runtime=CrawlerRuntimeService(
             pipeline,
             worker_count=resolved.runtime_worker_count,
+            priority_seed_normal_queue_slots=resolved.priority_seed_normal_queue_slots,
         ),
     )
 

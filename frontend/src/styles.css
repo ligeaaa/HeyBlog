@@ -673,6 +673,11 @@ td {
   font-size: 0.92rem;
 }
 
+.graph-control-compact {
+  min-width: 160px;
+  padding: 10px 12px;
+}
+
 .graph-control input,
 .graph-control select {
   min-width: 0;
@@ -762,6 +767,10 @@ td {
   stroke-linecap: round;
 }
 
+.graph-link-arrow-shape {
+  fill: rgba(141, 181, 255, 0.45);
+}
+
 .graph-link.is-deemphasized {
   stroke: rgba(141, 181, 255, 0.16);
   stroke-width: 0.8;
@@ -813,6 +822,19 @@ td {
   border: 1px solid rgba(214, 200, 172, 0.8);
   background: rgba(255, 252, 246, 0.85);
   padding: 14px;
+}
+
+.collapsible-section {
+  display: grid;
+  gap: 16px;
+}
+
+.collapsible-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
 }
 
 @media (max-width: 1200px) {

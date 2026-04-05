@@ -3,13 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { SearchPage } from "./SearchPage";
-import { useSearch } from "../lib/hooks";
+import { useCreateIngestionRequest, useIngestionRequestStatus, useSearch } from "../lib/hooks";
 
 vi.mock("../lib/hooks", () => ({
   useSearch: vi.fn(),
+  useCreateIngestionRequest: vi.fn(),
+  useIngestionRequestStatus: vi.fn(),
 }));
 
 const mockedUseSearch = vi.mocked(useSearch);
+const mockedUseCreateIngestionRequest = vi.mocked(useCreateIngestionRequest);
+const mockedUseIngestionRequestStatus = vi.mocked(useIngestionRequestStatus);
 
 function renderSearchPage(initialEntry = "/search?q=friend") {
   const router = createMemoryRouter([{ path: "/search", element: <SearchPage /> }], {
@@ -75,6 +79,17 @@ beforeEach(() => {
     isLoading: false,
     error: null,
   } as unknown as ReturnType<typeof useSearch>);
+  mockedUseCreateIngestionRequest.mockReturnValue({
+    mutateAsync: vi.fn(),
+    data: undefined,
+    error: null,
+    isPending: false,
+  } as unknown as ReturnType<typeof useCreateIngestionRequest>);
+  mockedUseIngestionRequestStatus.mockReturnValue({
+    data: undefined,
+    error: null,
+    isLoading: false,
+  } as unknown as ReturnType<typeof useIngestionRequestStatus>);
 });
 
 afterEach(() => {
@@ -142,4 +157,25 @@ test("renders an error state when the search request fails", () => {
   renderSearchPage();
 
   expect(screen.getByText(/请求失败：503 Service Unavailable/i)).toBeInTheDocument();
+});
+
+test("renders the self-serve ingestion form when search has no results", () => {
+  mockedUseSearch.mockReturnValue({
+    data: {
+      query: "missing",
+      kind: "all",
+      limit: 10,
+      blogs: [],
+      edges: [],
+      logs: [],
+    },
+    isLoading: false,
+    error: null,
+  } as unknown as ReturnType<typeof useSearch>);
+
+  renderSearchPage("/search?q=missing");
+
+  expect(screen.getByRole("textbox", { name: "博客首页 URL" })).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "联系邮箱" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "提交你的博客首页" })).toBeInTheDocument();
 });

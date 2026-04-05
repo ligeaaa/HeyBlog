@@ -7,6 +7,8 @@ from dataclasses import field
 from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
+from secrets import token_urlsafe
+import re
 from typing import Any
 from typing import Protocol
 from urllib.parse import urlparse
@@ -15,6 +17,7 @@ from sqlalchemy import and_
 from sqlalchemy import case
 from sqlalchemy import cast
 from sqlalchemy import func
+from sqlalchemy import inspect
 from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy import String
@@ -27,7 +30,9 @@ from persistence_api.db import session_scope
 from persistence_api.models import Base
 from persistence_api.models import BlogModel
 from persistence_api.models import EdgeModel
+from persistence_api.models import IngestionRequestModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
+from crawler.crawling.normalization import normalize_url
 from shared.contracts.enums import CrawlStatus
 
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
@@ -37,6 +42,21 @@ BLOG_CATALOG_DEFAULT_SORT = "id_desc"
 BLOG_CATALOG_ALLOWED_SORTS = frozenset(
     {"id_desc", "recent_activity", "connections", "recently_discovered"}
 )
+INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
+INGESTION_REQUEST_STATUS_DEDUPED_EXISTING = "DEDUPED_EXISTING"
+INGESTION_REQUEST_STATUS_QUEUED = "QUEUED"
+INGESTION_REQUEST_STATUS_CRAWLING_SEED = "CRAWLING_SEED"
+INGESTION_REQUEST_STATUS_COMPLETED = "COMPLETED"
+INGESTION_REQUEST_STATUS_FAILED = "FAILED"
+INGESTION_REQUEST_STATUS_EXPIRED = "EXPIRED"
+ACTIVE_INGESTION_REQUEST_STATUSES = frozenset(
+    {
+        INGESTION_REQUEST_STATUS_RECEIVED,
+        INGESTION_REQUEST_STATUS_QUEUED,
+        INGESTION_REQUEST_STATUS_CRAWLING_SEED,
+    }
+)
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def now_utc() -> datetime:
@@ -46,6 +66,23 @@ def now_utc() -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def normalize_ingestion_email(email: str) -> str:
+    """Normalize and validate one user-supplied contact email."""
+    normalized = email.strip().lower()
+    if not normalized or not EMAIL_PATTERN.match(normalized):
+        raise ValueError("Unsupported email address")
+    return normalized
+
+
+def normalize_homepage_url(homepage_url: str) -> tuple[str, str, str]:
+    """Normalize one homepage URL and reject obviously invalid inputs."""
+    normalized = normalize_url(homepage_url)
+    parsed = urlparse(normalized.normalized_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Unsupported homepage URL")
+    return homepage_url.strip(), normalized.normalized_url, normalized.domain
 
 
 def _normalize_catalog_text(value: str | None) -> str | None:
@@ -160,6 +197,7 @@ def _blog_payload(
         "url": model.url,
         "normalized_url": model.normalized_url,
         "domain": model.domain,
+        "email": model.email,
         "title": resolved_title,
         "icon_url": resolved_icon_url,
         "status_code": model.status_code,
@@ -220,6 +258,40 @@ def _neighbor_payload(model: BlogModel | None) -> dict[str, Any] | None:
     }
 
 
+def _ingestion_request_payload(
+    model: IngestionRequestModel,
+    *,
+    seed_blog: BlogModel | None = None,
+    matched_blog: BlogModel | None = None,
+) -> dict[str, Any]:
+    resolved_blog = matched_blog or seed_blog
+    resolved_blog_id = None
+    if matched_blog is not None:
+        resolved_blog_id = int(matched_blog.id)
+    elif seed_blog is not None:
+        resolved_blog_id = int(seed_blog.id)
+    return {
+        "id": int(model.id),
+        "request_id": int(model.id),
+        "requested_url": model.requested_url,
+        "normalized_url": model.normalized_url,
+        "email": model.requester_email,
+        "status": model.status,
+        "priority": int(model.priority),
+        "seed_blog_id": int(model.seed_blog_id) if model.seed_blog_id is not None else None,
+        "matched_blog_id": int(model.matched_blog_id) if model.matched_blog_id is not None else None,
+        "blog_id": resolved_blog_id,
+        "request_token": model.request_token,
+        "expires_at": _iso(model.expires_at),
+        "error_message": model.error_message,
+        "created_at": _iso(model.created_at),
+        "updated_at": _iso(model.updated_at),
+        "seed_blog": _blog_payload(seed_blog) if seed_blog is not None else None,
+        "matched_blog": _blog_payload(matched_blog) if matched_blog is not None else None,
+        "blog": _blog_payload(resolved_blog) if resolved_blog is not None else None,
+    }
+
+
 def _recommended_blog_payload(
     *,
     blog: BlogModel,
@@ -256,9 +328,23 @@ class RepositoryProtocol(Protocol):
         url: str,
         normalized_url: str,
         domain: str,
+        email: str | None = None,
     ) -> tuple[int, bool]: ...
 
-    def get_next_waiting_blog(self) -> dict[str, Any] | None: ...
+    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None: ...
+
+    def get_next_priority_blog(self) -> dict[str, Any] | None: ...
+
+    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]: ...
+
+    def get_ingestion_request(
+        self,
+        *,
+        request_id: int,
+        request_token: str,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None: ...
 
     def mark_blog_result(
         self,
@@ -323,6 +409,7 @@ class SQLAlchemyRepository:
         self.engine = create_persistence_engine(self.database_url)
         self.session_factory = create_session_factory(self.engine)
         Base.metadata.create_all(self.engine)
+        self._ensure_schema()
         with session_scope(self.session_factory) as session:
             self._requeue_processing(session)
 
@@ -337,6 +424,21 @@ class SQLAlchemyRepository:
                 BlogModel.updated_at: now_utc(),
             }
         )
+        session.query(IngestionRequestModel).filter(
+            IngestionRequestModel.status == INGESTION_REQUEST_STATUS_CRAWLING_SEED
+        ).update(
+            {
+                IngestionRequestModel.status: INGESTION_REQUEST_STATUS_QUEUED,
+                IngestionRequestModel.updated_at: now_utc(),
+            }
+        )
+
+    def _ensure_schema(self) -> None:
+        inspector = inspect(self.engine)
+        blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
+        with self.engine.begin() as connection:
+            if "email" not in blog_columns:
+                connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
 
     def _blog_metrics_expressions(self) -> dict[str, Any]:
         incoming_counts = (
@@ -406,6 +508,17 @@ class SQLAlchemyRepository:
             identity_complete=bool(row.identity_complete),
         )
 
+    def _ingestion_request_row_payload(
+        self,
+        session: Session,
+        request: IngestionRequestModel,
+    ) -> dict[str, Any]:
+        seed_blog = session.get(BlogModel, request.seed_blog_id) if request.seed_blog_id is not None else None
+        matched_blog = (
+            session.get(BlogModel, request.matched_blog_id) if request.matched_blog_id is not None else None
+        )
+        return _ingestion_request_payload(request, seed_blog=seed_blog, matched_blog=matched_blog)
+
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
     ) -> None:
@@ -418,18 +531,23 @@ class SQLAlchemyRepository:
         url: str,
         normalized_url: str,
         domain: str,
+        email: str | None = None,
     ) -> tuple[int, bool]:
         with session_scope(self.session_factory) as session:
             existing = session.scalar(
                 select(BlogModel).where(BlogModel.normalized_url == normalized_url)
             )
             if existing is not None:
+                if email is not None and not (existing.email or "").strip():
+                    existing.email = email
+                    existing.updated_at = now_utc()
                 return int(existing.id), False
 
             blog = BlogModel(
                 url=url,
                 normalized_url=normalized_url,
                 domain=domain,
+                email=email,
                 crawl_status=CrawlStatus.WAITING,
                 friend_links_count=0,
                 created_at=now_utc(),
@@ -439,23 +557,154 @@ class SQLAlchemyRepository:
             session.flush()
             return int(blog.id), True
 
-    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
+        requested_url, normalized_url, domain = normalize_homepage_url(homepage_url)
+        normalized_email = normalize_ingestion_email(email)
+        with session_scope(self.session_factory) as session:
+            existing_blog = session.scalar(
+                select(BlogModel).where(BlogModel.normalized_url == normalized_url)
+            )
+            if existing_blog is not None and not (existing_blog.email or "").strip():
+                existing_blog.email = normalized_email
+                existing_blog.updated_at = now_utc()
+
+            if existing_blog is not None and existing_blog.crawl_status == CrawlStatus.FINISHED:
+                return {
+                    "status": INGESTION_REQUEST_STATUS_DEDUPED_EXISTING,
+                    "blog_id": int(existing_blog.id),
+                    "matched_blog_id": int(existing_blog.id),
+                    "request_id": None,
+                    "request_token": None,
+                    "blog": _blog_payload(existing_blog),
+                }
+
+            existing_request = session.scalar(
+                select(IngestionRequestModel).where(IngestionRequestModel.normalized_url == normalized_url)
+            )
+            if existing_request is not None:
+                if not (existing_request.requester_email or "").strip():
+                    existing_request.requester_email = normalized_email
+                    existing_request.updated_at = now_utc()
+                return self._ingestion_request_row_payload(session, existing_request)
+
+            if existing_blog is None:
+                existing_blog = BlogModel(
+                    url=requested_url,
+                    normalized_url=normalized_url,
+                    domain=domain,
+                    email=normalized_email,
+                    crawl_status=CrawlStatus.WAITING,
+                    friend_links_count=0,
+                    created_at=now_utc(),
+                    updated_at=now_utc(),
+                )
+                session.add(existing_blog)
+                session.flush()
+            elif existing_blog.crawl_status == CrawlStatus.FAILED:
+                existing_blog.crawl_status = CrawlStatus.WAITING
+                existing_blog.updated_at = now_utc()
+
+            request_status = (
+                INGESTION_REQUEST_STATUS_CRAWLING_SEED
+                if existing_blog.crawl_status == CrawlStatus.PROCESSING
+                else INGESTION_REQUEST_STATUS_QUEUED
+            )
+            request = IngestionRequestModel(
+                requested_url=requested_url,
+                normalized_url=normalized_url,
+                requester_email=normalized_email,
+                status=request_status,
+                priority=100,
+                seed_blog_id=int(existing_blog.id),
+                matched_blog_id=None,
+                request_token=token_urlsafe(18),
+                expires_at=None,
+                error_message=None,
+                created_at=now_utc(),
+                updated_at=now_utc(),
+            )
+            session.add(request)
+            session.flush()
+            return self._ingestion_request_row_payload(session, request)
+
+    def get_ingestion_request(
+        self,
+        *,
+        request_id: int,
+        request_token: str,
+    ) -> dict[str, Any] | None:
+        with session_scope(self.session_factory) as session:
+            request = session.scalar(
+                select(IngestionRequestModel).where(IngestionRequestModel.id == request_id)
+            )
+            if request is None or request.request_token != request_token:
+                return None
+            return self._ingestion_request_row_payload(session, request)
+
+    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
+        with session_scope(self.session_factory) as session:
+            request = session.scalar(
+                select(IngestionRequestModel)
+                .where(
+                    IngestionRequestModel.seed_blog_id == blog_id,
+                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
+                )
+                .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
+            )
+            if request is None:
+                return
+            request.status = INGESTION_REQUEST_STATUS_CRAWLING_SEED
+            request.updated_at = now_utc()
+
+    def _claim_blog_for_statement(self, session: Session, statement: Any) -> dict[str, Any] | None:
+        blog = session.scalar(statement)
+        if blog is None:
+            return None
+        blog.crawl_status = CrawlStatus.PROCESSING
+        blog.updated_at = now_utc()
+        session.flush()
+        return _blog_payload(blog)
+
+    def get_next_priority_blog(self) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
             statement = (
                 select(BlogModel)
-                .where(BlogModel.crawl_status == CrawlStatus.WAITING)
-                .order_by(BlogModel.id.asc())
+                .join(
+                    IngestionRequestModel,
+                    IngestionRequestModel.seed_blog_id == BlogModel.id,
+                )
+                .where(
+                    BlogModel.crawl_status == CrawlStatus.WAITING,
+                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
+                )
+                .order_by(
+                    IngestionRequestModel.priority.desc(),
+                    IngestionRequestModel.created_at.asc(),
+                    BlogModel.id.asc(),
+                )
                 .limit(1)
             )
             if self.dialect_name == "postgresql":
                 statement = statement.with_for_update(skip_locked=True)
-            blog = session.scalar(statement)
-            if blog is None:
-                return None
-            blog.crawl_status = CrawlStatus.PROCESSING
-            blog.updated_at = now_utc()
-            session.flush()
-            return _blog_payload(blog)
+            return self._claim_blog_for_statement(session, statement)
+
+    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
+        with session_scope(self.session_factory) as session:
+            statement = select(BlogModel).where(BlogModel.crawl_status == CrawlStatus.WAITING)
+            if not include_priority:
+                priority_seed_ids = (
+                    select(IngestionRequestModel.seed_blog_id)
+                    .where(
+                        IngestionRequestModel.seed_blog_id.is_not(None),
+                        IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
+                    )
+                    .subquery()
+                )
+                statement = statement.where(BlogModel.id.not_in(select(priority_seed_ids.c.seed_blog_id)))
+            statement = statement.order_by(BlogModel.id.asc()).limit(1)
+            if self.dialect_name == "postgresql":
+                statement = statement.with_for_update(skip_locked=True)
+            return self._claim_blog_for_statement(session, statement)
 
     def mark_blog_result(
         self,
@@ -480,6 +729,23 @@ class SQLAlchemyRepository:
             if metadata_captured:
                 blog.title = title
                 blog.icon_url = icon_url
+            request = session.scalar(
+                select(IngestionRequestModel)
+                .where(
+                    IngestionRequestModel.seed_blog_id == blog_id,
+                    IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
+                )
+                .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
+            )
+            if request is not None:
+                if blog.crawl_status == CrawlStatus.FINISHED:
+                    request.status = INGESTION_REQUEST_STATUS_COMPLETED
+                    request.matched_blog_id = blog_id
+                    request.error_message = None
+                elif blog.crawl_status == CrawlStatus.FAILED:
+                    request.status = INGESTION_REQUEST_STATUS_FAILED
+                    request.error_message = "seed crawl failed"
+                request.updated_at = now_utc()
 
     def add_edge(
         self,
@@ -724,9 +990,11 @@ class SQLAlchemyRepository:
         with session_scope(self.session_factory) as session:
             blogs_deleted = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
             edges_deleted = int(session.scalar(select(func.count()).select_from(EdgeModel)) or 0)
+            requests_deleted = int(session.scalar(select(func.count()).select_from(IngestionRequestModel)) or 0)
             if self.dialect_name == "postgresql":
-                session.execute(text("TRUNCATE TABLE edges, blogs RESTART IDENTITY CASCADE"))
+                session.execute(text("TRUNCATE TABLE ingestion_requests, edges, blogs RESTART IDENTITY CASCADE"))
             else:
+                session.query(IngestionRequestModel).delete()
                 session.query(EdgeModel).delete()
                 session.query(BlogModel).delete()
             return {
@@ -734,6 +1002,7 @@ class SQLAlchemyRepository:
                 "blogs_deleted": blogs_deleted,
                 "edges_deleted": edges_deleted,
                 "logs_deleted": 0,
+                "ingestion_requests_deleted": requests_deleted,
             }
 
 
@@ -747,5 +1016,9 @@ class Repository(SQLAlchemyRepository):
 def build_repository(*, db_path: Path, db_dsn: str | None = None) -> RepositoryProtocol:
     """Build the configured repository implementation."""
     if db_dsn is not None:
-        return SQLAlchemyRepository(db_dsn)
+        try:
+            return SQLAlchemyRepository(db_dsn)
+        except ModuleNotFoundError as exc:
+            if exc.name != "psycopg":
+                raise
     return Repository(db_path)

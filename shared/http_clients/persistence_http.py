@@ -53,6 +53,7 @@ class PersistenceHttpClient:
         url: str,
         normalized_url: str,
         domain: str,
+        email: str | None = None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -60,12 +61,39 @@ class PersistenceHttpClient:
                 "url": url,
                 "normalized_url": normalized_url,
                 "domain": domain,
+                "email": email,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
 
-    def get_next_waiting_blog(self) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next")
+    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
+        return self._post(
+            "/internal/ingestion-requests",
+            {
+                "homepage_url": homepage_url,
+                "email": email,
+            },
+        )
+
+    def get_ingestion_request(
+        self,
+        *,
+        request_id: int,
+        request_token: str,
+    ) -> dict[str, Any] | None:
+        return self._get(
+            f"/internal/ingestion-requests/{request_id}",
+            {"request_token": request_token},
+        )
+
+    def get_next_priority_blog(self) -> dict[str, Any] | None:
+        return self._get("/internal/queue/priority-next")
+
+    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
+        return self._get("/internal/queue/next", {"include_priority": str(include_priority).lower()})
+
+    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
+        self._post(f"/internal/ingestion-requests/by-blog/{blog_id}/crawling", {})
 
     def mark_blog_result(
         self,

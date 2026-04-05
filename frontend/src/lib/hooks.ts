@@ -1,5 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BlogCatalogPagePayload, BlogNeighborSummary, EdgeRecord } from "./api";
+import {
+  BlogCatalogPagePayload,
+  BlogNeighborSummary,
+  EdgeRecord,
+} from "./api";
 import { api } from "./api";
 
 type QueryTuning = {
@@ -111,6 +115,13 @@ export type GraphViewOptions = {
   sampleSeed: number;
 };
 
+export type GraphNeighborOptions = {
+  blogId: number | null;
+  hops: number;
+  limit: number;
+  enabled?: boolean;
+};
+
 export function useGraphView(options: GraphViewOptions) {
   return useQuery({
     queryKey: ["graph-view", options],
@@ -124,6 +135,22 @@ export function useGraphView(options: GraphViewOptions) {
       }),
     staleTime: 600000,
     refetchInterval: 600000,
+  });
+}
+
+export function useGraphNeighbors(options: GraphNeighborOptions) {
+  return useQuery({
+    queryKey: ["graph-neighbors", options.blogId, options.hops, options.limit],
+    queryFn: () =>
+      api.graphNeighbors(options.blogId as number, {
+        hops: options.hops,
+        limit: options.limit,
+      }),
+    enabled: (options.enabled ?? true) && options.blogId != null,
+    staleTime: 60000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 
@@ -155,6 +182,26 @@ export function useSearch(
       }),
     enabled: options.enabled ?? true,
     staleTime: 60000,
+  });
+}
+
+export function useCreateIngestionRequest() {
+  return useMutation({
+    mutationFn: (params: { homepageUrl: string; email: string }) => api.createIngestionRequest(params),
+  });
+}
+
+export function useIngestionRequestStatus(
+  requestId: number | null,
+  requestToken: string | null,
+  options: QueryTuning = {},
+) {
+  return useQuery({
+    queryKey: ["ingestion-request", requestId, requestToken],
+    queryFn: () => api.ingestionRequest(requestId as number, requestToken as string),
+    enabled: (options.enabled ?? true) && requestId != null && requestToken != null,
+    staleTime: options.staleTime ?? 0,
+    refetchInterval: options.refetchInterval ?? 2500,
   });
 }
 

@@ -187,10 +187,29 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     }
     assert detail.json()["outgoing_edges"] == []
 
+    request = client.post(
+        "/internal/ingestion-requests",
+        json={
+            "homepage_url": "https://queued.example.com/",
+            "email": "owner@example.com",
+        },
+    )
+    assert request.status_code == 200
+    assert request.json()["request_id"] == 1
+    assert request.json()["status"] == "QUEUED"
+
+    request_status = client.get(
+        "/internal/ingestion-requests/1",
+        params={"request_token": request.json()["request_token"]},
+    )
+    assert request_status.status_code == 200
+    assert request_status.json()["email"] == "owner@example.com"
+
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
-    assert reset.json()["blogs_deleted"] == 2
+    assert reset.json()["blogs_deleted"] == 3
     assert reset.json()["logs_deleted"] == 0
+    assert reset.json()["ingestion_requests_deleted"] == 1
 
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
@@ -229,6 +248,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 {
                     "id": 1,
                     "domain": "blog.example.com",
+                    "email": None,
                     "title": "Blog Example",
                     "icon_url": "https://blog.example.com/favicon.ico",
                 }
@@ -238,6 +258,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
                     {
                         "id": 3,
                         "domain": "catalog.example.com",
+                        "email": None,
                         "title": "Catalog Example",
                         "icon_url": "https://catalog.example.com/favicon.ico",
                         "incoming_count": 1,
@@ -268,12 +289,14 @@ def test_backend_service_preserves_public_api_shape() -> None:
             "get_blog": lambda self, blog_id: {
                 "id": blog_id,
                 "domain": "blog.example.com",
+                "email": None,
                 "title": "Blog Example",
                 "icon_url": "https://blog.example.com/favicon.ico",
             },
             "get_blog_detail": lambda self, blog_id: {
                 "id": blog_id,
                 "domain": "blog.example.com",
+                "email": None,
                 "title": "Blog Example",
                 "icon_url": "https://blog.example.com/favicon.ico",
                 "incoming_count": 1,
@@ -318,6 +341,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
                         "blog": {
                             "id": 4,
                             "domain": "delta.example.com",
+                            "email": None,
                             "title": "Delta Example",
                             "icon_url": "https://delta.example.com/favicon.ico",
                             "url": "https://delta.example.com",
@@ -442,11 +466,52 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 },
             },
             "list_logs": lambda self: [],
+            "create_ingestion_request": lambda self, homepage_url, email: {
+                "id": 9,
+                "request_id": 9,
+                "requested_url": homepage_url,
+                "normalized_url": homepage_url,
+                "email": email,
+                "status": "QUEUED",
+                "priority": 100,
+                "seed_blog_id": 3,
+                "matched_blog_id": None,
+                "blog_id": 3,
+                "request_token": "token-123",
+                "expires_at": None,
+                "error_message": None,
+                "created_at": "2026-04-05T00:00:00Z",
+                "updated_at": "2026-04-05T00:00:00Z",
+                "seed_blog": None,
+                "matched_blog": None,
+                "blog": None,
+            },
+            "get_ingestion_request": lambda self, request_id, request_token: {
+                "id": request_id,
+                "request_id": request_id,
+                "requested_url": "https://queued.example/",
+                "normalized_url": "https://queued.example/",
+                "email": "owner@example.com",
+                "status": "QUEUED",
+                "priority": 100,
+                "seed_blog_id": 3,
+                "matched_blog_id": None,
+                "blog_id": 3,
+                "request_token": request_token,
+                "expires_at": None,
+                "error_message": None,
+                "created_at": "2026-04-05T00:00:00Z",
+                "updated_at": "2026-04-05T00:00:00Z",
+                "seed_blog": None,
+                "matched_blog": None,
+                "blog": None,
+            },
             "reset": lambda self: {
                 "ok": True,
                 "blogs_deleted": 3,
                 "edges_deleted": 4,
                 "logs_deleted": 0,
+                "ingestion_requests_deleted": 1,
             },
         },
     )()
@@ -508,9 +573,21 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert batch.status_code == 200
     assert batch.json()["accepted"] is True
 
+    ingestion = client.post(
+        "/api/ingestion-requests",
+        json={"homepage_url": "https://queued.example/", "email": "owner@example.com"},
+    )
+    assert ingestion.status_code == 200
+    assert ingestion.json()["request_id"] == 9
+
+    ingestion_status = client.get("/api/ingestion-requests/9?request_token=token-123")
+    assert ingestion_status.status_code == 200
+    assert ingestion_status.json()["status"] == "QUEUED"
+
     reset = client.post("/api/database/reset")
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
+    assert reset.json()["ingestion_requests_deleted"] == 1
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
 

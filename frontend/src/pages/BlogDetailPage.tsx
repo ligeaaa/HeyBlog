@@ -1,9 +1,14 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { SiteIdentity } from "../components/SiteIdentity";
 import { Surface } from "../components/Surface";
+import { D3GraphCanvas } from "../components/graph/D3GraphCanvas";
+import { GraphInspector } from "../components/graph/GraphInspector";
 import { ApiError } from "../lib/api";
-import { RelatedEdge, useBlogDetailView } from "../lib/hooks";
+import { DEFAULT_GRAPH_VIEWPORT, type GraphRendererHandle } from "../lib/graph/graphRenderer";
+import { buildGraphScene, createEmptyGraphOverlay } from "../lib/graph/graphScene";
+import { useBlogDetailView, useGraphNeighbors } from "../lib/hooks";
 
 function parseBlogId(rawBlogId: string | undefined) {
   if (!rawBlogId || !/^\d+$/.test(rawBlogId)) {
@@ -13,18 +18,6 @@ function parseBlogId(rawBlogId: string | undefined) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function renderNeighborLabel(edge: RelatedEdge, direction: "incoming" | "outgoing") {
-  if (edge.neighborBlog) {
-    return edge.neighborBlog.title?.trim() || edge.neighborBlog.domain;
-  }
-  return direction === "incoming" ? `Blog #${edge.from_blog_id}` : `Blog #${edge.to_blog_id}`;
-}
-
-function getNeighborPath(edge: RelatedEdge, direction: "incoming" | "outgoing") {
-  const neighborId = direction === "incoming" ? edge.from_blog_id : edge.to_blog_id;
-  return edge.neighborBlog ? `/blogs/${neighborId}` : null;
-}
-
 function formatDate(value: string | null) {
   if (!value) {
     return "暂无";
@@ -32,49 +25,72 @@ function formatDate(value: string | null) {
   return new Date(value).toLocaleString();
 }
 
-function EdgeList({
-  edges,
-  direction,
-  emptyMessage,
-}: {
-  edges: RelatedEdge[];
-  direction: "incoming" | "outgoing";
-  emptyMessage: string;
-}) {
-  if (!edges.length) {
-    return <p>{emptyMessage}</p>;
+function formatLastUpdated(timestamp: number) {
+  if (!timestamp) {
+    return null;
   }
+  return new Date(timestamp).toLocaleString();
+}
 
-  return (
-    <ul className="result-list">
-      {edges.map((edge) => {
-        const neighborPath = getNeighborPath(edge, direction);
-        const label = renderNeighborLabel(edge, direction);
-
-        return (
-          <li key={edge.id} className="result-item">
-            {neighborPath ? (
-              <Link className="result-link" to={neighborPath}>
-                {label}
-              </Link>
-            ) : (
-              <p className="result-title">{label}</p>
-            )}
-            <p className="page-copy">{edge.link_url_raw}</p>
-            <p className="meta-copy">
-              {edge.link_text || "无链接文本"} · 关系 {edge.from_blog_id} {"->"} {edge.to_blog_id}
-            </p>
-          </li>
-        );
-      })}
-    </ul>
-  );
+function graphLimitForHops(hops: number) {
+  if (hops <= 1) {
+    return 40;
+  }
+  if (hops === 2) {
+    return 90;
+  }
+  return 160;
 }
 
 export function BlogDetailPage() {
   const { blogId: rawBlogId } = useParams();
   const blogId = parseBlogId(rawBlogId);
   const detailView = useBlogDetailView(blogId);
+  const [graphDepth, setGraphDepth] = useState<1 | 2 | 3>(1);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(blogId ? String(blogId) : null);
+  const [showRecommendations, setShowRecommendations] = useState(false);
+  const rendererRef = useRef<GraphRendererHandle | null>(null);
+  const overlayRef = useRef(createEmptyGraphOverlay());
+  const graphQuery = useGraphNeighbors({
+    blogId,
+    hops: graphDepth,
+    limit: graphLimitForHops(graphDepth),
+    enabled: blogId != null,
+  });
+
+  useEffect(() => {
+    setSelectedNodeId(blogId ? String(blogId) : null);
+    overlayRef.current = createEmptyGraphOverlay();
+  }, [blogId]);
+
+  const graphBundle = useMemo(() => buildGraphScene(graphQuery.data, overlayRef.current), [graphQuery.data]);
+
+  useEffect(() => {
+    if (blogId == null) {
+      return;
+    }
+    const currentBlogNodeId = String(blogId);
+    if (graphBundle.detailsById.has(currentBlogNodeId)) {
+      setSelectedNodeId((current) => current ?? currentBlogNodeId);
+      return;
+    }
+    if (selectedNodeId && graphBundle.detailsById.has(selectedNodeId)) {
+      return;
+    }
+    setSelectedNodeId(graphBundle.nodes[0]?.id ?? null);
+  }, [blogId, graphBundle.detailsById, graphBundle.nodes, selectedNodeId]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || graphBundle.nodes.length === 0) {
+      return;
+    }
+    renderer.restoreViewport(DEFAULT_GRAPH_VIEWPORT);
+    renderer.fitView();
+    if (graphBundle.shouldRunLayout) {
+      renderer.requestRelayout("soft");
+    }
+  }, [graphBundle.signature, graphBundle.nodes.length, graphBundle.shouldRunLayout]);
 
   if (blogId == null) {
     return (
@@ -103,7 +119,7 @@ export function BlogDetailPage() {
       <div className="page-stack">
         <PageHeader eyebrow="Blog" title={`博客 #${blogId}`} description="正在加载博客详情与关系线索。" />
         <Surface title="读取中">
-          <p>正在获取博客详情、关系聚合与“朋友的朋友”推荐…</p>
+          <p>正在获取博客详情、关系图谱与“朋友的朋友”推荐…</p>
         </Surface>
       </div>
     );
@@ -146,13 +162,14 @@ export function BlogDetailPage() {
   }
 
   const blog = detailView.blog;
+  const selectedDetails = selectedNodeId ? graphBundle.detailsById.get(selectedNodeId) ?? null : null;
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Blog"
         title={blog.title?.trim() || blog.domain}
-        description="这里展示这个博客的身份、活跃信号、关系线索，以及“朋友的朋友”推荐。"
+        description="详情页现在先展示这条博客的关系图谱，再把“朋友的朋友”放到下方折叠展开，便于先看直连结构再看推荐。"
         actions={
           <div className="page-actions">
             <Link
@@ -200,6 +217,82 @@ export function BlogDetailPage() {
         </div>
       </div>
 
+      <Surface title="关系图谱" note="把“它指向谁”和“谁指向它”合并到一个有向图里；箭头表示指向方向。">
+        <div className="graph-layout">
+          <div className="graph-workbench">
+            <div className="graph-toolbar">
+              <div>
+                <p className="eyebrow">Relationship Graph</p>
+                <p className="graph-toolbar-copy">
+                  默认展示当前博客一层邻居，可切换为 2 层或 3 层继续展开。点击节点可查看对应博客的入/出边统计。
+                </p>
+              </div>
+              <div className="graph-toolbar-actions">
+                <label className="graph-control graph-control-compact">
+                  <span>扩展深度</span>
+                  <select
+                    aria-label="关系图谱深度"
+                    value={graphDepth}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      setGraphDepth(value === 2 ? 2 : value === 3 ? 3 : 1);
+                    }}
+                  >
+                    <option value={1}>1 层</option>
+                    <option value={2}>2 层</option>
+                    <option value={3}>3 层</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={graphQuery.isFetching}
+                  onClick={() => {
+                    graphQuery.refetch();
+                  }}
+                >
+                  {graphQuery.isFetching ? "刷新中…" : "刷新图谱"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    rendererRef.current?.fitView();
+                  }}
+                >
+                  适配视图
+                </button>
+              </div>
+            </div>
+
+            {graphQuery.isLoading ? <p>正在加载关系图谱…</p> : null}
+            {graphQuery.error ? <p className="error-copy">图谱加载失败：{graphQuery.error.message}</p> : null}
+            {!graphQuery.isLoading && !graphQuery.error && graphBundle.nodes.length === 0 ? (
+              <p>当前还没有可展示的关系图谱数据。</p>
+            ) : null}
+
+            {graphBundle.nodes.length > 0 ? (
+              <D3GraphCanvas
+                ref={rendererRef}
+                scene={graphBundle}
+                selectedNodeId={selectedNodeId}
+                onSelect={setSelectedNodeId}
+                onViewportChange={() => undefined}
+                onOverlayChange={(overlay) => {
+                  overlayRef.current = overlay;
+                }}
+              />
+            ) : null}
+          </div>
+
+          <GraphInspector
+            details={selectedDetails}
+            lastUpdatedAt={formatLastUpdated(graphQuery.dataUpdatedAt)}
+            viewMeta={graphQuery.data?.meta ?? null}
+          />
+        </div>
+      </Surface>
+
       <Surface title="聚合信息" note="先回答“这是什么博客、最近是否活跃、和谁有关”">
         <dl className="detail-grid">
           <div>
@@ -229,45 +322,46 @@ export function BlogDetailPage() {
         </dl>
       </Surface>
 
-      <Surface title="朋友的朋友" note="粗糙推荐：你的友链认识、但你还没直接认识的博客">
-        {blog.recommended_blogs.length ? (
-          <div className="recommendation-grid">
-            {blog.recommended_blogs.map((item) => (
-              <article key={item.blog.id} className="recommendation-card">
-                <Link className="card-link" to={`/blogs/${item.blog.id}`}>
-                  <SiteIdentity
-                    title={item.blog.title}
-                    domain={item.blog.domain}
-                    iconUrl={item.blog.icon_url}
-                  />
-                </Link>
-                <p className="meta-copy">
-                  通过{" "}
-                  {item.via_blogs.map((viaBlog) => viaBlog.title?.trim() || viaBlog.domain).join("、")}
-                  {" "}认识 · 共同线索 {item.mutual_connection_count}
-                </p>
-              </article>
-            ))}
+      <Surface title="朋友的朋友" note="你的友链认识、但你还没直接认识的博客。默认折叠，避免打断先看图谱。">
+        <div className="collapsible-section">
+          <div className="collapsible-head">
+            <p className="graph-toolbar-copy">
+              当前推荐 {blog.recommended_blogs.length} 个候选博客，可作为下一步扩展友链的参考。
+            </p>
+            <button
+              type="button"
+              className="secondary-button"
+              aria-expanded={showRecommendations}
+              onClick={() => {
+                setShowRecommendations((current) => !current);
+              }}
+            >
+              {showRecommendations ? "收起推荐" : "展开推荐"}
+            </button>
           </div>
-        ) : (
-          <p>当前还没有“朋友的朋友”推荐，说明这条博客的直连关系还比较少，或者它已经和这些博客直接互相认识。</p>
-        )}
-      </Surface>
 
-      <Surface title="谁指向它" note="来自 /api/blogs/{blog_id} 的 incoming_edges">
-        <EdgeList
-          edges={detailView.incomingEdges}
-          direction="incoming"
-          emptyMessage="当前没有发现其他博客指向它。"
-        />
-      </Surface>
-
-      <Surface title="它指向谁" note="来自 /api/blogs/{blog_id} 的 outgoing_edges">
-        <EdgeList
-          edges={detailView.outgoingEdges}
-          direction="outgoing"
-          emptyMessage="当前没有记录到它向外指向的博客。"
-        />
+          {showRecommendations ? (
+            blog.recommended_blogs.length ? (
+              <div className="recommendation-grid">
+                {blog.recommended_blogs.map((item) => (
+                  <article key={item.blog.id} className="recommendation-card">
+                    <Link className="card-link" to={`/blogs/${item.blog.id}`}>
+                      <SiteIdentity title={item.blog.title} domain={item.blog.domain} iconUrl={item.blog.icon_url} />
+                    </Link>
+                    <p className="meta-copy">
+                      通过 {item.via_blogs.map((viaBlog) => viaBlog.title?.trim() || viaBlog.domain).join("、")} 认识 ·
+                      共同线索 {item.mutual_connection_count}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p>当前还没有“朋友的朋友”推荐，说明这条博客的直连关系还比较少，或者它已经和这些博客直接互相认识。</p>
+            )
+          ) : (
+            <p className="page-copy">展开后可查看推荐博客，以及它们是通过哪些共同朋友被连接到当前博客的。</p>
+          )}
+        </div>
       </Surface>
     </div>
   );

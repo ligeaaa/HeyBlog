@@ -57,11 +57,14 @@ class CrawlPipeline:
         """Run one crawl loop and export resulting graph snapshots."""
         stats = CrawlRunStats()
         limit = max_nodes or self.settings.max_nodes_per_run
+        normal_slots_remaining = 0
 
         while stats.processed < limit:
             if should_stop and should_stop():
                 break
-            row = self.repository.get_next_waiting_blog()
+            row, _claimed_priority, normal_slots_remaining = self._claim_next_scheduled_blog(
+                normal_slots_remaining=normal_slots_remaining
+            )
             if row is None:
                 break
             result = self.process_blog_row(
@@ -92,6 +95,8 @@ class CrawlPipeline:
     ) -> dict[str, int]:
         """Process one already-claimed blog row with the existing callback contract."""
         blog = BlogNode.from_row(row)
+        if hasattr(self.repository, "mark_ingestion_request_crawling"):
+            self.repository.mark_ingestion_request_crawling(blog_id=blog.id)
         if on_blog_start is not None:
             on_blog_start(blog.callback_payload())
         try:
@@ -108,6 +113,39 @@ class CrawlPipeline:
     def write_exports(self) -> dict[str, Any]:
         """Write the export artifacts once after a crawl batch completes."""
         return self.export_service.write_exports()
+
+    def _claim_next_scheduled_blog(self, *, normal_slots_remaining: int) -> tuple[dict[str, Any] | None, bool, int]:
+        """Claim the next blog while respecting the priority fairness contract."""
+        priority_slots = max(1, self.settings.priority_seed_normal_queue_slots)
+        if normal_slots_remaining <= 0:
+            row = self._get_next_priority_blog()
+            if row is not None:
+                return row, True, priority_slots
+
+        include_priority = normal_slots_remaining <= 0
+        row = self._get_next_waiting_blog(include_priority=include_priority)
+        if row is not None:
+            next_remaining = max(0, normal_slots_remaining - 1) if normal_slots_remaining > 0 else 0
+            return row, False, next_remaining
+
+        if normal_slots_remaining > 0:
+            row = self._get_next_priority_blog()
+            if row is not None:
+                return row, True, priority_slots
+        return None, False, 0
+
+    def _get_next_priority_blog(self) -> dict[str, Any] | None:
+        getter = getattr(self.repository, "get_next_priority_blog", None)
+        if getter is None:
+            return None
+        return getter()
+
+    def _get_next_waiting_blog(self, *, include_priority: bool) -> dict[str, Any] | None:
+        getter = self.repository.get_next_waiting_blog
+        try:
+            return getter(include_priority=include_priority)
+        except TypeError:
+            return getter()
 
     def _crawl_blog(self, blog: dict[str, Any]) -> int:
         """Crawl one blog and persist outgoing blog links."""

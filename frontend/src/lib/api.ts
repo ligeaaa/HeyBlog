@@ -38,6 +38,7 @@ export type BlogRecord = {
   url: string;
   normalized_url: string;
   domain: string;
+  email?: string | null;
   title: string | null;
   icon_url: string | null;
   status_code: number | null;
@@ -188,6 +189,40 @@ export type SearchPayload = {
   logs: LogRecord[];
 };
 
+export type IngestionRequestPayload = {
+  id: number;
+  request_id: number;
+  requested_url: string;
+  normalized_url: string;
+  email: string;
+  status: string;
+  priority: number;
+  seed_blog_id: number | null;
+  matched_blog_id: number | null;
+  blog_id: number | null;
+  request_token: string;
+  expires_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  seed_blog: BlogRecord | null;
+  matched_blog: BlogRecord | null;
+  blog: BlogRecord | null;
+};
+
+export type CreateIngestionRequestResponse =
+  | {
+      status: "DEDUPED_EXISTING";
+      blog_id: number;
+      matched_blog_id: number;
+      request_id: null;
+      request_token: null;
+      blog: BlogRecord;
+    }
+  | (IngestionRequestPayload & {
+      status: "QUEUED" | "CRAWLING_SEED" | "COMPLETED" | "FAILED" | "RECEIVED";
+    });
+
 export type StatusPayload = {
   is_running: boolean;
   pending_tasks: number;
@@ -214,6 +249,7 @@ export type ResetDatabasePayload = {
   blogs_deleted: number;
   edges_deleted: number;
   logs_deleted: number;
+  ingestion_requests_deleted?: number;
   search_reindexed: boolean;
   search: Record<string, unknown> | null;
   search_error?: string;
@@ -313,6 +349,21 @@ export const api = {
         q: params.query,
         kind: params.kind ?? "all",
         limit: params.limit ?? 10,
+      }),
+    ),
+  createIngestionRequest: (params: { homepageUrl: string; email: string }) =>
+    request<CreateIngestionRequestResponse>("/api/ingestion-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        homepage_url: params.homepageUrl,
+        email: params.email,
+      }),
+    }),
+  ingestionRequest: (requestId: number, requestToken: string) =>
+    request<IngestionRequestPayload>(
+      withQuery(`/api/ingestion-requests/${requestId}`, {
+        request_token: requestToken,
       }),
     ),
   runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),

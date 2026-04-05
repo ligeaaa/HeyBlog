@@ -31,6 +31,7 @@ class BlogModel(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     domain: Mapped[str] = mapped_column(Text, nullable=False)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -41,6 +42,26 @@ class BlogModel(Base):
     )
     friend_links_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_crawled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class IngestionRequestModel(Base):
+    """User-triggered priority ingestion request."""
+
+    __tablename__ = "ingestion_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    requested_url: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    requester_email: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    seed_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.id", ondelete="SET NULL"), nullable=True)
+    matched_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.id", ondelete="SET NULL"), nullable=True)
+    request_token: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

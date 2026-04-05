@@ -1,15 +1,29 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { ApiError } from "../lib/api";
 import { BlogDetailPage } from "./BlogDetailPage";
-import { useBlogDetailView } from "../lib/hooks";
+import { useBlogDetailView, useGraphNeighbors } from "../lib/hooks";
+
+vi.mock("../components/graph/D3GraphCanvas", () => ({
+  D3GraphCanvas: ({ selectedNodeId }: { selectedNodeId: string | null }) => (
+    <div data-testid="blog-detail-graph">selected:{selectedNodeId ?? "none"}</div>
+  ),
+}));
+
+vi.mock("../components/graph/GraphInspector", () => ({
+  GraphInspector: ({ details }: { details: { label: string } | null }) => (
+    <div data-testid="graph-inspector">{details?.label ?? "empty"}</div>
+  ),
+}));
 
 vi.mock("../lib/hooks", () => ({
   useBlogDetailView: vi.fn(),
+  useGraphNeighbors: vi.fn(),
 }));
 
 const mockedUseBlogDetailView = vi.mocked(useBlogDetailView);
+const mockedUseGraphNeighbors = vi.mocked(useGraphNeighbors);
 
 function renderDetailPage(initialEntry = "/blogs/1") {
   const router = createMemoryRouter([{ path: "/blogs/:blogId", element: <BlogDetailPage /> }], {
@@ -73,78 +87,115 @@ beforeEach(() => {
           },
         },
       ],
-      outgoing_edges: [
-        {
-          id: 10,
-          from_blog_id: 1,
-          to_blog_id: 2,
-          link_url_raw: "https://beta.example",
-          link_text: "Beta",
-          discovered_at: "2026-03-29T00:00:00Z",
-        },
-      ],
+      outgoing_edges: [],
     },
-    incomingEdges: [
-      {
-        id: 11,
-        from_blog_id: 3,
-        to_blog_id: 1,
-        link_url_raw: "https://alpha.example",
-        link_text: "Alpha",
-        discovered_at: "2026-03-29T00:00:00Z",
-        neighborBlog: {
-          id: 3,
-          url: "https://gamma.example",
-          normalized_url: "https://gamma.example",
-          domain: "gamma.example",
-          status_code: 200,
-          crawl_status: "FINISHED",
-          friend_links_count: 2,
-          last_crawled_at: null,
-          created_at: "2026-03-29T00:00:00Z",
-          updated_at: "2026-03-29T00:00:00Z",
-        },
-      },
-    ],
-    outgoingEdges: [
-      {
-        id: 10,
-        from_blog_id: 1,
-        to_blog_id: 2,
-        link_url_raw: "https://beta.example",
-        link_text: "Beta",
-        discovered_at: "2026-03-29T00:00:00Z",
-        neighborBlog: {
-          id: 2,
-          url: "https://beta.example",
-          normalized_url: "https://beta.example",
-          domain: "beta.example",
-          status_code: 200,
-          crawl_status: "FINISHED",
-          friend_links_count: 1,
-          last_crawled_at: null,
-          created_at: "2026-03-29T00:00:00Z",
-          updated_at: "2026-03-29T00:00:00Z",
-        },
-      },
-    ],
+    incomingEdges: [],
+    outgoingEdges: [],
     isLoading: false,
     error: null,
   } as unknown as ReturnType<typeof useBlogDetailView>);
+
+  mockedUseGraphNeighbors.mockReturnValue({
+    data: {
+      nodes: [
+        {
+          id: 1,
+          url: "https://alpha.example",
+          normalized_url: "https://alpha.example",
+          domain: "alpha.example",
+          title: "Alpha Blog",
+          icon_url: "https://alpha.example/favicon.ico",
+          status_code: 200,
+          crawl_status: "FINISHED",
+          friend_links_count: 4,
+          last_crawled_at: null,
+          created_at: "2026-03-29T00:00:00Z",
+          updated_at: "2026-03-29T00:00:00Z",
+          incoming_count: 1,
+          outgoing_count: 1,
+          connection_count: 2,
+          activity_at: "2026-03-29T00:00:00Z",
+          identity_complete: true,
+          x: 100,
+          y: 100,
+          degree: 2,
+          priority_score: 10,
+          component_id: "component-1",
+        },
+      ],
+      edges: [],
+      meta: {
+        strategy: "neighbors",
+        limit: 40,
+        sample_mode: "off",
+        sample_value: null,
+        sample_seed: 7,
+        sampled: false,
+        focus_node_id: 1,
+        hops: 1,
+        has_stable_positions: true,
+        snapshot_version: null,
+        generated_at: "2026-03-31T00:00:00Z",
+        source: "neighbors",
+        total_nodes: 1,
+        total_edges: 0,
+        available_nodes: 1,
+        available_edges: 0,
+        selected_nodes: 1,
+        selected_edges: 0,
+        graph_fingerprint: "blog-detail-graph",
+      },
+    },
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    refetch: vi.fn(),
+    dataUpdatedAt: Date.parse("2026-03-31T00:00:00Z"),
+  } as unknown as ReturnType<typeof useGraphNeighbors>);
 });
 
 afterEach(() => {
   cleanup();
 });
 
-test("renders blog detail with outgoing and incoming relationship links", () => {
+test("renders the relationship graph before collapsed friend-of-friend recommendations", () => {
   renderDetailPage();
 
   expect(mockedUseBlogDetailView).toHaveBeenCalledWith(1);
-  expect(screen.getByRole("heading", { level: 2, name: "Alpha Blog" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "gamma.example" })).toHaveAttribute("href", "/blogs/3");
-  expect(screen.getByRole("link", { name: "beta.example" })).toHaveAttribute("href", "/blogs/2");
+  expect(mockedUseGraphNeighbors).toHaveBeenCalledWith(
+    expect.objectContaining({
+      blogId: 1,
+      hops: 1,
+      limit: 40,
+    }),
+  );
+  expect(screen.getByText("关系图谱")).toBeInTheDocument();
+  expect(screen.getByTestId("blog-detail-graph")).toHaveTextContent("selected:1");
+  expect(screen.getByText("展开推荐")).toBeInTheDocument();
+  expect(screen.queryByText(/通过 Beta 认识/)).not.toBeInTheDocument();
+});
+
+test("expands friend-of-friend recommendations on demand", () => {
+  renderDetailPage();
+
+  fireEvent.click(screen.getByRole("button", { name: "展开推荐" }));
+
   expect(screen.getByText(/通过 Beta 认识/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "收起推荐" })).toHaveAttribute("aria-expanded", "true");
+});
+
+test("allows changing relationship graph depth", () => {
+  renderDetailPage();
+
+  fireEvent.change(screen.getByLabelText("关系图谱深度"), { target: { value: "3" } });
+
+  expect(mockedUseGraphNeighbors).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      blogId: 1,
+      hops: 3,
+      limit: 160,
+    }),
+  );
 });
 
 test("shows an invalid-state message for malformed blog ids", () => {

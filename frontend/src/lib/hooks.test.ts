@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import { useBlogCatalog, useBlogDetailView } from "./hooks";
+import { useBlogCatalog, useBlogDetailView, useGraphNeighbors } from "./hooks";
 
 vi.mock("@tanstack/react-query", () => ({
   useMutation: vi.fn(),
@@ -13,6 +13,7 @@ vi.mock("./api", () => ({
   api: {
     blogCatalog: vi.fn(),
     blog: vi.fn(),
+    graphNeighbors: vi.fn(),
   },
 }));
 
@@ -137,5 +138,40 @@ describe("useBlogDetailView", () => {
     expect(api.blog).toHaveBeenCalledWith(5);
     expect(result.incomingEdges[0].neighborBlog?.domain).toBe("gamma.example");
     expect(result.outgoingEdges[0].neighborBlog?.domain).toBe("beta.example");
+  });
+});
+
+describe("useGraphNeighbors", () => {
+  test("uses a focused non-polling graph neighbor query", async () => {
+    vi.clearAllMocks();
+    vi.mocked(useQuery).mockReturnValue({} as never);
+    vi.mocked(api.graphNeighbors).mockResolvedValue({} as never);
+
+    useGraphNeighbors({
+      blogId: 5,
+      hops: 2,
+      limit: 90,
+    });
+
+    expect(useQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryKey: ["graph-neighbors", 5, 2, 90],
+        enabled: true,
+        staleTime: 60000,
+        refetchInterval: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+      }),
+    );
+
+    const queryConfig = vi.mocked(useQuery).mock.calls[0][0] as unknown as {
+      queryFn: () => Promise<unknown>;
+    };
+    await queryConfig.queryFn();
+
+    expect(api.graphNeighbors).toHaveBeenCalledWith(5, {
+      hops: 2,
+      limit: 90,
+    });
   });
 });

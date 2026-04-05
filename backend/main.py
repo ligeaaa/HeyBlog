@@ -28,6 +28,11 @@ class RunBatchRequest(BaseModel):
     max_nodes: int
 
 
+class CreateIngestionRequest(BaseModel):
+    homepage_url: str
+    email: str
+
+
 def build_backend_state(settings: Settings | None = None) -> BackendState:
     """Build the backend service state."""
     resolved = settings or Settings.from_env()
@@ -206,6 +211,33 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def search(q: str, kind: str = "all", limit: int = 10) -> dict[str, Any]:
         try:
             return get_state().search.search(q, kind=kind, limit=limit)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.post("/api/ingestion-requests")
+    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
+        try:
+            return get_state().persistence.create_ingestion_request(**payload.model_dump())
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/ingestion-requests/{request_id}")
+    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
+        try:
+            return get_state().persistence.get_ingestion_request(
+                request_id=request_id,
+                request_token=request_token,
+            )
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
             try:

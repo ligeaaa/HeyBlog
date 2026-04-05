@@ -16,3 +16,4 @@ frontend/dist/
 .codex/
 ai_doc/
 .env
+todo.md

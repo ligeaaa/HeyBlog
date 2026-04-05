@@ -25,6 +25,8 @@ import type { GraphPoint, GraphPositionOverlay, GraphScene } from "../../lib/gra
 const VIEWPORT_WIDTH = 960;
 const VIEWPORT_HEIGHT = 620;
 const VIEWPORT_PADDING = 80;
+const LINK_ARROW_SIZE = 7;
+const LINK_TARGET_GAP = 3;
 
 function nodeRadius(datum: D3GraphNodeDatum) {
   return 10 + Math.min(datum.degree, 18) * 1.1;
@@ -35,6 +37,43 @@ function resolveNodeRef(nodes: D3GraphNodeDatum[], value: string | D3GraphNodeDa
     return value;
   }
   return nodes.find((node) => node.id === value) ?? null;
+}
+
+function resolveLinkPoints(nodes: D3GraphNodeDatum[], datum: D3GraphLinkDatum) {
+  const source = resolveNodeRef(nodes, datum.source);
+  const target = resolveNodeRef(nodes, datum.target);
+  if (!source || !target) {
+    return {
+      x1: 0,
+      y1: 0,
+      x2: 0,
+      y2: 0,
+    };
+  }
+
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance === 0) {
+    return {
+      x1: source.x,
+      y1: source.y,
+      x2: target.x,
+      y2: target.y,
+    };
+  }
+
+  const unitX = dx / distance;
+  const unitY = dy / distance;
+  const sourceOffset = nodeRadius(source) * 0.92;
+  const targetOffset = nodeRadius(target) * 0.92 + LINK_ARROW_SIZE + LINK_TARGET_GAP;
+
+  return {
+    x1: source.x + unitX * sourceOffset,
+    y1: source.y + unitY * sourceOffset,
+    x2: target.x - unitX * targetOffset,
+    y2: target.y - unitY * targetOffset,
+  };
 }
 
 type Props = {
@@ -112,6 +151,10 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
     return `graph-node-icon-${clipIdPrefix}-${nodeId}`;
   }
 
+  function linkArrowId() {
+    return `graph-link-arrow-${clipIdPrefix}`;
+  }
+
   function renderSelectionState(nextSelectedNodeId: string | null, nextScene: GraphScene) {
     const svg = svgRef.current;
     if (!svg) {
@@ -163,10 +206,10 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
     const labelSelection = zoomLayer.select<SVGGElement>("g.graph-labels").selectAll<SVGTextElement, D3GraphNodeDatum>("text");
 
     linkSelection
-      .attr("x1", (datum) => resolveNodeRef(nodesRef.current, datum.source)?.x ?? 0)
-      .attr("y1", (datum) => resolveNodeRef(nodesRef.current, datum.source)?.y ?? 0)
-      .attr("x2", (datum) => resolveNodeRef(nodesRef.current, datum.target)?.x ?? 0)
-      .attr("y2", (datum) => resolveNodeRef(nodesRef.current, datum.target)?.y ?? 0);
+      .attr("x1", (datum) => resolveLinkPoints(nodesRef.current, datum).x1)
+      .attr("y1", (datum) => resolveLinkPoints(nodesRef.current, datum).y1)
+      .attr("x2", (datum) => resolveLinkPoints(nodesRef.current, datum).x2)
+      .attr("y2", (datum) => resolveLinkPoints(nodesRef.current, datum).y2);
 
     nodeSelection.attr("transform", (datum) => `translate(${datum.x}, ${datum.y})`);
     nodeSelection
@@ -313,11 +356,35 @@ export const D3GraphCanvas = forwardRef<GraphRendererHandle, Props>(function D3G
       .select("circle")
       .attr("r", (datum) => nodeRadius(datum) * 0.72);
 
+    const markerSelection = defs
+      .selectAll<SVGMarkerElement, null>("marker.graph-link-arrow")
+      .data([null])
+      .join((enter) => {
+        const marker = enter
+          .append("marker")
+          .attr("class", "graph-link-arrow")
+          .attr("orient", "auto")
+          .attr("markerUnits", "userSpaceOnUse");
+        marker.append("path").attr("class", "graph-link-arrow-shape");
+        return marker;
+      })
+      .attr("id", linkArrowId())
+      .attr("viewBox", `0 0 ${LINK_ARROW_SIZE} ${LINK_ARROW_SIZE}`)
+      .attr("refX", LINK_ARROW_SIZE)
+      .attr("refY", LINK_ARROW_SIZE / 2)
+      .attr("markerWidth", LINK_ARROW_SIZE)
+      .attr("markerHeight", LINK_ARROW_SIZE);
+
+    markerSelection
+      .select("path")
+      .attr("d", `M0,0 L${LINK_ARROW_SIZE},${LINK_ARROW_SIZE / 2} L0,${LINK_ARROW_SIZE} z`);
+
     const linkLayer = zoomLayer.select<SVGGElement>("g.graph-links");
     linkLayer
       .selectAll<SVGLineElement, D3GraphLinkDatum>("line")
       .data(links, (datum) => datum.id)
       .join((enter) => enter.append("line").attr("class", "graph-link"))
+      .attr("marker-end", `url(#${linkArrowId()})`)
       .classed("is-deemphasized", scene.performanceMode.reduceEdgeDetail);
 
     const nodeLayer = zoomLayer.select<SVGGElement>("g.graph-nodes");

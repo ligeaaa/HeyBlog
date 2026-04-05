@@ -110,6 +110,7 @@ describe("D3GraphCanvas", () => {
 
     expect(screen.getByTestId("graph-canvas")).toBeInTheDocument();
     expect(document.querySelectorAll(".graph-link")).toHaveLength(1);
+    expect(document.querySelectorAll("marker.graph-link-arrow")).toHaveLength(1);
     expect(document.querySelectorAll(".graph-node-circle")).toHaveLength(2);
     expect(document.querySelectorAll(".graph-node-icon")).toHaveLength(2);
     expect(document.querySelector("image.graph-node-icon")?.getAttribute("display")).not.toBe("none");
@@ -181,8 +182,12 @@ describe("D3GraphCanvas", () => {
     );
 
     const edge = document.querySelector(".graph-link");
+    const targetX = payload.nodes[1]?.x;
+    expect(edge?.getAttribute("marker-end")).toMatch(/^url\(#graph-link-arrow-/);
     expect(edge?.getAttribute("x1")).not.toBe("0");
     expect(edge?.getAttribute("x2")).not.toBe("0");
+    expect(targetX).toBeDefined();
+    expect(Number(edge?.getAttribute("x2"))).toBeLessThan(targetX ?? 0);
   });
 
   test("keyboard activation selects a focused node", () => {
