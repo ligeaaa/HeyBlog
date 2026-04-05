@@ -24,7 +24,7 @@ function buildActions() {
         ok: true,
         blogs_deleted: 2,
         edges_deleted: 1,
-        logs_deleted: 3,
+        logs_deleted: 0,
         search_reindexed: true,
         search: null,
       }),

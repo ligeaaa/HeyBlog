@@ -90,7 +90,7 @@ export function ControlPage() {
       </Surface>
       <Surface title="数据库维护">
         <p className="page-copy">
-          清空 blogs、edges 和 crawl logs，并同步重建搜索快照，适合测试开发时快速回到初始状态。
+          清空 blogs、edges 数据并同步重建搜索快照；日志不会写入数据库。
         </p>
         {resetBlocked ? (
           <p className="error-copy">请先让 crawler 回到 idle 状态，再执行数据库重置。</p>

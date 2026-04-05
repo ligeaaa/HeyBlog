@@ -114,7 +114,7 @@ class CrawlerRuntimeService:
         with self._lock:
             self._snapshot.runner_status = "running"
 
-        aggregate = {"processed": 0, "discovered": 0, "failed": 0, "exports": {}}
+        aggregate = RuntimeAggregate()
 
         try:
             while not self._stop_event.is_set():
@@ -144,7 +144,7 @@ class CrawlerRuntimeService:
             self._snapshot.current_url = None
             self._snapshot.current_stage = None
             self._snapshot.last_stopped_at = utc_now()
-            self._snapshot.last_result = aggregate
+            self._snapshot.last_result = aggregate.as_result()
             self._stop_event.clear()
 
     def _on_blog_start(self, blog: dict[str, Any]) -> None:
@@ -197,4 +197,3 @@ class CrawlerRuntimeService:
         self._snapshot.current_blog_id = None
         self._snapshot.current_url = None
         self._snapshot.current_stage = None
-

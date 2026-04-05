@@ -106,7 +106,7 @@ services:
     ports:
       - "8030:8030"
     environment:
-      HEYBLOG_DB_DSN: postgresql://heyblog:heyblog@persistence-db:5432/heyblog
+      HEYBLOG_DB_DSN: postgresql+psycopg://heyblog:heyblog@persistence-db:5432/heyblog
     command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "8030"]
     healthcheck:
       test:

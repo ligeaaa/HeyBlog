@@ -32,9 +32,7 @@ class BootstrapService:
                     url=raw_url,
                     normalized_url=normalized.normalized_url,
                     domain=normalized.domain,
-                    source_blog_id=None,
                 )
                 created += int(inserted)
         self.logger.bootstrap_success(seed_path)
         return {"seed_path": str(seed_path), "imported": created}
-

@@ -34,7 +34,6 @@ beforeEach(() => {
           status_code: 200,
           crawl_status: "FINISHED",
           friend_links_count: 3,
-          source_blog_id: null,
           last_crawled_at: null,
           created_at: "2026-03-29T00:00:00Z",
           updated_at: "2026-03-29T00:00:00Z",
@@ -50,16 +49,7 @@ beforeEach(() => {
           discovered_at: "2026-03-29T00:00:00Z",
         },
       ],
-      logs: [
-        {
-          id: 3,
-          blog_id: 1,
-          stage: "crawl",
-          result: "success",
-          message: "Crawled alpha.example",
-          created_at: "2026-03-29T00:00:00Z",
-        },
-      ],
+      logs: [],
     },
     isLoading: false,
     error: null,
@@ -96,6 +86,7 @@ test("renders blogs as the primary result block with detail links", () => {
   expect(screen.getByRole("link", { name: "alpha.example" })).toHaveAttribute("href", "/blogs/1");
   expect(screen.getByRole("heading", { name: "边线索" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "日志命中" })).toBeInTheDocument();
+  expect(screen.getByText("没有匹配的日志。")).toBeInTheDocument();
 });
 
 test("renders an error state when the search request fails", () => {

@@ -198,7 +198,6 @@
 - `title` 来自站点主页的 `<title>`。
 - `icon_url` 优先使用主页里声明的 icon 链接；若页面未声明，当前实现会乐观回退到 `${origin}/favicon.ico`。
 - 这两个字段都允许为 `null`，前端应回退到 `domain` 与默认占位图标。
-- `source_blog_id` 保留为来源 lineage/provenance 信息，但当前不再参与队列调度、统计、前端展示或基于深度的任何行为。
 - 这是 legacy 全量接口。当前 Blog 概览页主路径已经迁移到 `GET /api/blogs/catalog`，但博客详情页仍会结合 `GET /api/blogs` 与 `GET /api/edges` 计算入边与邻居名称映射。
 
 #### `GET /api/blogs/catalog`
@@ -391,8 +390,7 @@
 说明：
 
 - 当前后端未暴露 `limit` 参数
-- 实际数据来自 `persistence-api /internal/logs`
-- 内部服务默认最多返回最近 `100` 条
+- 当前实现不再把 crawl logs 持久化到数据库，因此该接口会返回空数组
 
 #### `GET /api/search?q=...`
 
@@ -417,7 +415,7 @@
 
 - blog：匹配 `domain`、`url`、`normalized_url`
 - edge：匹配 `link_url_raw`、`link_text`
-- log：匹配 `message`
+- log：当前固定为空数组，不参与命中
 
 补充说明：
 
@@ -486,7 +484,7 @@
 
 - 仅允许在 crawler 运行器不处于 `starting/running/stopping` 时调用
 - 若运行器忙碌，返回 `409`，错误详情为 `crawler_busy`
-- 会清空 `blogs`、`edges`、`crawl_logs`
+- 会清空 `blogs`、`edges`
 - backend 在数据库重置后会尝试调用 `search /internal/search/reindex`
 - 即使 search 重建失败，数据库重置结果仍会返回，并附带 `search_reindexed=false`
 
@@ -497,7 +495,7 @@
   "ok": true,
   "blogs_deleted": 12,
   "edges_deleted": 34,
-  "logs_deleted": 56,
+  "logs_deleted": 0,
   "search_reindexed": true,
   "search": {
     "blogs": 0,
@@ -769,8 +767,7 @@
 {
   "url": "https://example.com/",
   "normalized_url": "https://example.com/",
-  "domain": "example.com",
-  "source_blog_id": null
+  "domain": "example.com"
 }
 ```
 
@@ -838,7 +835,7 @@
 
 排序说明：
 
-- 按 `id DESC`
+- 当前实现固定返回空数组
 
 ### `POST /internal/logs`
 
@@ -925,7 +922,7 @@
 
 补充说明：
 
-- 其中 logs 固定取最近 `500` 条
+- 其中 `logs` 固定为空数组，用于保持 search 快照结构兼容
 
 ### `POST /internal/database/reset`
 
@@ -933,8 +930,9 @@
 
 行为说明：
 
-- 清空 `blogs`、`edges`、`crawl_logs`
-- 重置 SQLite/PostgreSQL 的自增主键计数器
+- 清空 `blogs`、`edges`
+- `logs_deleted` 固定返回 `0`
+- 重置主键计数器
 
 响应：
 
@@ -943,7 +941,7 @@
   "ok": true,
   "blogs_deleted": 12,
   "edges_deleted": 34,
-  "logs_deleted": 56
+  "logs_deleted": 0
 }
 ```
 
@@ -971,7 +969,6 @@
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
 | `crawl_status` | `string` | 当前抓取状态，常见值有 `WAITING` `PROCESSING` `FAILED` `FINISHED` |
 | `friend_links_count` | `number` | 最近一次抓取发现的友链数 |
-| `source_blog_id` | `number \| null` | 来源 blog id，仅作为 lineage/provenance 使用 |
 | `last_crawled_at` | `string \| null` | 最近抓取时间 |
 | `created_at` | `string` | 创建时间 |
 | `updated_at` | `string` | 更新时间 |
@@ -1013,20 +1010,7 @@
 | `link_text` | `string \| null` | 链接文本 |
 | `discovered_at` | `string` | 发现时间 |
 
-### 5.4 LogRecord
-
-字段：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `id` | `number` | 日志主键 |
-| `blog_id` | `number \| null` | 关联 blog id |
-| `stage` | `string` | 阶段，如 `bootstrap`、`crawl` |
-| `result` | `string` | 结果，如 `success`、`error` |
-| `message` | `string` | 文本消息 |
-| `created_at` | `string` | 创建时间 |
-
-### 5.5 RuntimeSnapshot
+### 5.4 RuntimeSnapshot
 
 来源： [crawler/runtime.py](../crawler/runtime.py)
 
@@ -1076,7 +1060,7 @@
 - `backend` -> `crawler /internal/crawl/bootstrap`
 - `crawler` 读取 `seed.csv`
 - `crawler` -> `persistence-api /internal/blogs/upsert`
-- `crawler` -> `persistence-api /internal/logs`
+- `crawler` -> 结构化日志管线
 
 #### 单次 crawl 运行
 
@@ -1087,7 +1071,7 @@
 - `crawler` -> `persistence-api /internal/blogs/upsert`
 - `crawler` -> `persistence-api /internal/edges`
 - `crawler` -> `persistence-api /internal/blogs/{id}/result`
-- `crawler` -> `persistence-api /internal/logs`
+- `crawler` -> 结构化日志管线
 - `backend` -> `search /internal/search/reindex`（尽力而为）
 
 #### 运行时 batch

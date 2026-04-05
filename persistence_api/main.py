@@ -30,7 +30,6 @@ class UpsertBlogRequest(BaseModel):
     url: str
     normalized_url: str
     domain: str
-    source_blog_id: int | None
 
 
 class BlogResultRequest(BaseModel):
@@ -198,7 +197,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         return {
             "blogs": repository.list_blogs(),
             "edges": repository.list_edges(),
-            "logs": repository.list_logs(limit=500),
+            "logs": [],
         }
 
     @app.post("/internal/database/reset")

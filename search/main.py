@@ -39,7 +39,7 @@ class SearchService:
         return {
             "blogs": len(snapshot["blogs"]),
             "edges": len(snapshot["edges"]),
-            "logs": len(snapshot["logs"]),
+            "logs": 0,
             "cache_path": str(self.cache_path),
         }
 
@@ -67,8 +67,7 @@ class SearchService:
             for edge in snapshot["edges"]
             if contains(edge.get("link_url_raw")) or contains(edge.get("link_text"))
         ]
-        logs = [log for log in snapshot["logs"] if contains(log.get("message"))]
-        return {"query": query, "blogs": blogs, "edges": edges, "logs": logs}
+        return {"query": query, "blogs": blogs, "edges": edges, "logs": []}
 
 
 def build_search_service(settings: Settings | None = None) -> SearchService:

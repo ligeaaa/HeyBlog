@@ -31,7 +31,7 @@ class CrawlPipeline:
     def __init__(self, settings: Settings, repository: RepositoryProtocol) -> None:
         self.settings = settings
         self.repository = repository
-        self.logger = CrawlerLogger(repository)
+        self.logger = CrawlerLogger()
         self.fetcher = Fetcher(
             user_agent=settings.user_agent,
             timeout_seconds=settings.request_timeout_seconds,
@@ -121,4 +121,3 @@ class CrawlPipeline:
             decision_chain=decision_chain,
             logger=self.logger,
         )
-

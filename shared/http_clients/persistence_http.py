@@ -53,7 +53,6 @@ class PersistenceHttpClient:
         url: str,
         normalized_url: str,
         domain: str,
-        source_blog_id: int | None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -61,7 +60,6 @@ class PersistenceHttpClient:
                 "url": url,
                 "normalized_url": normalized_url,
                 "domain": domain,
-                "source_blog_id": source_blog_id,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
