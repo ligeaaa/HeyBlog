@@ -553,17 +553,25 @@
 
 用途：查看当前正在执行的 blog 简要信息。
 
-相比 `/api/runtime/status`，字段更少，聚焦当前任务。
+相比 `/api/runtime/status`，它仍聚焦“当前任务”，但现在会保留 worker 视角的摘要，方便 UI 直接渲染当前活跃 worker 列表。
 
 返回字段：
 
 - `runner_status`
 - `active_run_id`
+- `worker_count`
+- `active_workers`
+- `current_worker_id`
 - `current_blog_id`
 - `current_url`
 - `current_stage`
+- `task_started_at`
+- `elapsed_seconds`
 - `last_started_at`
+- `last_stopped_at`
 - `last_error`
+- `last_result`
+- `workers`
 
 #### `POST /api/runtime/start`
 
@@ -1095,7 +1103,7 @@
 
 ### 5.6 RuntimeSnapshot
 
-来源： [crawler/runtime.py](../crawler/runtime.py)
+来源： [crawler/contracts/runtime.py](../crawler/contracts/runtime.py) 与 [crawler/runtime/service.py](../crawler/runtime/service.py)
 
 字段：
 
@@ -1103,15 +1111,42 @@
 | --- | --- | --- |
 | `runner_status` | `string` | 运行器状态，常见值有 `idle` `starting` `running` `stopping` `error` |
 | `active_run_id` | `string \| null` | 当前运行 ID |
+| `worker_count` | `number` | 当前 runtime 配置的 worker 数量 |
+| `active_workers` | `number` | 当前仍持有 blog 任务、尚未完成收尾的 worker 数量；在 `stopping` 期间也会计入 |
+| `current_worker_id` | `string \| null` | 当前代表 worker 标识，优先选择活跃 worker |
 | `current_blog_id` | `number \| null` | 当前处理 blog id |
 | `current_url` | `string \| null` | 当前处理 URL |
 | `current_stage` | `string \| null` | 当前阶段，如 `crawling` `completed` `error` |
+| `task_started_at` | `string \| null` | 当前代表 worker 的任务开始时间 |
+| `elapsed_seconds` | `number \| null` | 当前代表 worker 的任务已耗时秒数 |
 | `last_started_at` | `string \| null` | 最近启动时间 |
 | `last_stopped_at` | `string \| null` | 最近停止时间 |
 | `last_error` | `string \| null` | 最近错误 |
 | `last_result` | `object \| null` | 最近执行结果 |
+| `workers` | `RuntimeWorkerSnapshot[]` | 各 worker 的运行快照列表 |
 
-### 5.7 StatsPayload
+### 5.7 RuntimeWorkerSnapshot
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `worker_id` | `string` | worker 标识，如 `worker-1` |
+| `worker_index` | `number` | worker 序号，1-based |
+| `status` | `string` | worker 状态，如 `idle` `waiting` `running` `completed` `error` `stopping` |
+| `current_blog_id` | `number \| null` | 当前处理 blog id |
+| `current_url` | `string \| null` | 当前处理 URL |
+| `current_stage` | `string \| null` | 当前阶段，如 `crawling` `completed` `waiting_for_work` |
+| `task_started_at` | `string \| null` | 当前任务开始时间 |
+| `last_transition_at` | `string \| null` | 最近一次状态迁移时间 |
+| `last_completed_at` | `string \| null` | 最近一次完成时间 |
+| `last_error` | `string \| null` | 最近错误 |
+| `processed` | `number` | 当前 run 内已处理 blog 数 |
+| `discovered` | `number` | 当前 run 内已发现 blog 数 |
+| `failed` | `number` | 当前 run 内失败 blog 数 |
+| `elapsed_seconds` | `number \| null` | 当前任务已耗时秒数；worker 空闲时为 `null` |
+
+### 5.8 StatsPayload
 
 字段：
 

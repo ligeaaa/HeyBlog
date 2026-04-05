@@ -36,24 +36,55 @@ class StubRuntime:
         return {
             "runner_status": "idle",
             "active_run_id": None,
+            "worker_count": 3,
+            "active_workers": 0,
+            "current_worker_id": None,
             "current_blog_id": None,
             "current_url": None,
             "current_stage": None,
+            "task_started_at": None,
+            "elapsed_seconds": None,
             "last_started_at": None,
             "last_stopped_at": None,
             "last_error": None,
             "last_result": None,
+            "workers": [],
         }
 
     def current(self) -> dict[str, object]:
         return {
             "runner_status": "idle",
             "active_run_id": None,
+            "worker_count": 3,
+            "active_workers": 1,
+            "current_worker_id": "worker-1",
             "current_blog_id": 10,
             "current_url": "https://blog.example.com/",
             "current_stage": "crawling",
+            "task_started_at": "2026-04-03T00:00:00Z",
+            "elapsed_seconds": 1.0,
             "last_started_at": "2026-04-03T00:00:00Z",
+            "last_stopped_at": None,
             "last_error": None,
+            "last_result": None,
+            "workers": [
+                {
+                    "worker_id": "worker-1",
+                    "worker_index": 1,
+                    "status": "running",
+                    "current_blog_id": 10,
+                    "current_url": "https://blog.example.com/",
+                    "current_stage": "crawling",
+                    "task_started_at": "2026-04-03T00:00:00Z",
+                    "last_transition_at": "2026-04-03T00:00:00Z",
+                    "last_completed_at": None,
+                    "last_error": None,
+                    "processed": 1,
+                    "discovered": 0,
+                    "failed": 0,
+                    "elapsed_seconds": 1.0,
+                }
+            ],
         }
 
     def start(self) -> dict[str, object]:
@@ -88,8 +119,14 @@ def test_crawler_service_routes_preserve_payload_shapes() -> None:
         "failed": 0,
         "exports": {"graph_json": "graph.json"},
     }
-    assert client.get("/internal/runtime/status").json()["runner_status"] == "idle"
-    assert client.get("/internal/runtime/current").json()["current_blog_id"] == 10
+    status = client.get("/internal/runtime/status").json()
+    assert status["runner_status"] == "idle"
+    assert status["worker_count"] == 3
+    current = client.get("/internal/runtime/current").json()
+    assert current["current_blog_id"] == 10
+    assert current["current_worker_id"] == "worker-1"
+    assert current["active_workers"] == 1
+    assert current["workers"][0]["worker_id"] == "worker-1"
     assert client.post("/internal/runtime/start").json()["runner_status"] == "running"
     assert client.post("/internal/runtime/stop").json()["runner_status"] == "stopping"
     assert client.post("/internal/runtime/run-batch", json={"max_nodes": 4}).json()["result"] == {
@@ -107,4 +144,3 @@ def test_services_crawler_main_remains_a_compatibility_shim() -> None:
     assert shim_create_app is create_app
     assert callable(shim_build_crawler_state)
     assert shim_app is not None
-

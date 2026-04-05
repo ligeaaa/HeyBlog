@@ -6,6 +6,7 @@ import { BlogsPage } from "./pages/BlogsPage";
 import { ControlPage } from "./pages/ControlPage";
 import { GraphPage } from "./pages/GraphPage";
 import { CurrentRuntimePage } from "./pages/CurrentRuntimePage";
+import { RuntimeProgressPage } from "./pages/RuntimeProgressPage";
 import { SearchPage } from "./pages/SearchPage";
 import { StatsPage } from "./pages/StatsPage";
 
@@ -19,6 +20,7 @@ export const router = createBrowserRouter([
       { path: "blogs/:blogId", element: <BlogDetailPage /> },
       { path: "search", element: <SearchPage /> },
       { path: "graph", element: <GraphPage /> },
+      { path: "runtime/progress", element: <RuntimeProgressPage /> },
       { path: "runtime/current", element: <CurrentRuntimePage /> },
       { path: "stats", element: <StatsPage /> },
       { path: "about", element: <AboutPage /> },

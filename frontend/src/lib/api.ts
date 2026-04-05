@@ -1,13 +1,36 @@
 export type RuntimeStatus = {
   runner_status: string;
   active_run_id: string | null;
+  worker_count: number;
+  active_workers: number;
+  current_worker_id: string | null;
   current_blog_id: number | null;
   current_url: string | null;
   current_stage: string | null;
+  task_started_at: string | null;
+  elapsed_seconds: number | null;
   last_started_at: string | null;
   last_stopped_at: string | null;
   last_error: string | null;
   last_result: Record<string, unknown> | null;
+  workers: RuntimeWorkerStatus[];
+};
+
+export type RuntimeWorkerStatus = {
+  worker_id: string;
+  worker_index: number;
+  status: string;
+  current_blog_id: number | null;
+  current_url: string | null;
+  current_stage: string | null;
+  task_started_at: string | null;
+  last_transition_at: string | null;
+  last_completed_at: string | null;
+  last_error: string | null;
+  processed: number;
+  discovered: number;
+  failed: number;
+  elapsed_seconds: number | null;
 };
 
 export type BlogRecord = {

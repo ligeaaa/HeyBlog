@@ -5,6 +5,7 @@ const navigation = [
   { to: "/blogs", label: "发现博客" },
   { to: "/search", label: "搜索发现" },
   { to: "/graph", label: "关系图谱" },
+  { to: "/runtime/progress", label: "爬虫进度" },
   { to: "/runtime/current", label: "当前处理" },
   { to: "/control", label: "控制台" },
   { to: "/about", label: "项目介绍" },

@@ -26,13 +26,19 @@ class StubCrawler:
         return {
             "runner_status": "idle",
             "active_run_id": None,
+            "worker_count": 3,
+            "active_workers": 0,
+            "current_worker_id": None,
             "current_blog_id": None,
             "current_url": None,
             "current_stage": None,
+            "task_started_at": None,
+            "elapsed_seconds": None,
             "last_started_at": None,
             "last_stopped_at": None,
             "last_error": None,
             "last_result": None,
+            "workers": [],
         }
 
     def current(self) -> dict[str, object]:
@@ -495,6 +501,8 @@ def test_backend_service_preserves_public_api_shape() -> None:
     runtime = client.get("/api/runtime/status")
     assert runtime.status_code == 200
     assert runtime.json()["runner_status"] == "idle"
+    assert runtime.json()["worker_count"] == 3
+    assert runtime.json()["workers"] == []
 
     batch = client.post("/api/runtime/run-batch", json={"max_nodes": 3})
     assert batch.status_code == 200

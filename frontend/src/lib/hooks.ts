@@ -93,7 +93,6 @@ export function useStats() {
   });
 }
 
-
 export function useGraph() {
   return useGraphView({
     strategy: "degree",
@@ -207,6 +206,15 @@ export function useRuntimeCurrent() {
   });
 }
 
+export function useRuntimeWorkers() {
+  return useQuery({
+    queryKey: ["runtime-workers"],
+    queryFn: api.runtimeStatus,
+    refetchInterval: 1500,
+    select: (payload) => payload.workers,
+  });
+}
+
 export function useCrawlerActions() {
   const queryClient = useQueryClient();
 
@@ -221,6 +229,7 @@ export function useCrawlerActions() {
       queryClient.invalidateQueries({ queryKey: ["graph-view"] }),
       queryClient.invalidateQueries({ queryKey: ["runtime-status"] }),
       queryClient.invalidateQueries({ queryKey: ["runtime-current"] }),
+      queryClient.invalidateQueries({ queryKey: ["runtime-workers"] }),
     ]);
   };
 

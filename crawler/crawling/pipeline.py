@@ -64,27 +64,50 @@ class CrawlPipeline:
             row = self.repository.get_next_waiting_blog()
             if row is None:
                 break
-            blog = BlogNode.from_row(row)
-            if on_blog_start is not None:
-                on_blog_start(blog.callback_payload())
-            try:
-                discovered = self._crawl_blog(blog.raw)
-                stats.record_success(discovered)
-                if on_blog_finish is not None:
-                    on_blog_finish(blog.callback_payload(), {"discovered": discovered})
-            except Exception as exc:  # noqa: BLE001
-                self._mark_blog_failed(blog.id, exc)
-                stats.record_failure()
-                if on_blog_error is not None:
-                    on_blog_error(blog.callback_payload(), exc)
+            result = self.process_blog_row(
+                row,
+                on_blog_start=on_blog_start,
+                on_blog_finish=on_blog_finish,
+                on_blog_error=on_blog_error,
+            )
+            stats.processed += int(result["processed"])
+            stats.discovered += int(result["discovered"])
+            stats.failed += int(result["failed"])
 
-        exports = self.export_service.write_exports()
+        exports = self.write_exports()
         return {
             "processed": stats.processed,
             "discovered": stats.discovered,
             "failed": stats.failed,
             "exports": exports,
         }
+
+    def process_blog_row(
+        self,
+        row: dict[str, Any],
+        *,
+        on_blog_start: BlogStartHook | None = None,
+        on_blog_finish: BlogFinishHook | None = None,
+        on_blog_error: BlogErrorHook | None = None,
+    ) -> dict[str, int]:
+        """Process one already-claimed blog row with the existing callback contract."""
+        blog = BlogNode.from_row(row)
+        if on_blog_start is not None:
+            on_blog_start(blog.callback_payload())
+        try:
+            discovered = self._crawl_blog(blog.raw)
+            if on_blog_finish is not None:
+                on_blog_finish(blog.callback_payload(), {"discovered": discovered})
+            return {"processed": 1, "discovered": discovered, "failed": 0}
+        except Exception as exc:  # noqa: BLE001
+            self._mark_blog_failed(blog.id, exc)
+            if on_blog_error is not None:
+                on_blog_error(blog.callback_payload(), exc)
+            return {"processed": 1, "discovered": 0, "failed": 1}
+
+    def write_exports(self) -> dict[str, Any]:
+        """Write the export artifacts once after a crawl batch completes."""
+        return self.export_service.write_exports()
 
     def _crawl_blog(self, blog: dict[str, Any]) -> int:
         """Crawl one blog and persist outgoing blog links."""

@@ -36,7 +36,13 @@ def build_crawler_state(settings: Settings | None = None) -> CrawlerState:
         export_dir=resolved.export_dir,
     )
     pipeline = CrawlPipeline(resolved, repository)
-    return CrawlerState(pipeline=pipeline, runtime=CrawlerRuntimeService(pipeline))
+    return CrawlerState(
+        pipeline=pipeline,
+        runtime=CrawlerRuntimeService(
+            pipeline,
+            worker_count=resolved.runtime_worker_count,
+        ),
+    )
 
 
 def create_app(state: CrawlerState | None = None) -> FastAPI:
