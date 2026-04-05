@@ -33,6 +33,12 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 ```
 
+Create local config once:
+
+```bash
+cp .env.example .env
+```
+
 Start the services in separate terminals:
 
 ```bash
@@ -40,22 +46,14 @@ python -m uvicorn persistence_api.main:app --reload --port 8030
 ```
 
 ```bash
-HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
-HEYBLOG_SEED_PATH=$(pwd)/seed.csv \
-HEYBLOG_EXPORT_DIR=$(pwd)/data/exports \
 python -m uvicorn crawler.main:app --reload --port 8010
 ```
 
 ```bash
-HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
-HEYBLOG_SEARCH_CACHE_DIR=$(pwd)/data/search-cache \
 python -m uvicorn search.main:app --reload --port 8020
 ```
 
 ```bash
-HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
-HEYBLOG_CRAWLER_BASE_URL=http://127.0.0.1:8010 \
-HEYBLOG_SEARCH_BASE_URL=http://127.0.0.1:8020 \
 python -m uvicorn backend.main:app --reload --port 8000
 ```
 
@@ -114,7 +112,6 @@ npm run build
 Serve the built frontend against the local backend:
 
 ```bash
-HEYBLOG_BACKEND_BASE_URL=http://127.0.0.1:8000 \
 python -m uvicorn frontend.server:app --reload --port 3000
 ```
 
