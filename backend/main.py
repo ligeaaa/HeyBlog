@@ -33,6 +33,14 @@ class CreateIngestionRequest(BaseModel):
     email: str
 
 
+class ReplaceBlogLabelsRequest(BaseModel):
+    tag_ids: list[int]
+
+
+class CreateBlogLabelTagRequest(BaseModel):
+    name: str
+
+
 def build_backend_state(settings: Settings | None = None) -> BackendState:
     """Build the backend service state."""
     resolved = settings or Settings.from_env()
@@ -125,6 +133,68 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 has_icon=has_icon,
                 min_connections=min_connections,
             )
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/blog-labeling/candidates")
+    def get_blog_labeling_candidates(
+        page: int = 1,
+        page_size: int = 50,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: str | None = None,
+        sort: str = "id_desc",
+    ) -> dict[str, Any]:
+        try:
+            return get_state().persistence.list_blog_labeling_candidates(
+                page=page,
+                page_size=page_size,
+                q=q,
+                label=label,
+                labeled=labeled,
+                sort=sort,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/blog-labeling/tags")
+    def get_blog_label_tags() -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_blog_label_tags()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.post("/api/blog-labeling/tags")
+    def post_blog_label_tag(payload: CreateBlogLabelTagRequest) -> dict[str, Any]:
+        try:
+            return get_state().persistence.create_blog_label_tag(name=payload.name)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.put("/api/blog-labeling/labels/{blog_id}")
+    def put_blog_labels(blog_id: int, payload: ReplaceBlogLabelsRequest) -> dict[str, Any]:
+        try:
+            return get_state().persistence.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
             try:

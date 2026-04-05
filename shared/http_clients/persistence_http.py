@@ -29,6 +29,11 @@ class PersistenceHttpClient:
         response.raise_for_status()
         return response.json()
 
+    def _put(self, path: str, payload: dict[str, Any]) -> Any:
+        response = self.client.put(path, json=payload)
+        response.raise_for_status()
+        return response.json()
+
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         response = self.client.get(path, params=params)
         response.raise_for_status()
@@ -166,6 +171,42 @@ class PersistenceHttpClient:
                 "has_title": has_title,
                 "has_icon": has_icon,
                 "min_connections": min_connections,
+            },
+        )
+
+    def list_blog_labeling_candidates(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: bool | None = None,
+        sort: str = "id_desc",
+    ) -> dict[str, Any]:
+        return self._get(
+            "/internal/blog-labeling/candidates",
+            {
+                "page": page,
+                "page_size": page_size,
+                "q": q,
+                "label": label,
+                "labeled": labeled,
+                "sort": sort,
+            },
+        )
+
+    def list_blog_label_tags(self) -> list[dict[str, Any]]:
+        return self._get("/internal/blog-labeling/tags")
+
+    def create_blog_label_tag(self, *, name: str) -> dict[str, Any]:
+        return self._post("/internal/blog-labeling/tags", {"name": name})
+
+    def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]:
+        return self._put(
+            f"/internal/blog-labeling/labels/{blog_id}",
+            {
+                "tag_ids": tag_ids,
             },
         )
 

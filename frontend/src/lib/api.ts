@@ -180,6 +180,55 @@ export type BlogCatalogPagePayload = {
   sort: string;
 };
 
+export type BlogLabelTagRecord = {
+  id: number;
+  name: string;
+  slug: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BlogLabelAssignmentRecord = BlogLabelTagRecord & {
+  labeled_at: string | null;
+};
+
+export type BlogLabelingCandidateRecord = BlogRecord & {
+  labels: BlogLabelAssignmentRecord[];
+  label_slugs: string[];
+  last_labeled_at: string | null;
+  is_labeled: boolean;
+};
+
+export type BlogLabelingFilters = {
+  q: string | null;
+  label: string | null;
+  labeled: boolean | null;
+  sort: string;
+};
+
+export type BlogLabelingPagePayload = {
+  items: BlogLabelingCandidateRecord[];
+  available_tags: BlogLabelTagRecord[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+  filters: BlogLabelingFilters;
+  sort: string;
+};
+
+export type ReplaceBlogLinkLabelsPayload = {
+  blog_id: number;
+  labels: BlogLabelAssignmentRecord[];
+  label_slugs: string[];
+  last_labeled_at: string | null;
+  is_labeled: boolean;
+};
+
+export type CreateBlogLabelTagPayload = BlogLabelTagRecord;
+
 export type SearchPayload = {
   query: string;
   kind: "all" | "blogs" | "relations";
@@ -250,6 +299,8 @@ export type ResetDatabasePayload = {
   edges_deleted: number;
   logs_deleted: number;
   ingestion_requests_deleted?: number;
+  blog_link_labels_deleted?: number;
+  blog_label_tags_deleted?: number;
   search_reindexed: boolean;
   search: Record<string, unknown> | null;
   search_error?: string;
@@ -258,8 +309,8 @@ export type ResetDatabasePayload = {
 export class ApiError extends Error {
   status: number;
 
-  constructor(status: number, statusText: string) {
-    super(`${status} ${statusText}`);
+  constructor(status: number, message: string) {
+    super(message);
     this.name = "ApiError";
     this.status = status;
   }
@@ -268,7 +319,16 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new ApiError(response.status, response.statusText);
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      if (payload.detail) {
+        message = String(payload.detail);
+      }
+    } catch {
+      // Keep the default status-based message when the body is not JSON.
+    }
+    throw new ApiError(response.status, message);
   }
   return response.json() as Promise<T>;
 }
@@ -313,6 +373,39 @@ export const api = {
         min_connections: params.minConnections,
       }),
     ),
+  blogLabelingCandidates: (params: {
+    page: number;
+    pageSize: number;
+    q?: string | null;
+    label?: string | null;
+    labeled?: boolean | null;
+    sort?: string;
+  }) =>
+    request<BlogLabelingPagePayload>(
+      withQuery("/api/blog-labeling/candidates", {
+        page: params.page,
+        page_size: params.pageSize,
+        q: params.q,
+        label: params.label,
+        labeled: params.labeled,
+        sort: params.sort,
+      }),
+    ),
+  blogLabelTags: () => request<BlogLabelTagRecord[]>("/api/blog-labeling/tags"),
+  createBlogLabelTag: (params: { name: string }) =>
+    request<CreateBlogLabelTagPayload>("/api/blog-labeling/tags", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: params.name }),
+    }),
+  replaceBlogLinkLabels: (params: { blogId: number; tagIds: number[] }) =>
+    request<ReplaceBlogLinkLabelsPayload>(`/api/blog-labeling/labels/${params.blogId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tag_ids: params.tagIds,
+      }),
+    }),
   blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
   edges: () => request<EdgeRecord[]>("/api/edges"),
   status: () => request<StatusPayload>("/api/status"),

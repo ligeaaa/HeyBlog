@@ -56,6 +56,8 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
         "edges_deleted": 1,
         "logs_deleted": 0,
         "ingestion_requests_deleted": 0,
+        "blog_link_labels_deleted": 0,
+        "blog_label_tags_deleted": 0,
     }
     assert repository.list_blogs() == []
     assert repository.list_edges() == []
@@ -357,11 +359,120 @@ def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows
 
     title_filtered = repository.list_blogs_catalog(has_title=True)
     icon_filtered = repository.list_blogs_catalog(has_icon=True)
-
     assert [row["id"] for row in title_filtered["items"]] == [blog_id]
     assert [row["id"] for row in icon_filtered["items"]] == [blog_id]
     assert title_filtered["items"][0]["title"] == "legacy.example"
     assert icon_filtered["items"][0]["icon_url"] == "https://legacy.example/favicon.ico"
+
+
+def test_repository_blog_labeling_candidates_only_return_finished_blogs_with_joined_label_state(
+    tmp_path: Path,
+) -> None:
+    """Labeling candidates should only expose finished blogs and merge multiple labels."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    finished_blog_id, inserted = repository.upsert_blog(
+        url="https://alpha.example/",
+        normalized_url="https://alpha.example/",
+        domain="alpha.example",
+    )
+    assert inserted is True
+    waiting_blog_id, inserted = repository.upsert_blog(
+        url="https://beta.example/",
+        normalized_url="https://beta.example/",
+        domain="beta.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=finished_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=2,
+        metadata_captured=True,
+        title="Alpha",
+        icon_url="https://alpha.example/favicon.ico",
+    )
+    repository.mark_blog_result(
+        blog_id=waiting_blog_id,
+        crawl_status="WAITING",
+        status_code=200,
+        friend_links_count=0,
+    )
+
+    first_page = repository.list_blog_labeling_candidates(page=1, page_size=20, labeled=False)
+    assert [row["id"] for row in first_page["items"]] == [finished_blog_id]
+    assert first_page["items"][0]["labels"] == []
+    assert first_page["items"][0]["is_labeled"] is False
+
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    official_tag = repository.create_blog_label_tag(name="official")
+    created = repository.replace_blog_link_labels(
+        blog_id=finished_blog_id,
+        tag_ids=[official_tag["id"], blog_tag["id"]],
+    )
+    assert created["blog_id"] == finished_blog_id
+    assert created["label_slugs"] == ["blog", "official"]
+
+    second_page = repository.list_blog_labeling_candidates(label="official", labeled=True, sort="recently_labeled")
+    assert [row["id"] for row in second_page["items"]] == [finished_blog_id]
+    assert [label["slug"] for label in second_page["items"][0]["labels"]] == ["blog", "official"]
+    assert second_page["items"][0]["is_labeled"] is True
+    assert second_page["items"][0]["last_labeled_at"] is not None
+    assert [tag["slug"] for tag in second_page["available_tags"]] == ["blog", "official"]
+
+
+def test_repository_blog_labeling_upsert_rejects_invalid_targets_and_reset_clears_labels(
+    tmp_path: Path,
+) -> None:
+    """Only finished blogs should be labelable, and reset should clear label/tag rows."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    finished_blog_id, inserted = repository.upsert_blog(
+        url="https://finished.example/",
+        normalized_url="https://finished.example/",
+        domain="finished.example",
+    )
+    assert inserted is True
+    queued_blog_id, inserted = repository.upsert_blog(
+        url="https://queued.example/",
+        normalized_url="https://queued.example/",
+        domain="queued.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=finished_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+    )
+
+    with pytest.raises(repository_module.BlogLabelingConflictError, match="requires_finished"):
+        repository.replace_blog_link_labels(blog_id=queued_blog_id, tag_ids=[1])
+
+    with pytest.raises(repository_module.BlogLabelingNotFoundError, match="blog_not_found"):
+        repository.replace_blog_link_labels(blog_id=999, tag_ids=[1])
+
+    with pytest.raises(ValueError, match="Unsupported blog label name"):
+        repository.create_blog_label_tag(name="   ")
+
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    unknown_tag = repository.create_blog_label_tag(name="unknown")
+    with pytest.raises(ValueError, match="blog_label_tag_not_found"):
+        repository.replace_blog_link_labels(blog_id=finished_blog_id, tag_ids=[blog_tag["id"], 999])
+
+    first = repository.replace_blog_link_labels(blog_id=finished_blog_id, tag_ids=[blog_tag["id"]])
+    second = repository.replace_blog_link_labels(
+        blog_id=finished_blog_id,
+        tag_ids=[blog_tag["id"], unknown_tag["id"]],
+    )
+    assert first["blog_id"] == second["blog_id"] == finished_blog_id
+
+    labeled = repository.list_blog_labeling_candidates(label="unknown", labeled=True)
+    assert [row["id"] for row in labeled["items"]] == [finished_blog_id]
+    assert [label["slug"] for label in labeled["items"][0]["labels"]] == ["blog", "unknown"]
+
+    reset = repository.reset()
+    assert reset["blog_link_labels_deleted"] == 2
+    assert reset["blog_label_tags_deleted"] == 2
+    assert repository.list_blog_labeling_candidates()["items"] == []
 
 
 def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path: Path) -> None:

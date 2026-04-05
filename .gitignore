@@ -17,3 +17,4 @@ frontend/dist/
 ai_doc/
 .env
 todo.md
+tracker/

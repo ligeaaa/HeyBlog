@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router-dom";
 import { AppLayout } from "./shell/AppLayout";
 import { AboutPage } from "./pages/AboutPage";
 import { BlogDetailPage } from "./pages/BlogDetailPage";
+import { BlogLabelingPage } from "./pages/BlogLabelingPage";
 import { BlogsPage } from "./pages/BlogsPage";
 import { ControlPage } from "./pages/ControlPage";
 import { GraphPage } from "./pages/GraphPage";
@@ -17,6 +18,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <StatsPage /> },
       { path: "blogs", element: <BlogsPage /> },
+      { path: "blog-labeling", element: <BlogLabelingPage /> },
       { path: "blogs/:blogId", element: <BlogDetailPage /> },
       { path: "search", element: <SearchPage /> },
       { path: "graph", element: <GraphPage /> },

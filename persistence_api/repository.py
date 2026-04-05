@@ -28,6 +28,8 @@ from persistence_api.db import create_persistence_engine
 from persistence_api.db import create_session_factory
 from persistence_api.db import session_scope
 from persistence_api.models import Base
+from persistence_api.models import BlogLabelAssignmentModel
+from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
@@ -42,6 +44,10 @@ BLOG_CATALOG_DEFAULT_SORT = "id_desc"
 BLOG_CATALOG_ALLOWED_SORTS = frozenset(
     {"id_desc", "recent_activity", "connections", "recently_discovered"}
 )
+BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
+BLOG_LABELING_MAX_PAGE_SIZE = 200
+BLOG_LABELING_DEFAULT_SORT = "id_desc"
+BLOG_LABELING_ALLOWED_SORTS = frozenset({"id_desc", "recent_activity", "recently_labeled"})
 INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
 INGESTION_REQUEST_STATUS_DEDUPED_EXISTING = "DEDUPED_EXISTING"
 INGESTION_REQUEST_STATUS_QUEUED = "QUEUED"
@@ -57,6 +63,25 @@ ACTIVE_INGESTION_REQUEST_STATUSES = frozenset(
     }
 )
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class BlogLabelingError(Exception):
+    """Base error for blog labeling flows."""
+
+
+class BlogLabelingNotFoundError(BlogLabelingError):
+    """Raised when the target blog does not exist."""
+
+
+class BlogLabelingConflictError(BlogLabelingError):
+    """Raised when the target blog is not eligible for labeling."""
+
+
+def slugify_blog_label(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    if not normalized:
+        raise ValueError("Unsupported blog label name")
+    return normalized
 
 
 def now_utc() -> datetime:
@@ -154,6 +179,36 @@ def normalize_blog_catalog_query(
         "has_title": _normalize_catalog_bool(has_title),
         "has_icon": _normalize_catalog_bool(has_icon),
         "min_connections": _normalize_catalog_int(min_connections),
+    }
+
+
+def normalize_blog_label(value: str | None) -> str | None:
+    normalized = _normalize_catalog_text(value)
+    if normalized is None:
+        return None
+    return slugify_blog_label(normalized)
+
+
+def normalize_blog_labeling_query(
+    *,
+    page: int = 1,
+    page_size: int = BLOG_LABELING_DEFAULT_PAGE_SIZE,
+    q: str | None = None,
+    label: str | None = None,
+    labeled: bool | str | None = None,
+    sort: str = BLOG_LABELING_DEFAULT_SORT,
+) -> dict[str, Any]:
+    normalized_sort = _normalize_catalog_text(sort) or BLOG_LABELING_DEFAULT_SORT
+    if normalized_sort not in BLOG_LABELING_ALLOWED_SORTS:
+        raise ValueError(f"Unsupported blog labeling sort: {normalized_sort}")
+
+    return {
+        "page": max(page, 1),
+        "page_size": max(1, min(page_size, BLOG_LABELING_MAX_PAGE_SIZE)),
+        "q": _normalize_catalog_text(q),
+        "label": normalize_blog_label(label),
+        "labeled": _normalize_catalog_bool(labeled),
+        "sort": normalized_sort,
     }
 
 
@@ -292,6 +347,38 @@ def _ingestion_request_payload(
     }
 
 
+def _blog_label_tag_payload(model: BlogLabelTagModel) -> dict[str, Any]:
+    return {
+        "id": int(model.id),
+        "name": model.name,
+        "slug": model.slug,
+        "created_at": _iso(model.created_at),
+        "updated_at": _iso(model.updated_at),
+    }
+
+
+def _blog_labeling_payload(
+    row: Any,
+    *,
+    labels: list[dict[str, Any]],
+    last_labeled_at: datetime | None,
+) -> dict[str, Any]:
+    blog = row[0]
+    return {
+        **_blog_payload(
+            blog,
+            incoming_count=int(row.incoming_count or 0),
+            outgoing_count=int(row.outgoing_count or 0),
+            activity_at=row.activity_at,
+            identity_complete=bool(row.identity_complete),
+        ),
+        "labels": labels,
+        "label_slugs": [label["slug"] for label in labels],
+        "last_labeled_at": _iso(last_labeled_at),
+        "is_labeled": len(labels) > 0,
+    }
+
+
 def _recommended_blog_payload(
     *,
     blog: BlogModel,
@@ -384,6 +471,23 @@ class RepositoryProtocol(Protocol):
         min_connections: int | None = None,
     ) -> dict[str, Any]: ...
 
+    def list_blog_labeling_candidates(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_LABELING_DEFAULT_PAGE_SIZE,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: bool | str | None = None,
+        sort: str = BLOG_LABELING_DEFAULT_SORT,
+    ) -> dict[str, Any]: ...
+
+    def list_blog_label_tags(self) -> list[dict[str, Any]]: ...
+
+    def create_blog_label_tag(self, *, name: str) -> dict[str, Any]: ...
+
+    def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]: ...
+
     def get_blog(self, blog_id: int) -> dict[str, Any] | None: ...
 
     def get_blog_detail(self, blog_id: int) -> dict[str, Any] | None: ...
@@ -436,9 +540,72 @@ class SQLAlchemyRepository:
     def _ensure_schema(self) -> None:
         inspector = inspect(self.engine)
         blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
+        existing_tables = set(inspector.get_table_names())
         with self.engine.begin() as connection:
             if "email" not in blog_columns:
                 connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
+            if "blog_link_labels" in existing_tables and "blog_label_tags" in existing_tables and "blog_label_assignments" in existing_tables:
+                old_columns = {column["name"] for column in inspector.get_columns("blog_link_labels")}
+                if {"blog_id", "label"}.issubset(old_columns):
+                    legacy_rows = connection.execute(
+                        text("SELECT blog_id, label, labeled_at, created_at, updated_at FROM blog_link_labels")
+                    ).mappings().all()
+                    for row in legacy_rows:
+                        slug = slugify_blog_label(str(row["label"]))
+                        existing_tag = connection.execute(
+                            text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
+                            {"slug": slug},
+                        ).scalar()
+                        if existing_tag is None:
+                            connection.execute(
+                                text(
+                                    "INSERT INTO blog_label_tags (name, slug, created_at, updated_at) "
+                                    "VALUES (:name, :slug, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                                ),
+                                {"name": str(row["label"]), "slug": slug},
+                            )
+                            existing_tag = connection.execute(
+                                text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
+                                {"slug": slug},
+                            ).scalar()
+                        existing_assignment = connection.execute(
+                            text(
+                                "SELECT id FROM blog_label_assignments "
+                                "WHERE blog_id = :blog_id AND tag_id = :tag_id"
+                            ),
+                            {"blog_id": row["blog_id"], "tag_id": existing_tag},
+                        ).scalar()
+                        if existing_assignment is None:
+                            connection.execute(
+                                text(
+                                    "INSERT INTO blog_label_assignments "
+                                    "(blog_id, tag_id, labeled_at, created_at, updated_at) "
+                                    "VALUES (:blog_id, :tag_id, :labeled_at, :created_at, :updated_at)"
+                                ),
+                                {
+                                    "blog_id": row["blog_id"],
+                                    "tag_id": existing_tag,
+                                    "labeled_at": row["labeled_at"] or now_utc(),
+                                    "created_at": row["created_at"] or now_utc(),
+                                    "updated_at": row["updated_at"] or now_utc(),
+                                },
+                            )
+
+    def _blog_labeling_select(self) -> tuple[Any, dict[str, Any]]:
+        statement, metrics = self._blog_select()
+        latest_labeled_at = (
+            select(
+                BlogLabelAssignmentModel.blog_id.label("blog_id"),
+                func.max(BlogLabelAssignmentModel.labeled_at).label("last_labeled_at"),
+            )
+            .group_by(BlogLabelAssignmentModel.blog_id)
+            .subquery()
+        )
+        statement = statement.outerjoin(latest_labeled_at, latest_labeled_at.c.blog_id == BlogModel.id).add_columns(
+            latest_labeled_at.c.last_labeled_at.label("last_labeled_at"),
+        )
+        metrics["latest_labeled_at"] = latest_labeled_at.c.last_labeled_at
+        return statement, metrics
 
     def _blog_metrics_expressions(self) -> dict[str, Any]:
         incoming_counts = (
@@ -878,6 +1045,194 @@ class SQLAlchemyRepository:
                 },
             )
 
+    def list_blog_labeling_candidates(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = BLOG_LABELING_DEFAULT_PAGE_SIZE,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: bool | str | None = None,
+        sort: str = BLOG_LABELING_DEFAULT_SORT,
+    ) -> dict[str, Any]:
+        query = normalize_blog_labeling_query(
+            page=page,
+            page_size=page_size,
+            q=q,
+            label=label,
+            labeled=labeled,
+            sort=sort,
+        )
+        with session_scope(self.session_factory) as session:
+            statement, metrics = self._blog_labeling_select()
+            statement = statement.where(BlogModel.crawl_status == CrawlStatus.FINISHED)
+            if query["q"] is not None:
+                pattern = f"%{query['q']}%"
+                statement = statement.where(
+                    or_(
+                        BlogModel.title.ilike(pattern),
+                        BlogModel.domain.ilike(pattern),
+                        BlogModel.url.ilike(pattern),
+                        BlogModel.normalized_url.ilike(pattern),
+                    )
+                )
+            if query["label"] is not None:
+                statement = statement.where(
+                    BlogModel.id.in_(
+                        select(BlogLabelAssignmentModel.blog_id)
+                        .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
+                        .where(BlogLabelTagModel.slug == query["label"])
+                    )
+                )
+            if query["labeled"] is True:
+                statement = statement.where(metrics["latest_labeled_at"].is_not(None))
+            elif query["labeled"] is False:
+                statement = statement.where(metrics["latest_labeled_at"].is_(None))
+
+            if query["sort"] == "recent_activity":
+                statement = statement.order_by(
+                    metrics["activity_at"].desc(),
+                    BlogModel.id.desc(),
+                )
+            elif query["sort"] == "recently_labeled":
+                statement = statement.order_by(
+                    metrics["latest_labeled_at"].desc().nullslast(),
+                    BlogModel.id.desc(),
+                )
+            else:
+                statement = statement.order_by(BlogModel.id.desc())
+
+            total_items = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
+            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
+            offset = (effective_page - 1) * query["page_size"]
+            rows = session.execute(statement.limit(query["page_size"]).offset(offset)).all()
+            blog_ids = [int(row[0].id) for row in rows]
+            label_rows = []
+            if blog_ids:
+                label_rows = session.execute(
+                    select(BlogLabelAssignmentModel, BlogLabelTagModel)
+                    .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
+                    .where(BlogLabelAssignmentModel.blog_id.in_(blog_ids))
+                    .order_by(BlogLabelAssignmentModel.blog_id.asc(), BlogLabelTagModel.name.asc())
+                ).all()
+            labels_by_blog: dict[int, list[dict[str, Any]]] = {blog_id: [] for blog_id in blog_ids}
+            for assignment, tag in label_rows:
+                labels_by_blog.setdefault(int(assignment.blog_id), []).append(
+                    {
+                        **_blog_label_tag_payload(tag),
+                        "labeled_at": _iso(assignment.labeled_at),
+                    }
+                )
+            available_tags = [
+                _blog_label_tag_payload(tag)
+                for tag in session.scalars(select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc())).all()
+            ]
+            return _catalog_response(
+                items=[
+                    _blog_labeling_payload(
+                        row,
+                        labels=labels_by_blog.get(int(row[0].id), []),
+                        last_labeled_at=row.last_labeled_at,
+                    )
+                    for row in rows
+                ],
+                page=effective_page,
+                page_size=query["page_size"],
+                total_items=total_items,
+                filters={
+                    "q": query["q"],
+                    "label": query["label"],
+                    "labeled": query["labeled"],
+                    "sort": query["sort"],
+                },
+            ) | {"available_tags": available_tags}
+
+    def list_blog_label_tags(self) -> list[dict[str, Any]]:
+        with session_scope(self.session_factory) as session:
+            rows = session.scalars(select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc())).all()
+            return [_blog_label_tag_payload(row) for row in rows]
+
+    def create_blog_label_tag(self, *, name: str) -> dict[str, Any]:
+        normalized_name = _normalize_catalog_text(name)
+        if normalized_name is None:
+            raise ValueError("Unsupported blog label name")
+        slug = slugify_blog_label(normalized_name)
+        with session_scope(self.session_factory) as session:
+            existing = session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == slug))
+            if existing is not None:
+                return _blog_label_tag_payload(existing)
+            timestamp = now_utc()
+            tag = BlogLabelTagModel(
+                name=normalized_name,
+                slug=slug,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            session.add(tag)
+            session.flush()
+            return _blog_label_tag_payload(tag)
+
+    def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]:
+        unique_tag_ids = sorted({int(tag_id) for tag_id in tag_ids})
+        with session_scope(self.session_factory) as session:
+            blog = session.get(BlogModel, blog_id)
+            if blog is None:
+                raise BlogLabelingNotFoundError("blog_not_found")
+            if blog.crawl_status != CrawlStatus.FINISHED:
+                raise BlogLabelingConflictError("blog_labeling_requires_finished_blog")
+            tags = []
+            if unique_tag_ids:
+                tags = session.scalars(
+                    select(BlogLabelTagModel).where(BlogLabelTagModel.id.in_(unique_tag_ids))
+                ).all()
+                if len(tags) != len(unique_tag_ids):
+                    raise ValueError("blog_label_tag_not_found")
+            existing_rows = session.scalars(
+                select(BlogLabelAssignmentModel).where(BlogLabelAssignmentModel.blog_id == blog_id)
+            )
+            timestamp = now_utc()
+            existing_by_tag = {int(row.tag_id): row for row in existing_rows}
+            for tag_id, assignment in list(existing_by_tag.items()):
+                if tag_id not in unique_tag_ids:
+                    session.delete(assignment)
+            for tag in tags:
+                assignment = existing_by_tag.get(int(tag.id))
+                if assignment is not None:
+                    assignment.labeled_at = timestamp
+                    assignment.updated_at = timestamp
+                    continue
+                session.add(
+                    BlogLabelAssignmentModel(
+                        blog_id=blog_id,
+                        tag_id=int(tag.id),
+                        labeled_at=timestamp,
+                        created_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                )
+            session.flush()
+            refreshed = session.execute(
+                select(BlogLabelAssignmentModel, BlogLabelTagModel)
+                .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
+                .where(BlogLabelAssignmentModel.blog_id == blog_id)
+                .order_by(BlogLabelTagModel.name.asc())
+            ).all()
+            labels = [
+                {
+                    **_blog_label_tag_payload(tag),
+                    "labeled_at": _iso(assignment.labeled_at),
+                }
+                for assignment, tag in refreshed
+            ]
+            return {
+                "blog_id": int(blog.id),
+                "labels": labels,
+                "label_slugs": [label["slug"] for label in labels],
+                "last_labeled_at": _iso(timestamp if labels else None),
+                "is_labeled": len(labels) > 0,
+            }
+
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
             statement, _ = self._blog_select()
@@ -991,9 +1346,18 @@ class SQLAlchemyRepository:
             blogs_deleted = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
             edges_deleted = int(session.scalar(select(func.count()).select_from(EdgeModel)) or 0)
             requests_deleted = int(session.scalar(select(func.count()).select_from(IngestionRequestModel)) or 0)
+            labels_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelAssignmentModel)) or 0)
+            tag_defs_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelTagModel)) or 0)
             if self.dialect_name == "postgresql":
-                session.execute(text("TRUNCATE TABLE ingestion_requests, edges, blogs RESTART IDENTITY CASCADE"))
+                session.execute(
+                    text(
+                        "TRUNCATE TABLE blog_label_assignments, blog_label_tags, ingestion_requests, edges, blogs "
+                        "RESTART IDENTITY CASCADE"
+                    )
+                )
             else:
+                session.query(BlogLabelAssignmentModel).delete()
+                session.query(BlogLabelTagModel).delete()
                 session.query(IngestionRequestModel).delete()
                 session.query(EdgeModel).delete()
                 session.query(BlogModel).delete()
@@ -1003,6 +1367,8 @@ class SQLAlchemyRepository:
                 "edges_deleted": edges_deleted,
                 "logs_deleted": 0,
                 "ingestion_requests_deleted": requests_deleted,
+                "blog_link_labels_deleted": labels_deleted,
+                "blog_label_tags_deleted": tag_defs_deleted,
             }
 
 

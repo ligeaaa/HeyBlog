@@ -10,6 +10,9 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
+from persistence_api.repository import BLOG_LABELING_DEFAULT_PAGE_SIZE
+from persistence_api.repository import BlogLabelingConflictError
+from persistence_api.repository import BlogLabelingNotFoundError
 from persistence_api.graph_service import GraphService
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
@@ -59,6 +62,14 @@ class AddLogRequest(BaseModel):
     stage: str
     result: str
     message: str
+
+
+class ReplaceBlogLabelsRequest(BaseModel):
+    tag_ids: list[int]
+
+
+class CreateBlogLabelTagRequest(BaseModel):
+    name: str
 
 
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
@@ -118,6 +129,49 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-labeling/candidates")
+    def list_blog_labeling_candidates(
+        page: int = 1,
+        page_size: int = BLOG_LABELING_DEFAULT_PAGE_SIZE,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: str | None = None,
+        sort: str = "id_desc",
+    ) -> dict[str, Any]:
+        try:
+            return get_state().repository.list_blog_labeling_candidates(
+                page=page,
+                page_size=page_size,
+                q=q,
+                label=label,
+                labeled=labeled,
+                sort=sort,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-labeling/tags")
+    def list_blog_label_tags() -> list[dict[str, Any]]:
+        return get_state().repository.list_blog_label_tags()
+
+    @app.post("/internal/blog-labeling/tags")
+    def create_blog_label_tag(payload: CreateBlogLabelTagRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.create_blog_label_tag(name=payload.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/internal/blog-labeling/labels/{blog_id}")
+    def replace_blog_labels(blog_id: int, payload: ReplaceBlogLabelsRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BlogLabelingNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BlogLabelingConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/internal/queue/next")
     def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:

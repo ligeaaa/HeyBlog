@@ -70,6 +70,10 @@
 - `GET /api/status`
 - `GET /api/blogs`
 - `GET /api/blogs/catalog`
+- `GET /api/blog-labeling/candidates`
+- `GET /api/blog-labeling/tags`
+- `POST /api/blog-labeling/tags`
+- `PUT /api/blog-labeling/labels/{blog_id}`
 - `GET /api/blogs/{blog_id}`
 - `GET /api/edges`
 - `GET /api/graph`
@@ -260,6 +264,193 @@
 - `domain`
 - `title`
 - `icon_url`
+
+### 3.4 博客人工标注台
+
+#### `GET /api/blog-labeling/candidates`
+
+用途：返回博客人工标注台使用的候选列表。该接口固定只返回 `crawl_status == FINISHED` 的 blog，并把当前人工标签、多标签筛选元数据一起合并到响应里。
+
+查询参数：
+
+- `page`: 页码，默认 `1`
+- `page_size`: 每页条数，默认 `50`，最终会被限制在 `1..200`
+- `q`: 模糊搜索，匹配 `title` / `domain` / `url` / `normalized_url`
+- `label`: 标签 `slug` 精确筛选，例如 `blog`、`official`、`government`
+- `labeled`: 标注状态筛选；支持 `1/0`、`true/false`、`yes/no`
+- `sort`: 排序方式，允许 `id_desc`、`recent_activity`、`recently_labeled`
+
+响应结构：
+
+- 复用 `BlogRecord` 的主体字段
+- 追加 `labels`、`label_slugs`、`last_labeled_at`、`is_labeled`
+- 顶层追加 `available_tags`，用于前端渲染可选标签与新建标签后的刷新
+- 分页包装结构与 `GET /api/blogs/catalog` 一致
+
+语义说明：
+
+- 未标注状态通过 `labels = []` 与 `is_labeled = false` 表达，不把“未标注”落成特殊标签
+- 一个 blog 可以同时拥有多个标签；`label` 查询参数表达“包含该标签”的筛选语义，而不是单值相等比较
+- 该接口只服务于标注工作台，不改变现有发现页 `GET /api/blogs/catalog` 的协议
+
+成功响应示例：
+
+```json
+{
+  "items": [
+    {
+      "id": 12,
+      "url": "https://alpha.example/",
+      "normalized_url": "https://alpha.example/",
+      "domain": "alpha.example",
+      "title": "Alpha Blog",
+      "crawl_status": "FINISHED",
+      "labels": [
+        {
+          "id": 3,
+          "name": "blog",
+          "slug": "blog",
+          "created_at": "2026-04-05T19:55:00+00:00",
+          "updated_at": "2026-04-05T19:55:00+00:00",
+          "labeled_at": "2026-04-05T20:01:00+00:00"
+        },
+        {
+          "id": 4,
+          "name": "official",
+          "slug": "official",
+          "created_at": "2026-04-05T19:56:00+00:00",
+          "updated_at": "2026-04-05T19:56:00+00:00",
+          "labeled_at": "2026-04-05T20:01:00+00:00"
+        }
+      ],
+      "label_slugs": ["blog", "official"],
+      "last_labeled_at": "2026-04-05T20:01:00+00:00",
+      "is_labeled": true
+    }
+  ],
+  "available_tags": [
+    {
+      "id": 3,
+      "name": "blog",
+      "slug": "blog",
+      "created_at": "2026-04-05T19:55:00+00:00",
+      "updated_at": "2026-04-05T19:55:00+00:00"
+    },
+    {
+      "id": 4,
+      "name": "official",
+      "slug": "official",
+      "created_at": "2026-04-05T19:56:00+00:00",
+      "updated_at": "2026-04-05T19:56:00+00:00"
+    }
+  ],
+  "page": 1,
+  "page_size": 50,
+  "total_items": 1,
+  "total_pages": 1,
+  "has_next": false,
+  "has_prev": false,
+  "filters": {
+    "q": null,
+    "label": "official",
+    "labeled": true,
+    "sort": "recently_labeled"
+  },
+  "sort": "recently_labeled"
+}
+```
+
+#### `GET /api/blog-labeling/tags`
+
+用途：返回当前所有可用标签类型定义，供前端渲染和复用。
+
+响应结构：
+
+- 返回数组，每项包含 `id`、`name`、`slug`、`created_at`、`updated_at`
+- 标签按 `name` 升序返回
+
+#### `POST /api/blog-labeling/tags`
+
+用途：创建一个新的标签类型；前端可以直接创建 `blog`、`unknown`、`official`、`government` 等业务标签。
+
+请求体：
+
+```json
+{
+  "name": "government"
+}
+```
+
+行为说明：
+
+- 服务端会对 `name` 进行 trim，并生成稳定的 `slug`
+- 若同 `slug` 已存在，返回已有标签记录，不重复创建
+- 空白或非法名称返回 `422`
+
+成功响应示例：
+
+```json
+{
+  "id": 7,
+  "name": "government",
+  "slug": "government",
+  "created_at": "2026-04-05T20:10:00+00:00",
+  "updated_at": "2026-04-05T20:10:00+00:00"
+}
+```
+
+#### `PUT /api/blog-labeling/labels/{blog_id}`
+
+用途：替换单个已完成抓取 blog 的整组人工标签。
+
+请求体：
+
+```json
+{
+  "tag_ids": [3, 4]
+}
+```
+
+行为说明：
+
+- 请求体中的 `tag_ids` 是完整替换语义，而不是增量 patch
+- 同一个 blog 可以同时拥有多个标签
+- 传空数组表示“清空该 blog 当前所有标签”
+
+错误语义：
+
+- `404`: `blog_id` 不存在
+- `409`: 目标 blog 不是 `FINISHED`，拒绝写入训练样本标签
+- `422`: `tag_ids` 中存在不存在的标签，或请求体非法
+
+成功响应示例：
+
+```json
+{
+  "blog_id": 12,
+  "labels": [
+    {
+      "id": 3,
+      "name": "blog",
+      "slug": "blog",
+      "created_at": "2026-04-05T19:55:00+00:00",
+      "updated_at": "2026-04-05T19:55:00+00:00",
+      "labeled_at": "2026-04-05T20:12:00+00:00"
+    },
+    {
+      "id": 4,
+      "name": "official",
+      "slug": "official",
+      "created_at": "2026-04-05T19:56:00+00:00",
+      "updated_at": "2026-04-05T19:56:00+00:00",
+      "labeled_at": "2026-04-05T20:12:00+00:00"
+    }
+  ],
+  "label_slugs": ["blog", "official"],
+  "last_labeled_at": "2026-04-05T20:12:00+00:00",
+  "is_labeled": true
+}
+```
 
 `recommended_blogs` 的每个元素包含：
 

@@ -13,6 +13,7 @@ from persistence_api.main import create_app as create_persistence_app
 from search.main import SearchService
 from search.main import create_app as create_search_app
 from shared.config import Settings
+from shared.http_clients.persistence_http import PersistenceHttpClient
 
 
 class StubCrawler:
@@ -210,10 +211,140 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert reset.json()["blogs_deleted"] == 3
     assert reset.json()["logs_deleted"] == 0
     assert reset.json()["ingestion_requests_deleted"] == 1
+    assert reset.json()["blog_link_labels_deleted"] == 0
 
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
     assert blogs.json() == []
+
+
+def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> None:
+    """Persistence service should expose multi-tag candidate listing and label management."""
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    app = create_persistence_app(build_persistence_state(settings))
+    client = TestClient(app)
+
+    finished = client.post(
+        "/internal/blogs/upsert",
+        json={
+            "url": "https://alpha.example/",
+            "normalized_url": "https://alpha.example/",
+            "domain": "alpha.example",
+        },
+    )
+    waiting = client.post(
+        "/internal/blogs/upsert",
+        json={
+            "url": "https://beta.example/",
+            "normalized_url": "https://beta.example/",
+            "domain": "beta.example",
+        },
+    )
+    assert finished.status_code == 200
+    assert waiting.status_code == 200
+
+    mark_finished = client.post(
+        f"/internal/blogs/{finished.json()['id']}/result",
+        json={
+            "crawl_status": "FINISHED",
+            "status_code": 200,
+            "friend_links_count": 1,
+            "metadata_captured": True,
+            "title": "Alpha",
+            "icon_url": "https://alpha.example/favicon.ico",
+        },
+    )
+    assert mark_finished.status_code == 200
+
+    candidates = client.get("/internal/blog-labeling/candidates", params={"labeled": "false"})
+    assert candidates.status_code == 200
+    assert [row["id"] for row in candidates.json()["items"]] == [finished.json()["id"]]
+    assert candidates.json()["items"][0]["labels"] == []
+    assert candidates.json()["filters"]["labeled"] is False
+
+    create_blog = client.post("/internal/blog-labeling/tags", json={"name": "blog"})
+    create_official = client.post("/internal/blog-labeling/tags", json={"name": "official"})
+    assert create_blog.status_code == 200
+    assert create_official.status_code == 200
+
+    tags = client.get("/internal/blog-labeling/tags")
+    assert tags.status_code == 200
+    assert [row["slug"] for row in tags.json()] == ["blog", "official"]
+
+    put_label = client.put(
+        f"/internal/blog-labeling/labels/{finished.json()['id']}",
+        json={"tag_ids": [create_blog.json()["id"], create_official.json()["id"]]},
+    )
+    assert put_label.status_code == 200
+    assert put_label.json()["label_slugs"] == ["blog", "official"]
+
+    labeled = client.get(
+        "/internal/blog-labeling/candidates",
+        params={"label": "official", "labeled": "true", "sort": "recently_labeled"},
+    )
+    assert labeled.status_code == 200
+    assert [row["id"] for row in labeled.json()["items"]] == [finished.json()["id"]]
+    assert labeled.json()["items"][0]["is_labeled"] is True
+    assert [row["slug"] for row in labeled.json()["items"][0]["labels"]] == ["blog", "official"]
+
+    invalid_label = client.post("/internal/blog-labeling/tags", json={"name": "   "})
+    assert invalid_label.status_code == 422
+
+    conflict = client.put(
+        f"/internal/blog-labeling/labels/{waiting.json()['id']}",
+        json={"tag_ids": [create_blog.json()["id"]]},
+    )
+    assert conflict.status_code == 409
+
+    missing = client.put("/internal/blog-labeling/labels/999", json={"tag_ids": [create_blog.json()["id"]]})
+    assert missing.status_code == 404
+
+    unknown_tag = client.put(
+        f"/internal/blog-labeling/labels/{finished.json()['id']}",
+        json={"tag_ids": [999]},
+    )
+    assert unknown_tag.status_code == 422
+
+
+def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
+    """The split-service HTTP client must preserve the persistence route method."""
+
+    class StubResponse:
+        def __init__(self) -> None:
+            self.called = False
+
+        def raise_for_status(self) -> None:
+            self.called = True
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.put_calls: list[tuple[str, dict[str, object]]] = []
+            self.post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def put(self, path: str, json: dict[str, object]) -> StubResponse:
+            self.put_calls.append((path, json))
+            return StubResponse()
+
+        def post(self, path: str, json: dict[str, object]) -> StubResponse:
+            self.post_calls.append((path, json))
+            return StubResponse()
+
+    client = PersistenceHttpClient("http://persistence.internal")
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    response = client.replace_blog_link_labels(blog_id=7, tag_ids=[3, 5])
+
+    assert response == {"ok": True}
+    assert stub.put_calls == [("/internal/blog-labeling/labels/7", {"tag_ids": [3, 5]})]
+    assert stub.post_calls == []
 
 
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -285,6 +416,109 @@ def test_backend_service_preserves_public_api_shape() -> None:
                     "min_connections": kwargs.get("min_connections", 0),
                 },
                 "sort": kwargs.get("sort", "id_desc"),
+            },
+            "list_blog_labeling_candidates": lambda self, **kwargs: {
+                "items": [
+                    {
+                        "id": 3,
+                        "url": "https://catalog.example.com",
+                        "normalized_url": "https://catalog.example.com",
+                        "domain": "catalog.example.com",
+                        "email": None,
+                        "title": "Catalog Example",
+                        "icon_url": "https://catalog.example.com/favicon.ico",
+                        "status_code": 200,
+                        "crawl_status": "FINISHED",
+                        "friend_links_count": 2,
+                        "last_crawled_at": "2026-03-31T00:00:00Z",
+                        "created_at": "2026-03-31T00:00:00Z",
+                        "updated_at": "2026-03-31T00:00:00Z",
+                        "incoming_count": 1,
+                        "outgoing_count": 2,
+                        "connection_count": 3,
+                        "activity_at": "2026-03-31T00:00:00Z",
+                        "identity_complete": True,
+                        "labels": (
+                            [
+                                {
+                                    "id": 11,
+                                    "name": "official",
+                                    "slug": "official",
+                                    "created_at": "2026-04-05T00:00:00Z",
+                                    "updated_at": "2026-04-05T00:00:00Z",
+                                    "labeled_at": "2026-04-05T00:00:00Z",
+                                }
+                            ]
+                            if kwargs.get("label")
+                            else []
+                        ),
+                        "label_slugs": [kwargs.get("label")] if kwargs.get("label") else [],
+                        "last_labeled_at": "2026-04-05T00:00:00Z" if kwargs.get("label") else None,
+                        "is_labeled": kwargs.get("label") is not None,
+                    }
+                ],
+                "available_tags": [
+                    {
+                        "id": 10,
+                        "name": "blog",
+                        "slug": "blog",
+                        "created_at": "2026-04-05T00:00:00Z",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                    },
+                    {
+                        "id": 11,
+                        "name": "official",
+                        "slug": "official",
+                        "created_at": "2026-04-05T00:00:00Z",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                    },
+                ],
+                "page": kwargs.get("page", 1),
+                "page_size": kwargs.get("page_size", 50),
+                "total_items": 1,
+                "total_pages": 1,
+                "has_next": False,
+                "has_prev": False,
+                "filters": {
+                    "q": kwargs.get("q"),
+                    "label": kwargs.get("label"),
+                    "labeled": kwargs.get("labeled"),
+                    "sort": kwargs.get("sort", "id_desc"),
+                },
+                "sort": kwargs.get("sort", "id_desc"),
+            },
+            "list_blog_label_tags": lambda self: [
+                {
+                    "id": 10,
+                    "name": "blog",
+                    "slug": "blog",
+                    "created_at": "2026-04-05T00:00:00Z",
+                    "updated_at": "2026-04-05T00:00:00Z",
+                }
+            ],
+            "create_blog_label_tag": lambda self, name: {
+                "id": 12,
+                "name": name,
+                "slug": name.lower(),
+                "created_at": "2026-04-05T00:00:00Z",
+                "updated_at": "2026-04-05T00:00:00Z",
+            },
+            "replace_blog_link_labels": lambda self, blog_id, tag_ids: {
+                "blog_id": blog_id,
+                "labels": [
+                    {
+                        "id": tag_id,
+                        "name": f"tag-{tag_id}",
+                        "slug": f"tag-{tag_id}",
+                        "created_at": "2026-04-05T00:00:00Z",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                        "labeled_at": "2026-04-05T00:00:00Z",
+                    }
+                    for tag_id in tag_ids
+                ],
+                "label_slugs": [f"tag-{tag_id}" for tag_id in tag_ids],
+                "last_labeled_at": "2026-04-05T00:00:00Z" if tag_ids else None,
+                "is_labeled": bool(tag_ids),
             },
             "get_blog": lambda self, blog_id: {
                 "id": blog_id,
@@ -512,6 +746,8 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "edges_deleted": 4,
                 "logs_deleted": 0,
                 "ingestion_requests_deleted": 1,
+                "blog_link_labels_deleted": 1,
+                "blog_label_tags_deleted": 2,
             },
         },
     )()
@@ -544,6 +780,22 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert catalog.json()["filters"]["site"] == "blog"
     assert catalog.json()["filters"]["status"] == "FINISHED"
     assert catalog.json()["sort"] == "connections"
+
+    labeling = client.get("/api/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true")
+    assert labeling.status_code == 200
+    assert labeling.json()["page"] == 2
+    assert labeling.json()["filters"]["label"] == "official"
+    assert labeling.json()["filters"]["labeled"] == "true"
+    assert labeling.json()["available_tags"][0]["slug"] == "blog"
+
+    tag_create = client.post("/api/blog-labeling/tags", json={"name": "government"})
+    assert tag_create.status_code == 200
+    assert tag_create.json()["slug"] == "government"
+
+    label_update = client.put("/api/blog-labeling/labels/3", json={"tag_ids": [10, 11]})
+    assert label_update.status_code == 200
+    assert label_update.json()["blog_id"] == 3
+    assert label_update.json()["label_slugs"] == ["tag-10", "tag-11"]
 
     core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
     assert core_view.status_code == 200
@@ -588,8 +840,102 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
     assert reset.json()["ingestion_requests_deleted"] == 1
+    assert reset.json()["blog_link_labels_deleted"] == 1
+    assert reset.json()["blog_label_tags_deleted"] == 2
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
+
+
+def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
+    """Public labeling endpoints should preserve upstream validation and conflict errors."""
+
+    class LabelingValidationStub:
+        def stats(self) -> dict[str, object]:
+            return {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "average_friend_links": 0.0,
+            }
+
+        def list_blogs(self) -> list[dict[str, object]]:
+            return []
+
+        def list_blogs_catalog(self, **_: object) -> dict[str, object]:
+            return {"items": [], "page": 1, "page_size": 50, "total_items": 0, "total_pages": 0, "has_next": False, "has_prev": False, "filters": {}, "sort": "id_desc"}
+
+        def list_blog_labeling_candidates(self, **_: object) -> dict[str, object]:
+            request = httpx.Request("GET", "http://persistence/internal/blog-labeling/candidates")
+            response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def list_blog_label_tags(self) -> list[dict[str, object]]:
+            return []
+
+        def create_blog_label_tag(self, *, name: str) -> dict[str, object]:
+            request = httpx.Request("POST", "http://persistence/internal/blog-labeling/tags")
+            response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, object]:
+            request = httpx.Request("PUT", f"http://persistence/internal/blog-labeling/labels/{blog_id}")
+            response = httpx.Response(
+                409,
+                request=request,
+                json={"detail": "blog_labeling_requires_finished_blog"},
+            )
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def get_blog(self, blog_id: int) -> None:
+            return None
+
+        def get_blog_detail(self, blog_id: int) -> None:
+            return None
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return []
+
+        def graph(self) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+        def graph_view(self, **_: object) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def graph_neighbors(self, blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def latest_graph_snapshot(self) -> dict[str, object]:
+            return {"version": "v1"}
+
+        def graph_snapshot(self, version: str) -> dict[str, object]:
+            return {"version": version, "nodes": [], "edges": [], "meta": {}}
+
+        def list_logs(self) -> list[dict[str, object]]:
+            return []
+
+        def reset(self) -> dict[str, object]:
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+
+    app = create_backend_app(
+        BackendState(persistence=LabelingValidationStub(), crawler=StubCrawler(), search=StubSearch())
+    )
+    client = TestClient(app)
+
+    list_response = client.get("/api/blog-labeling/candidates?label=maybe")
+    assert list_response.status_code == 422
+    assert list_response.json()["detail"] == "Unsupported blog label name"
+
+    post_response = client.post("/api/blog-labeling/tags", json={"name": "   "})
+    assert post_response.status_code == 422
+    assert post_response.json()["detail"] == "Unsupported blog label name"
+
+    put_response = client.put("/api/blog-labeling/labels/1", json={"tag_ids": [7]})
+    assert put_response.status_code == 409
+    assert put_response.json()["detail"] == "blog_labeling_requires_finished_blog"
 
 
 def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
@@ -802,3 +1148,64 @@ def test_frontend_service_serves_built_app_when_dist_exists(tmp_path: Path, monk
     assert response.status_code == 200
     assert "Built App" in response.text
     assert "Frontend build is not ready" not in response.text
+
+
+def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) -> None:
+    """Frontend API proxy should forward PUT requests to the backend service."""
+
+    captured: dict[str, object] = {}
+
+    class StubAsyncResponse:
+        def __init__(self) -> None:
+            self.content = b'{"ok":true}'
+            self.status_code = 200
+            self.headers = {"content-type": "application/json"}
+
+    class StubAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self) -> "StubAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            params: object,
+            content: bytes,
+            headers: dict[str, str],
+        ) -> StubAsyncResponse:
+            captured["method"] = method
+            captured["url"] = url
+            captured["params"] = dict(params)
+            captured["content"] = content
+            captured["headers"] = headers
+            return StubAsyncResponse()
+
+    monkeypatch.setattr("frontend.server.httpx.AsyncClient", StubAsyncClient)
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    response = client.put("/api/blog-labeling/labels/1", json={"tag_ids": [10, 11]})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert captured == {
+        "timeout": 60.0,
+        "method": "PUT",
+        "url": "http://backend:8000/api/blog-labeling/labels/1",
+        "params": {},
+        "content": b'{"tag_ids":[10,11]}',
+        "headers": {"content-type": "application/json"},
+    }

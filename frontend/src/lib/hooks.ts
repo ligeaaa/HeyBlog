@@ -1,8 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BlogCatalogPagePayload,
+  BlogLabelTagRecord,
+  BlogLabelingPagePayload,
+  CreateBlogLabelTagPayload,
   BlogNeighborSummary,
   EdgeRecord,
+  ReplaceBlogLinkLabelsPayload,
 } from "./api";
 import { api } from "./api";
 
@@ -42,6 +46,16 @@ export type BlogCatalogOptions = {
   enabled?: boolean;
 };
 
+export type BlogLabelingOptions = {
+  page: number;
+  pageSize?: number;
+  q?: string | null;
+  label?: string | null;
+  labeled?: boolean | null;
+  sort?: string;
+  enabled?: boolean;
+};
+
 export function useBlogCatalog(options: BlogCatalogOptions) {
   const pageSize = options.pageSize ?? 50;
   const queryOptions = {
@@ -78,6 +92,95 @@ export function useBlogCatalog(options: BlogCatalogOptions) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     placeholderData: (previousData: BlogCatalogPagePayload | undefined) => previousData,
+  });
+}
+
+export function useBlogLabelingCandidates(options: BlogLabelingOptions) {
+  const pageSize = options.pageSize ?? 50;
+  const queryOptions = {
+    page: options.page,
+    pageSize,
+    q: options.q ?? null,
+    label: options.label ?? null,
+    labeled: options.labeled ?? null,
+    sort: options.sort ?? "id_desc",
+  };
+
+  return useQuery({
+    queryKey: ["blog-labeling-candidates", queryOptions],
+    queryFn: () =>
+      api.blogLabelingCandidates({
+        page: queryOptions.page,
+        pageSize: queryOptions.pageSize,
+        q: queryOptions.q,
+        label: queryOptions.label,
+        labeled: queryOptions.labeled,
+        sort: queryOptions.sort,
+      }),
+    enabled: options.enabled ?? true,
+    staleTime: 30000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    placeholderData: (previousData: BlogLabelingPagePayload | undefined) => previousData,
+  });
+}
+
+export function useCreateBlogLabelTag() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: { name: string }) => api.createBlogLabelTag(params),
+    onSuccess: async (payload: CreateBlogLabelTagPayload) => {
+      queryClient.setQueriesData(
+        { queryKey: ["blog-labeling-candidates"] },
+        (current: BlogLabelingPagePayload | undefined) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            available_tags: [...current.available_tags, payload].sort((left, right) =>
+              left.name.localeCompare(right.name, "en"),
+            ),
+          };
+        },
+      );
+      await queryClient.invalidateQueries({ queryKey: ["blog-labeling-candidates"] });
+    },
+  });
+}
+
+export function useReplaceBlogLinkLabels() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: { blogId: number; tagIds: number[] }) => api.replaceBlogLinkLabels(params),
+    onSuccess: (payload: ReplaceBlogLinkLabelsPayload) => {
+      queryClient.setQueriesData(
+        { queryKey: ["blog-labeling-candidates"] },
+        (current: BlogLabelingPagePayload | undefined) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            items: current.items.map((item) =>
+              item.id === payload.blog_id
+                ? {
+                    ...item,
+                    labels: payload.labels,
+                    label_slugs: payload.label_slugs,
+                    last_labeled_at: payload.last_labeled_at,
+                    is_labeled: payload.is_labeled,
+                  }
+                : item,
+            ),
+          };
+        },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["blog-labeling-candidates"] });
+    },
   });
 }
 

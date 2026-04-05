@@ -52,7 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="backend_unavailable") from exc
         return {"status": "ok"}
 
-    @app.api_route("/api/{path:path}", methods=["GET", "POST"])
+    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy_api(path: str, request: Request) -> Response:
         target = f"{app.state.backend_base_url}/api/{path}"
         async with httpx.AsyncClient(timeout=60.0) as client:

@@ -66,6 +66,38 @@ class IngestionRequestModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class BlogLabelTagModel(Base):
+    """User-defined label type."""
+
+    __tablename__ = "blog_label_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BlogLabelAssignmentModel(Base):
+    """One label assignment from one blog to one label type."""
+
+    __tablename__ = "blog_label_assignments"
+    __table_args__ = (UniqueConstraint("blog_id", "tag_id", name="uq_blog_label_assignments_blog_tag"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    blog_id: Mapped[int] = mapped_column(
+        ForeignKey("blogs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tag_id: Mapped[int] = mapped_column(
+        ForeignKey("blog_label_tags.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    labeled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class EdgeModel(Base):
     """Directed blog edge."""
 
