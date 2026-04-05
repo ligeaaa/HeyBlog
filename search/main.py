@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 
 from shared.config import Settings
 from shared.http_clients.persistence_http import PersistenceHttpClient
@@ -15,6 +16,13 @@ from shared.http_clients.persistence_http import PersistenceHttpClient
 
 def _normalize(value: str) -> str:
     return value.casefold().strip()
+
+
+def _normalize_kind(value: str) -> str:
+    normalized = value.casefold().strip() or "all"
+    if normalized not in {"all", "blogs", "relations"}:
+        raise ValueError(f"Unsupported search kind: {value}")
+    return normalized
 
 
 @dataclass(slots=True)
@@ -43,31 +51,81 @@ class SearchService:
             "cache_path": str(self.cache_path),
         }
 
-    def search(self, query: str) -> dict[str, Any]:
+    def search(self, query: str, *, kind: str = "all", limit: int = 10) -> dict[str, Any]:
         normalized = _normalize(query)
+        normalized_kind = _normalize_kind(kind)
+        normalized_limit = max(1, min(limit, 50))
         if not normalized:
-            return {"query": query, "blogs": [], "edges": [], "logs": []}
+            return {
+                "query": query,
+                "kind": normalized_kind,
+                "limit": normalized_limit,
+                "blogs": [],
+                "edges": [],
+                "logs": [],
+            }
 
         snapshot = self._read_cache()
         if not any(snapshot.values()):
             snapshot = self.persistence.search_snapshot()
 
+        blog_map = {
+            int(blog["id"]): {
+                "id": int(blog["id"]),
+                "domain": blog.get("domain"),
+                "title": blog.get("title"),
+                "icon_url": blog.get("icon_url"),
+            }
+            for blog in snapshot["blogs"]
+            if blog.get("id") is not None
+        }
+
         def contains(text: str | None) -> bool:
             return bool(text) and normalized in text.casefold()
 
-        blogs = [
-            blog
-            for blog in snapshot["blogs"]
-            if contains(blog.get("domain"))
-            or contains(blog.get("url"))
-            or contains(blog.get("normalized_url"))
-        ]
-        edges = [
-            edge
-            for edge in snapshot["edges"]
-            if contains(edge.get("link_url_raw")) or contains(edge.get("link_text"))
-        ]
-        return {"query": query, "blogs": blogs, "edges": edges, "logs": []}
+        blogs: list[dict[str, Any]] = []
+        if normalized_kind in {"all", "blogs"}:
+            blogs = [
+                blog
+                for blog in snapshot["blogs"]
+                if contains(blog.get("title"))
+                or contains(blog.get("domain"))
+                or contains(blog.get("url"))
+                or contains(blog.get("normalized_url"))
+            ][:normalized_limit]
+
+        edges: list[dict[str, Any]] = []
+        if normalized_kind in {"all", "relations"}:
+            for edge in snapshot["edges"]:
+                from_blog = blog_map.get(int(edge["from_blog_id"])) if edge.get("from_blog_id") else None
+                to_blog = blog_map.get(int(edge["to_blog_id"])) if edge.get("to_blog_id") else None
+                if not (
+                    contains(edge.get("link_url_raw"))
+                    or contains(edge.get("link_text"))
+                    or contains(from_blog.get("domain") if from_blog else None)
+                    or contains(from_blog.get("title") if from_blog else None)
+                    or contains(to_blog.get("domain") if to_blog else None)
+                    or contains(to_blog.get("title") if to_blog else None)
+                ):
+                    continue
+                edges.append(
+                    {
+                        **edge,
+                        "from_blog": from_blog,
+                        "to_blog": to_blog,
+                    }
+                )
+                if len(edges) >= normalized_limit:
+                    break
+
+        return {
+            "query": query,
+            "kind": normalized_kind,
+            "limit": normalized_limit,
+            "blogs": blogs,
+            "edges": edges,
+            "logs": [],
+        }
 
 
 def build_search_service(settings: Settings | None = None) -> SearchService:
@@ -96,8 +154,11 @@ def create_app(service: SearchService | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/internal/search")
-    def search(q: str) -> dict[str, Any]:
-        return get_service().search(q)
+    def search(q: str, kind: str = "all", limit: int = 10) -> dict[str, Any]:
+        try:
+            return get_service().search(q, kind=kind, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/internal/search/reindex")
     def reindex() -> dict[str, Any]:

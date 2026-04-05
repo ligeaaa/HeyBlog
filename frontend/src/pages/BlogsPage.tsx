@@ -13,6 +13,10 @@ type CatalogFilters = {
   site: string;
   url: string;
   status: string;
+  sort: string;
+  hasTitle: boolean;
+  hasIcon: boolean;
+  minConnections: string;
 };
 
 function normalizePage(value: string | null) {
@@ -20,8 +24,12 @@ function normalizePage(value: string | null) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function readFilter(searchParams: URLSearchParams, key: keyof CatalogFilters) {
+function readFilter(searchParams: URLSearchParams, key: keyof Pick<CatalogFilters, "q" | "site" | "url" | "status" | "sort" | "minConnections">) {
   return searchParams.get(key)?.trim() ?? "";
+}
+
+function readBooleanFilter(searchParams: URLSearchParams, key: "hasTitle" | "hasIcon") {
+  return searchParams.get(key) === "true";
 }
 
 function sameFilters(left: CatalogFilters, right: CatalogFilters) {
@@ -29,7 +37,11 @@ function sameFilters(left: CatalogFilters, right: CatalogFilters) {
     left.q === right.q &&
     left.site === right.site &&
     left.url === right.url &&
-    left.status === right.status
+    left.status === right.status &&
+    left.sort === right.sort &&
+    left.hasTitle === right.hasTitle &&
+    left.hasIcon === right.hasIcon &&
+    left.minConnections === right.minConnections
   );
 }
 
@@ -50,7 +62,46 @@ function buildSearchParams(page: number, filters: CatalogFilters) {
   if (filters.status) {
     next.set("status", filters.status);
   }
+  if (filters.sort && filters.sort !== "id_desc") {
+    next.set("sort", filters.sort);
+  }
+  if (filters.hasTitle) {
+    next.set("hasTitle", "true");
+  }
+  if (filters.hasIcon) {
+    next.set("hasIcon", "true");
+  }
+  if (filters.minConnections) {
+    next.set("minConnections", filters.minConnections);
+  }
   return next;
+}
+
+function formatRelativeActivity(value: string | null) {
+  if (!value) {
+    return "暂无活跃信号";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function formatConnectionHint(connectionCount: number, friendLinksCount: number) {
+  if (connectionCount > 0) {
+    return `关系线索 ${connectionCount}`;
+  }
+  return `友链记录 ${friendLinksCount}`;
+}
+
+function getStatusHint(status: string) {
+  switch (status) {
+    case "FINISHED":
+      return "已完成抓取，可优先查看";
+    case "PROCESSING":
+      return "正在抓取，信息可能继续更新";
+    case "FAILED":
+      return "抓取失败，资料可能不完整";
+    default:
+      return "等待抓取，先看已有基础资料";
+  }
 }
 
 export function BlogsPage() {
@@ -61,6 +112,10 @@ export function BlogsPage() {
     site: readFilter(searchParams, "site"),
     url: readFilter(searchParams, "url"),
     status: readFilter(searchParams, "status"),
+    sort: readFilter(searchParams, "sort") || "id_desc",
+    hasTitle: readBooleanFilter(searchParams, "hasTitle"),
+    hasIcon: readBooleanFilter(searchParams, "hasIcon"),
+    minConnections: readFilter(searchParams, "minConnections"),
   };
   const [draftFilters, setDraftFilters] = useState<CatalogFilters>(committedFilters);
   const [pageInput, setPageInput] = useState(String(committedPage));
@@ -71,6 +126,12 @@ export function BlogsPage() {
     site: committedFilters.site || null,
     url: committedFilters.url || null,
     status: committedFilters.status || null,
+    sort: committedFilters.sort,
+    hasTitle: committedFilters.hasTitle ? true : null,
+    hasIcon: committedFilters.hasIcon ? true : null,
+    minConnections: committedFilters.minConnections
+      ? Number.parseInt(committedFilters.minConnections, 10) || 0
+      : null,
   });
 
   useEffect(() => {
@@ -79,8 +140,12 @@ export function BlogsPage() {
   }, [
     committedFilters.q,
     committedFilters.site,
-    committedFilters.status,
     committedFilters.url,
+    committedFilters.status,
+    committedFilters.sort,
+    committedFilters.hasTitle,
+    committedFilters.hasIcon,
+    committedFilters.minConnections,
     committedPage,
   ]);
 
@@ -93,32 +158,14 @@ export function BlogsPage() {
     }, FILTER_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [
-    committedFilters.q,
-    committedFilters.site,
-    committedFilters.status,
-    committedFilters.url,
-    draftFilters.q,
-    draftFilters.site,
-    draftFilters.status,
-    draftFilters.url,
-    setSearchParams,
-  ]);
+  }, [committedFilters, draftFilters, setSearchParams]);
 
   useEffect(() => {
     if (!catalog.data || catalog.data.page === committedPage) {
       return;
     }
     setSearchParams(buildSearchParams(catalog.data.page, committedFilters), { replace: true });
-  }, [
-    catalog.data,
-    committedFilters.q,
-    committedFilters.site,
-    committedFilters.status,
-    committedFilters.url,
-    committedPage,
-    setSearchParams,
-  ]);
+  }, [catalog.data, committedFilters, committedPage, setSearchParams]);
 
   const hasRows = (catalog.data?.items.length ?? 0) > 0;
   const currentPage = catalog.data?.page ?? committedPage;
@@ -128,7 +175,7 @@ export function BlogsPage() {
   const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const pageEnd = totalItems === 0 ? 0 : pageStart + (catalog.data?.items.length ?? 0) - 1;
 
-  const setFilter = (key: keyof CatalogFilters, value: string) => {
+  const setFilter = <K extends keyof CatalogFilters>(key: K, value: CatalogFilters[K]) => {
     setDraftFilters((current) => ({ ...current, [key]: value }));
   };
 
@@ -143,18 +190,44 @@ export function BlogsPage() {
   };
 
   const clearFilters = () => {
-    setDraftFilters({ q: "", site: "", url: "", status: "" });
+    const nextFilters = {
+      q: "",
+      site: "",
+      url: "",
+      status: "",
+      sort: "id_desc",
+      hasTitle: false,
+      hasIcon: false,
+      minConnections: "",
+    };
+    setDraftFilters(nextFilters);
     setSearchParams(new URLSearchParams());
   };
 
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Catalog"
-        title="Blog URL 概览"
-        description="按页查看已记录的 blog，并按关键词、站点、URL 和状态筛选。概览页只加载当前页，避免全量渲染。"
+        eyebrow="Discover"
+        title="发现博客"
+        description="把当前抓到的博客整理成可浏览、可判断、可继续点进去的发现入口。先用身份、活跃度和关系线索帮你快速决定值不值得看。"
       />
-      <Surface title="Blog 列表" note={`来自 /api/blogs/catalog · 每页 ${DEFAULT_PAGE_SIZE} 条`}>
+
+      <div className="stats-grid">
+        <div className="stat-card">
+          <span>当前结果</span>
+          <strong>{totalItems}</strong>
+        </div>
+        <div className="stat-card">
+          <span>排序方式</span>
+          <strong>{draftFilters.sort === "id_desc" ? "最近收录" : draftFilters.sort}</strong>
+        </div>
+        <div className="stat-card">
+          <span>入口提示</span>
+          <strong>{draftFilters.hasTitle || draftFilters.hasIcon ? "优先完整资料" : "先广泛探索"}</strong>
+        </div>
+      </div>
+
+      <Surface title="发现控制台" note={`来自 /api/blogs/catalog · 每页 ${DEFAULT_PAGE_SIZE} 条`}>
         <div className="catalog-controls">
           <div className="search-form">
             <label className="search-field">
@@ -191,9 +264,9 @@ export function BlogsPage() {
               />
             </label>
             <label className="search-field">
-              <span>Status</span>
+              <span>状态</span>
               <select
-                aria-label="Status"
+                aria-label="状态"
                 name="status"
                 value={draftFilters.status}
                 onChange={(event) => setFilter("status", event.target.value)}
@@ -206,8 +279,53 @@ export function BlogsPage() {
                 ))}
               </select>
             </label>
+            <label className="search-field">
+              <span>排序</span>
+              <select
+                aria-label="排序"
+                name="sort"
+                value={draftFilters.sort}
+                onChange={(event) => setFilter("sort", event.target.value)}
+              >
+                <option value="id_desc">最近收录</option>
+                <option value="recent_activity">最近活跃</option>
+                <option value="connections">连接更丰富</option>
+                <option value="recently_discovered">最近发现</option>
+              </select>
+            </label>
+            <label className="search-field">
+              <span>最少关系线索</span>
+              <input
+                aria-label="最少关系线索"
+                inputMode="numeric"
+                min={0}
+                name="minConnections"
+                type="number"
+                value={draftFilters.minConnections}
+                onChange={(event) => setFilter("minConnections", event.target.value)}
+                placeholder="0"
+              />
+            </label>
           </div>
-          <div className="page-actions">
+          <div className="catalog-checkbox-row">
+            <label className="toggle-pill">
+              <input
+                aria-label="仅显示有标题"
+                checked={draftFilters.hasTitle}
+                type="checkbox"
+                onChange={(event) => setFilter("hasTitle", event.target.checked)}
+              />
+              <span>仅显示有标题</span>
+            </label>
+            <label className="toggle-pill">
+              <input
+                aria-label="仅显示有图标"
+                checked={draftFilters.hasIcon}
+                type="checkbox"
+                onChange={(event) => setFilter("hasIcon", event.target.checked)}
+              />
+              <span>仅显示有图标</span>
+            </label>
             <button
               className="secondary-button"
               disabled={catalog.isFetching}
@@ -240,48 +358,36 @@ export function BlogsPage() {
         {!catalog.isLoading && !catalog.error && !hasRows ? <p>当前筛选下没有匹配的 blog。</p> : null}
 
         {hasRows ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>站点</th>
-                  <th>URL</th>
-                  <th>Status</th>
-                  <th>Edges</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {catalog.data?.items.map((blog) => (
-                  <tr key={blog.id}>
-                    <td>
-                      <Link className="table-link" to={`/blogs/${blog.id}`}>
-                        {blog.id}
-                      </Link>
-                    </td>
-                    <td>
-                      <Link className="table-link" to={`/blogs/${blog.id}`}>
-                        <SiteIdentity
-                          compact
-                          title={blog.title}
-                          domain={blog.domain}
-                          iconUrl={blog.icon_url}
-                        />
-                      </Link>
-                    </td>
-                    <td className="url-cell">{blog.url}</td>
-                    <td>
-                      <span className={`status-chip status-${blog.crawl_status.toLowerCase()}`}>
-                        {blog.crawl_status}
-                      </span>
-                    </td>
-                    <td>{blog.friend_links_count}</td>
-                    <td>{new Date(blog.updated_at).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="blog-card-grid">
+            {catalog.data?.items.map((blog) => (
+              <article key={blog.id} className="blog-card">
+                <div className="blog-card-head">
+                  <Link className="card-link" to={`/blogs/${blog.id}`}>
+                    <SiteIdentity title={blog.title} domain={blog.domain} iconUrl={blog.icon_url} />
+                  </Link>
+                  <span className={`status-chip status-${blog.crawl_status.toLowerCase()}`}>
+                    {blog.crawl_status}
+                  </span>
+                </div>
+                <p className="page-copy">{blog.url}</p>
+                <div className="blog-card-metrics">
+                  <span>活跃信号：{formatRelativeActivity(blog.activity_at)}</span>
+                  <span>{formatConnectionHint(blog.connection_count, blog.friend_links_count)}</span>
+                  <span>{getStatusHint(blog.crawl_status)}</span>
+                </div>
+                <div className="blog-card-actions">
+                  <Link className="button-link primary-button" to={`/blogs/${blog.id}`}>
+                    查看详情
+                  </Link>
+                  <Link
+                    className="button-link secondary-button"
+                    to={`/search?q=${encodeURIComponent(blog.title || blog.domain)}`}
+                  >
+                    搜索相关线索
+                  </Link>
+                </div>
+              </article>
+            ))}
           </div>
         ) : null}
 

@@ -31,6 +31,10 @@ export type BlogCatalogOptions = {
   site?: string | null;
   url?: string | null;
   status?: string | null;
+  sort?: string;
+  hasTitle?: boolean | null;
+  hasIcon?: boolean | null;
+  minConnections?: number | null;
   enabled?: boolean;
 };
 
@@ -43,6 +47,10 @@ export function useBlogCatalog(options: BlogCatalogOptions) {
     site: options.site ?? null,
     url: options.url ?? null,
     status: options.status ?? null,
+    sort: options.sort ?? "id_desc",
+    hasTitle: options.hasTitle ?? null,
+    hasIcon: options.hasIcon ?? null,
+    minConnections: options.minConnections ?? null,
   };
 
   return useQuery({
@@ -55,6 +63,10 @@ export function useBlogCatalog(options: BlogCatalogOptions) {
         site: queryOptions.site,
         url: queryOptions.url,
         status: queryOptions.status,
+        sort: queryOptions.sort,
+        hasTitle: queryOptions.hasTitle,
+        hasIcon: queryOptions.hasIcon,
+        minConnections: queryOptions.minConnections,
       }),
     enabled: options.enabled ?? true,
     staleTime: 30000,
@@ -126,11 +138,23 @@ export function useEdges(options: QueryTuning = {}) {
   });
 }
 
-export function useSearch(query: string, enabled = true) {
+export function useSearch(
+  query: string,
+  options: {
+    kind?: "all" | "blogs" | "relations";
+    limit?: number;
+    enabled?: boolean;
+  } = {},
+) {
   return useQuery({
-    queryKey: ["search", query],
-    queryFn: () => api.search(query),
-    enabled,
+    queryKey: ["search", query, options.kind ?? "all", options.limit ?? 10],
+    queryFn: () =>
+      api.search({
+        query,
+        kind: options.kind ?? "all",
+        limit: options.limit ?? 10,
+      }),
+    enabled: options.enabled ?? true,
     staleTime: 60000,
   });
 }

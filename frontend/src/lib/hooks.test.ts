@@ -38,6 +38,10 @@ describe("useBlogCatalog", () => {
             site: "alpha",
             url: null,
             status: "FINISHED",
+            sort: "id_desc",
+            hasTitle: null,
+            hasIcon: null,
+            minConnections: null,
           },
         ],
         enabled: true,
@@ -60,6 +64,10 @@ describe("useBlogCatalog", () => {
       site: "alpha",
       url: null,
       status: "FINISHED",
+      sort: "id_desc",
+      hasTitle: null,
+      hasIcon: null,
+      minConnections: null,
     });
   });
 });
@@ -71,6 +79,7 @@ describe("useBlogDetailView", () => {
       data: {
         id: 5,
         domain: "alpha.example",
+        recommended_blogs: [],
         incoming_edges: [
           {
             id: 12,

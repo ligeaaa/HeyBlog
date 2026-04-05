@@ -175,6 +175,8 @@ def test_repository_blog_catalog_paginates_and_filters(tmp_path: Path) -> None:
 
     first_page = repository.list_blogs_catalog(page=1, page_size=2)
     assert [row["id"] for row in first_page["items"]] == [seeded[3], seeded[2]]
+    assert first_page["items"][0]["connection_count"] >= 0
+    assert "activity_at" in first_page["items"][0]
     assert first_page["page"] == 1
     assert first_page["page_size"] == 2
     assert first_page["total_items"] == 4
@@ -219,7 +221,16 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
     oversized = repository.list_blogs_catalog(page=0, page_size=999, site="   ", q="   ")
     assert oversized["page"] == 1
     assert oversized["page_size"] == 200
-    assert oversized["filters"] == {"q": None, "site": None, "url": None, "status": None}
+    assert oversized["filters"] == {
+        "q": None,
+        "site": None,
+        "url": None,
+        "status": None,
+        "sort": "id_desc",
+        "has_title": None,
+        "has_icon": None,
+        "min_connections": 0,
+    }
 
     last_page = repository.list_blogs_catalog(page=99, page_size=2)
     assert last_page["page"] == 2
@@ -231,6 +242,44 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="Unsupported crawl status"):
         repository.list_blogs_catalog(status="unknown")
+
+    with pytest.raises(ValueError, match="Unsupported blog catalog sort"):
+        repository.list_blogs_catalog(sort="magic")
+
+    empty_optional_filters = repository.list_blogs_catalog(
+        has_title="",
+        has_icon="",
+        min_connections="",
+    )
+    assert empty_optional_filters["filters"]["has_title"] is None
+    assert empty_optional_filters["filters"]["has_icon"] is None
+    assert empty_optional_filters["filters"]["min_connections"] == 0
+
+
+def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:
+    """Catalog should remain usable for older rows that were created before metadata capture existed."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://legacy.example/posts/1",
+        normalized_url="https://legacy.example/posts/1",
+        domain="legacy.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+        metadata_captured=False,
+    )
+
+    title_filtered = repository.list_blogs_catalog(has_title=True)
+    icon_filtered = repository.list_blogs_catalog(has_icon=True)
+
+    assert [row["id"] for row in title_filtered["items"]] == [blog_id]
+    assert [row["id"] for row in icon_filtered["items"]] == [blog_id]
+    assert title_filtered["items"][0]["title"] == "legacy.example"
+    assert icon_filtered["items"][0]["icon_url"] == "https://legacy.example/favicon.ico"
 
 
 def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path: Path) -> None:
@@ -282,6 +331,27 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         link_url_raw="https://alpha.example/",
         link_text="Alpha",
     )
+    delta_id, inserted = repository.upsert_blog(
+        url="https://delta.example/",
+        normalized_url="https://delta.example/",
+        domain="delta.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=delta_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="delta.example title",
+        icon_url="https://delta.example/favicon.ico",
+    )
+    repository.add_edge(
+        from_blog_id=beta_id,
+        to_blog_id=delta_id,
+        link_url_raw="https://delta.example/",
+        link_text="Delta",
+    )
 
     detail = repository.get_blog_detail(alpha_id)
 
@@ -317,5 +387,38 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
                 "title": "gamma.example title",
                 "icon_url": "https://gamma.example/favicon.ico",
             },
+        }
+    ]
+    assert detail["recommended_blogs"] == [
+        {
+            "blog": {
+                "id": delta_id,
+                "url": "https://delta.example/",
+                "normalized_url": "https://delta.example/",
+                "domain": "delta.example",
+                "title": "delta.example title",
+                "icon_url": "https://delta.example/favicon.ico",
+                "status_code": 200,
+                "crawl_status": "FINISHED",
+                "friend_links_count": 1,
+                "last_crawled_at": detail["recommended_blogs"][0]["blog"]["last_crawled_at"],
+                "created_at": detail["recommended_blogs"][0]["blog"]["created_at"],
+                "updated_at": detail["recommended_blogs"][0]["blog"]["updated_at"],
+                "incoming_count": 1,
+                "outgoing_count": 0,
+                "connection_count": 1,
+                "activity_at": detail["recommended_blogs"][0]["blog"]["activity_at"],
+                "identity_complete": True,
+            },
+            "reason": "mutual_connection",
+            "mutual_connection_count": 1,
+            "via_blogs": [
+                {
+                    "id": beta_id,
+                    "domain": "beta.example",
+                    "title": "beta.example title",
+                    "icon_url": "https://beta.example/favicon.ico",
+                }
+            ],
         }
     ]

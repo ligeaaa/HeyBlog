@@ -27,12 +27,52 @@ beforeEach(() => {
       url: "https://alpha.example",
       normalized_url: "https://alpha.example",
       domain: "alpha.example",
+      title: "Alpha Blog",
+      icon_url: "https://alpha.example/favicon.ico",
       status_code: 200,
       crawl_status: "FINISHED",
       friend_links_count: 4,
       last_crawled_at: null,
       created_at: "2026-03-29T00:00:00Z",
       updated_at: "2026-03-29T00:00:00Z",
+      incoming_count: 1,
+      outgoing_count: 1,
+      connection_count: 2,
+      activity_at: "2026-03-29T00:00:00Z",
+      identity_complete: true,
+      recommended_blogs: [
+        {
+          reason: "mutual_connection",
+          mutual_connection_count: 1,
+          via_blogs: [
+            {
+              id: 2,
+              domain: "beta.example",
+              title: "Beta",
+              icon_url: "https://beta.example/favicon.ico",
+            },
+          ],
+          blog: {
+            id: 4,
+            url: "https://delta.example",
+            normalized_url: "https://delta.example",
+            domain: "delta.example",
+            title: "Delta",
+            icon_url: "https://delta.example/favicon.ico",
+            status_code: 200,
+            crawl_status: "FINISHED",
+            friend_links_count: 2,
+            last_crawled_at: null,
+            created_at: "2026-03-29T00:00:00Z",
+            updated_at: "2026-03-29T00:00:00Z",
+            incoming_count: 1,
+            outgoing_count: 0,
+            connection_count: 1,
+            activity_at: "2026-03-29T00:00:00Z",
+            identity_complete: true,
+          },
+        },
+      ],
       outgoing_edges: [
         {
           id: 10,
@@ -101,9 +141,10 @@ test("renders blog detail with outgoing and incoming relationship links", () => 
   renderDetailPage();
 
   expect(mockedUseBlogDetailView).toHaveBeenCalledWith(1);
-  expect(screen.getByRole("heading", { name: "alpha.example" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 2, name: "Alpha Blog" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "gamma.example" })).toHaveAttribute("href", "/blogs/3");
   expect(screen.getByRole("link", { name: "beta.example" })).toHaveAttribute("href", "/blogs/2");
+  expect(screen.getByText(/通过 Beta 认识/)).toBeInTheDocument();
 });
 
 test("shows an invalid-state message for malformed blog ids", () => {

@@ -15,7 +15,7 @@ test("renders primary navigation entries", () => {
   );
 
   expect(screen.getByText("统计总览")).toBeInTheDocument();
-  expect(screen.getByText("Blog 概览")).toBeInTheDocument();
+  expect(screen.getByText("发现博客")).toBeInTheDocument();
   expect(screen.getByText("搜索发现")).toBeInTheDocument();
   expect(screen.getByText("当前处理")).toBeInTheDocument();
   expect(screen.getByText("控制台")).toBeInTheDocument();

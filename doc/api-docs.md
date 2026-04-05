@@ -202,7 +202,7 @@
 
 #### `GET /api/blogs/catalog`
 
-用途：为 Blog 概览页提供分页、搜索和条件筛选。
+用途：为“发现博客”入口提供分页、搜索、发现型筛选与排序。
 
 查询参数：
 
@@ -212,24 +212,34 @@
 - `site`: 站点筛选，匹配 `title` / `domain`
 - `url`: URL 筛选，匹配 `url` / `normalized_url`
 - `status`: 抓取状态精确筛选；会先做 `trim + uppercase`，仅允许 `WAITING`、`PROCESSING`、`FINISHED`、`FAILED`
+- `sort`: 排序方式，允许 `id_desc`、`recent_activity`、`connections`、`recently_discovered`
+- `has_title`: 是否要求有标题；支持布尔值，也接受 `1/0`、`true/false`、`yes/no`
+- `has_icon`: 是否要求有 icon；支持布尔值，也接受 `1/0`、`true/false`、`yes/no`
+- `min_connections`: 最小连接度阈值，负数会被归一化为 `0`
 
 归一化与排序规则：
 
 - 空白字符串会被视为未传参
 - 非法 `status` 返回 `422`
-- 当前版本固定按 `id DESC` 排序，不暴露自定义排序参数
+- 非法 `sort` 返回 `422`
+- `has_title` / `has_icon` 仅在传入真值时启用过滤；传入假值会保留参数值但不额外筛掉空字段记录
+- `recent_activity` 按 `activity_at DESC, connection_count DESC, id DESC`
+- `connections` 按 `connection_count DESC, activity_at DESC, id DESC`
+- `recently_discovered` 按 `created_at DESC, id DESC`
+- `id_desc` 按 `id DESC`
 - 若请求页码超出最后一页且结果集非空，服务端会回退到最后一页，并在响应中返回实际生效页码
 
 响应结构见“数据模型”章节中的 `BlogCatalogPageRecord`。
 
 当前前端使用方式：
 
-- Blog 概览页只请求当前页，不再拉全量 blog 列表
+- 发现页只请求当前页，不再拉全量 blog 列表
 - 该请求默认不做 5 秒轮询，也不依赖窗口聚焦自动刷新
+- 发现页会利用新增字段直接渲染博客卡片的活跃度、连接度与身份完整度提示
 
 #### `GET /api/blogs/{blog_id}`
 
-用途：返回单个 blog 详情，并追加该 blog 的双向关系聚合结果。
+用途：返回单个 blog 详情，并追加该 blog 的双向关系聚合结果与粗糙推荐。
 
 行为说明：
 
@@ -240,6 +250,7 @@
 
 - `incoming_edges`: 所有 `to_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
 - `outgoing_edges`: 所有 `from_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
+- `recommended_blogs`: “朋友的朋友”推荐列表，规则是“当前博客的友链认识、但当前博客还没直接认识的博客”
 
 其中 `neighbor_blog` 是详情页使用的邻居摘要，字段为：
 
@@ -248,11 +259,25 @@
 - `title`
 - `icon_url`
 
+`recommended_blogs` 的每个元素包含：
+
+- `blog`: 推荐博客本身，结构沿用扩展后的 `BlogRecord`
+- `reason`: 当前固定为 `mutual_connection`
+- `mutual_connection_count`: 有多少个共同中间博客指向了这个推荐博客
+- `via_blogs`: 中间博客摘要列表，字段与 `neighbor_blog` 相同
+
+推荐策略说明：
+
+- 只基于当前博客的出边做一层扩展
+- 排除自己
+- 排除已经与当前博客直接相连的博客
+- 这是阶段 1 的可替换粗糙实现，目标是先提供可解释的发现入口，而不是最终推荐系统
+
 前端现状：
 
 - 当前博客详情页直接消费该接口作为主数据源
 - 详情页不再额外请求 `GET /api/blogs` 与 `GET /api/edges`
-- incoming/outgoing 关系以及邻居名称映射都由后端在该接口内聚合
+- incoming/outgoing 关系、邻居名称映射和“朋友的朋友”推荐都由后端在该接口内聚合
 
 #### `GET /api/edges`
 
@@ -394,17 +419,21 @@
 
 #### `GET /api/search?q=...`
 
-用途：按关键词搜索 blogs、edges、logs。
+用途：按关键词搜索博客与关系线索，作为轻量发现入口。
 
 查询参数：
 
 - `q`: 搜索关键词，必填
+- `kind`: 搜索范围，允许 `all`、`blogs`、`relations`，默认 `all`
+- `limit`: 返回上限，默认 `10`，最终会被限制在 `1..50`
 
 响应结构：
 
 ```json
 {
   "query": "friend",
+  "kind": "all",
+  "limit": 10,
   "blogs": [],
   "edges": [],
   "logs": []
@@ -413,15 +442,21 @@
 
 匹配规则：
 
-- blog：匹配 `domain`、`url`、`normalized_url`
-- edge：匹配 `link_url_raw`、`link_text`
+- blog：匹配 `title`、`domain`、`url`、`normalized_url`
+- edge：匹配 `link_url_raw`、`link_text`，以及边两端博客的 `title` / `domain`
 - log：当前固定为空数组，不参与命中
+
+关系结果增强字段：
+
+- 每条 `edge` 结果会额外带上 `from_blog` 与 `to_blog`
+- 这两个字段都是博客摘要，字段为 `id`、`domain`、`title`、`icon_url`
 
 补充说明：
 
 - 当 `q` 为空字符串时，返回空结果集
+- 非法 `kind` 返回 `422`
 - 若本地搜索缓存为空，search 服务会回退到 persistence 快照进行查询
-- 当前前端搜索页已直接消费该接口，并把 `blogs` 作为主结果区块展示
+- 当前前端搜索页已直接消费该接口，并同时展示博客结果与关系结果
 
 ### 3.5 爬取执行接口
 
@@ -687,9 +722,16 @@
 返回结构：
 
 - `query`
+- `kind`
+- `limit`
 - `blogs`
 - `edges`
 - `logs`
+
+补充说明：
+
+- `kind` 的合法值为 `all`、`blogs`、`relations`
+- `edges` 结果会附带 `from_blog` 与 `to_blog` 摘要，便于上游直接渲染关系线索
 
 ### `POST /internal/search/reindex`
 
@@ -736,8 +778,8 @@
 补充说明：
 
 - 归一化逻辑在 persistence 层统一处理，SQLite 与 PostgreSQL 共享同一套分页/筛选规则
-- 固定按 `id DESC` 排序
-- 当前版本不暴露排序切换参数
+- 支持 `sort`、`has_title`、`has_icon`、`min_connections` 等发现型参数
+- blog 行数据会直接带上连接度、活跃度和身份完整度等派生字段
 
 ### `GET /internal/queue/next`
 
@@ -972,6 +1014,11 @@
 | `last_crawled_at` | `string \| null` | 最近抓取时间 |
 | `created_at` | `string` | 创建时间 |
 | `updated_at` | `string` | 更新时间 |
+| `incoming_count` | `number` | 指向该博客的边数 |
+| `outgoing_count` | `number` | 该博客指向外部的边数 |
+| `connection_count` | `number` | `incoming_count + outgoing_count` |
+| `activity_at` | `string \| null` | 用于发现排序的活跃时间，优先取 `last_crawled_at`，否则回退到 `updated_at` |
+| `identity_complete` | `boolean` | 当前是否同时具备非空 `title` 与 `icon_url` |
 
 ### 5.2 BlogCatalogPageRecord
 
@@ -995,9 +1042,30 @@
 | `filters.site` | `string \| null` | 站点筛选关键词，匹配 `title` / `domain` |
 | `filters.url` | `string \| null` | URL 筛选关键词，匹配 `url` / `normalized_url` |
 | `filters.status` | `string \| null` | 状态筛选值 |
-| `sort` | `string` | 当前固定为 `id_desc` |
+| `filters.sort` | `string` | 当前生效排序 |
+| `filters.has_title` | `boolean \| null` | 是否要求存在标题 |
+| `filters.has_icon` | `boolean \| null` | 是否要求存在 icon |
+| `filters.min_connections` | `number` | 最小连接度阈值 |
+| `sort` | `string` | 当前生效排序；与 `filters.sort` 保持一致 |
 
-### 5.3 EdgeRecord
+### 5.3 BlogDetailPayload
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `...BlogRecord` | `BlogRecord` | 详情页主博客信息 |
+| `incoming_edges` | `BlogRelationRecord[]` | 指向当前博客的关系列表 |
+| `outgoing_edges` | `BlogRelationRecord[]` | 当前博客指向外部的关系列表 |
+| `recommended_blogs` | `BlogRecommendationRecord[]` | “朋友的朋友”推荐列表 |
+
+其中：
+
+- `BlogRelationRecord = EdgeRecord + { neighbor_blog: BlogNeighborSummary \| null }`
+- `BlogRecommendationRecord = { blog, reason, mutual_connection_count, via_blogs }`
+- `BlogNeighborSummary` 字段为 `id`、`domain`、`title`、`icon_url`
+
+### 5.4 EdgeRecord
 
 字段：
 
@@ -1010,7 +1078,22 @@
 | `link_text` | `string \| null` | 链接文本 |
 | `discovered_at` | `string` | 发现时间 |
 
-### 5.4 RuntimeSnapshot
+### 5.5 SearchPayload
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `query` | `string` | 原始查询词 |
+| `kind` | `"all" \| "blogs" \| "relations"` | 当前搜索范围 |
+| `limit` | `number` | 当前生效返回上限 |
+| `blogs` | `BlogRecord[]` | 博客搜索结果 |
+| `edges` | `SearchEdgeRecord[]` | 关系搜索结果 |
+| `logs` | `LogRecord[]` | 当前恒为空数组 |
+
+其中 `SearchEdgeRecord = EdgeRecord + { from_blog: BlogNeighborSummary \| null, to_blog: BlogNeighborSummary \| null }`。
+
+### 5.6 RuntimeSnapshot
 
 来源： [crawler/runtime.py](../crawler/runtime.py)
 
@@ -1028,7 +1111,7 @@
 | `last_error` | `string \| null` | 最近错误 |
 | `last_result` | `object \| null` | 最近执行结果 |
 
-### 5.5 StatsPayload
+### 5.7 StatsPayload
 
 字段：
 

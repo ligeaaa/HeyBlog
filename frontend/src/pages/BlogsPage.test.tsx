@@ -12,7 +12,19 @@ vi.mock("../lib/hooks", () => ({
 
 const mockedUseBlogCatalog = vi.mocked(useBlogCatalog);
 
-function buildCatalogData(page = 1, filters?: { q?: string | null; site?: string | null; url?: string | null; status?: string | null }) {
+function buildCatalogData(
+  page = 1,
+  filters?: {
+    q?: string | null;
+    site?: string | null;
+    url?: string | null;
+    status?: string | null;
+    sort?: string;
+    has_title?: boolean | null;
+    has_icon?: boolean | null;
+    min_connections?: number;
+  },
+) {
   return {
     items: [
       {
@@ -28,6 +40,11 @@ function buildCatalogData(page = 1, filters?: { q?: string | null; site?: string
         last_crawled_at: null,
         created_at: "2026-03-31T00:00:00Z",
         updated_at: "2026-03-31T00:00:00Z",
+        incoming_count: 2,
+        outgoing_count: 1,
+        connection_count: 3,
+        activity_at: "2026-03-31T00:00:00Z",
+        identity_complete: true,
       },
       {
         id: 2,
@@ -42,6 +59,11 @@ function buildCatalogData(page = 1, filters?: { q?: string | null; site?: string
         last_crawled_at: null,
         created_at: "2026-03-31T00:00:00Z",
         updated_at: "2026-03-31T00:00:00Z",
+        incoming_count: 0,
+        outgoing_count: 0,
+        connection_count: 0,
+        activity_at: "2026-03-31T00:00:00Z",
+        identity_complete: false,
       },
     ],
     page,
@@ -55,8 +77,12 @@ function buildCatalogData(page = 1, filters?: { q?: string | null; site?: string
       site: filters?.site ?? null,
       url: filters?.url ?? null,
       status: filters?.status ?? null,
+      sort: filters?.sort ?? "id_desc",
+      has_title: filters?.has_title ?? null,
+      has_icon: filters?.has_icon ?? null,
+      min_connections: filters?.min_connections ?? 0,
     },
-    sort: "id_desc",
+    sort: filters?.sort ?? "id_desc",
   };
 }
 
@@ -78,6 +104,10 @@ function createCatalogResult(options: {
   site?: string | null;
   url?: string | null;
   status?: string | null;
+  sort?: string;
+  has_title?: boolean | null;
+  has_icon?: boolean | null;
+  min_connections?: number;
 }) {
   return {
     data: buildCatalogData(options.page, {
@@ -85,6 +115,10 @@ function createCatalogResult(options: {
       site: options.site,
       url: options.url,
       status: options.status,
+      sort: options.sort,
+      has_title: options.has_title,
+      has_icon: options.has_icon,
+      min_connections: options.min_connections,
     }),
     isLoading: false,
     isFetching: false,
@@ -112,6 +146,10 @@ beforeEach(() => {
       site: options.site,
       url: options.url,
       status: options.status,
+      sort: options.sort as string | undefined,
+      has_title: options.hasTitle as boolean | null | undefined,
+      has_icon: options.hasIcon as boolean | null | undefined,
+      min_connections: options.minConnections as number | undefined,
     }),
   );
 });
@@ -131,12 +169,17 @@ test("renders site identity from the catalog query", () => {
     site: "alpha",
     url: null,
     status: null,
+    sort: "id_desc",
+    hasTitle: null,
+    hasIcon: null,
+    minConnections: null,
   });
   expect(screen.getByRole("img", { name: "Alpha Blog icon" })).toBeInTheDocument();
   expect(screen.getByText("Alpha Blog")).toBeInTheDocument();
   expect(screen.getByText("alpha.example")).toBeInTheDocument();
   expect(screen.getByText("beta.example")).toBeInTheDocument();
   expect(screen.getByText(/共 101 条，当前第 2 \/ 3 页/i)).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "发现博客" })).toBeInTheDocument();
 });
 
 test("debounces filter changes and resets paging in the URL", async () => {
@@ -160,6 +203,10 @@ test("debounces filter changes and resets paging in the URL", async () => {
     site: "gamma",
     url: null,
     status: "FAILED",
+    sort: "id_desc",
+    hasTitle: null,
+    hasIcon: null,
+    minConnections: null,
   });
 });
 
@@ -168,11 +215,15 @@ test("supports paging controls and manual refresh", async () => {
   mockedUseBlogCatalog.mockImplementation((options) =>
     buildCatalogResult({
       data: buildCatalogData(options.page, {
-        q: options.q,
-        site: options.site,
-        url: options.url,
-        status: options.status,
-      }),
+      q: options.q,
+      site: options.site,
+      url: options.url,
+      status: options.status,
+      sort: options.sort as string | undefined,
+      has_title: options.hasTitle as boolean | null | undefined,
+      has_icon: options.hasIcon as boolean | null | undefined,
+      min_connections: options.minConnections as number | undefined,
+    }),
       refetch,
     }),
   );
@@ -190,6 +241,10 @@ test("supports paging controls and manual refresh", async () => {
       site: null,
       url: null,
       status: null,
+      sort: "id_desc",
+      hasTitle: null,
+      hasIcon: null,
+      minConnections: null,
     });
   });
 

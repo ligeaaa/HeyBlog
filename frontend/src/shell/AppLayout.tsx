@@ -2,7 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 
 const navigation = [
   { to: "/stats", label: "统计总览" },
-  { to: "/blogs", label: "Blog 概览" },
+  { to: "/blogs", label: "发现博客" },
   { to: "/search", label: "搜索发现" },
   { to: "/graph", label: "关系图谱" },
   { to: "/runtime/current", label: "当前处理" },
@@ -15,9 +15,9 @@ export function AppLayout() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <p className="eyebrow">HeyBlog Console</p>
-          <h1>Blog Graph Operations</h1>
-          <p className="lede">现代化操作台，解耦 Python 模板，按页面组织运行态、概览与控制能力。</p>
+          <p className="eyebrow">HeyBlog</p>
+          <h1>Blog Discovery Entry</h1>
+          <p className="lede">先把博客变得更容易被看见、被理解、被继续探索；操作能力仍在，但不再是首页叙事中心。</p>
         </div>
         <nav className="nav-list">
           {navigation.map((item) => (

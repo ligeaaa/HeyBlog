@@ -120,6 +120,10 @@ class PersistenceHttpClient:
         url: str | None = None,
         status: str | None = None,
         q: str | None = None,
+        sort: str = "id_desc",
+        has_title: bool | None = None,
+        has_icon: bool | None = None,
+        min_connections: int | None = None,
     ) -> dict[str, Any]:
         return self._get(
             "/internal/blogs/catalog",
@@ -130,6 +134,10 @@ class PersistenceHttpClient:
                 "url": url,
                 "status": status,
                 "q": q,
+                "sort": sort,
+                "has_title": has_title,
+                "has_icon": has_icon,
+                "min_connections": min_connections,
             },
         )
 

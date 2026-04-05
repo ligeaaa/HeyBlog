@@ -23,6 +23,11 @@ export type BlogRecord = {
   last_crawled_at: string | null;
   created_at: string;
   updated_at: string;
+  incoming_count: number;
+  outgoing_count: number;
+  connection_count: number;
+  activity_at: string | null;
+  identity_complete: boolean;
 };
 
 export type LogRecord = {
@@ -47,6 +52,18 @@ export type BlogNeighborSummary = Pick<BlogRecord, "id" | "domain" | "title" | "
 
 export type BlogRelationRecord = EdgeRecord & {
   neighbor_blog: BlogNeighborSummary | null;
+};
+
+export type BlogRecommendationRecord = {
+  blog: BlogRecord;
+  reason: "mutual_connection";
+  mutual_connection_count: number;
+  via_blogs: BlogNeighborSummary[];
+};
+
+export type SearchEdgeRecord = EdgeRecord & {
+  from_blog: BlogNeighborSummary | null;
+  to_blog: BlogNeighborSummary | null;
 };
 
 export type GraphPayload = {
@@ -113,6 +130,7 @@ export type GraphSnapshotPayload = GraphViewPayload & {
 export type BlogDetailPayload = BlogRecord & {
   incoming_edges: BlogRelationRecord[];
   outgoing_edges: BlogRelationRecord[];
+  recommended_blogs: BlogRecommendationRecord[];
 };
 
 export type BlogCatalogFilters = {
@@ -120,6 +138,10 @@ export type BlogCatalogFilters = {
   site: string | null;
   url: string | null;
   status: string | null;
+  sort: string;
+  has_title: boolean | null;
+  has_icon: boolean | null;
+  min_connections: number;
 };
 
 export type BlogCatalogPagePayload = {
@@ -136,8 +158,10 @@ export type BlogCatalogPagePayload = {
 
 export type SearchPayload = {
   query: string;
+  kind: "all" | "blogs" | "relations";
+  limit: number;
   blogs: BlogRecord[];
-  edges: EdgeRecord[];
+  edges: SearchEdgeRecord[];
   logs: LogRecord[];
 };
 
@@ -211,6 +235,10 @@ export const api = {
     site?: string | null;
     url?: string | null;
     status?: string | null;
+    sort?: string;
+    hasTitle?: boolean | null;
+    hasIcon?: boolean | null;
+    minConnections?: number | null;
   }) =>
     request<BlogCatalogPagePayload>(
       withQuery("/api/blogs/catalog", {
@@ -220,6 +248,10 @@ export const api = {
         site: params.site,
         url: params.url,
         status: params.status,
+        sort: params.sort,
+        has_title: params.hasTitle,
+        has_icon: params.hasIcon,
+        min_connections: params.minConnections,
       }),
     ),
   blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
@@ -252,7 +284,14 @@ export const api = {
     ),
   latestGraphSnapshot: () => request<GraphSnapshotManifest>("/api/graph/snapshots/latest"),
   graphSnapshot: (version: string) => request<GraphSnapshotPayload>(`/api/graph/snapshots/${version}`),
-  search: (query: string) => request<SearchPayload>(`/api/search?q=${encodeURIComponent(query)}`),
+  search: (params: { query: string; kind?: "all" | "blogs" | "relations"; limit?: number }) =>
+    request<SearchPayload>(
+      withQuery("/api/search", {
+        q: params.query,
+        kind: params.kind ?? "all",
+        limit: params.limit ?? 10,
+      }),
+    ),
   runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),
   runtimeCurrent: () => request<RuntimeStatus>("/api/runtime/current"),
   startCrawler: () => request<RuntimeStatus>("/api/runtime/start", { method: "POST" }),

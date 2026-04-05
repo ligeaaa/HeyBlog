@@ -55,8 +55,15 @@ class StubSearch:
         self.reindexed = False
         self.reindex_calls = 0
 
-    def search(self, query: str) -> dict[str, object]:
-        return {"query": query, "blogs": [{"domain": "blog.example.com"}], "edges": [], "logs": []}
+    def search(self, query: str, kind: str = "all", limit: int = 10) -> dict[str, object]:
+        return {
+            "query": query,
+            "kind": kind,
+            "limit": limit,
+            "blogs": [{"domain": "blog.example.com"}],
+            "edges": [],
+            "logs": [],
+        }
 
     def reindex(self) -> dict[str, bool]:
         self.reindexed = True
@@ -112,6 +119,15 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
 
     invalid_catalog = client.get("/internal/blogs/catalog?status=invalid")
     assert invalid_catalog.status_code == 422
+
+    empty_optional_filters = client.get(
+        "/internal/blogs/catalog",
+        params={"has_title": "", "has_icon": "", "min_connections": ""},
+    )
+    assert empty_optional_filters.status_code == 200
+    assert empty_optional_filters.json()["filters"]["has_title"] is None
+    assert empty_optional_filters.json()["filters"]["has_icon"] is None
+    assert empty_optional_filters.json()["filters"]["min_connections"] == 0
 
     updated = client.post(
         "/internal/blogs/1/result",
@@ -218,6 +234,11 @@ def test_backend_service_preserves_public_api_shape() -> None:
                         "domain": "catalog.example.com",
                         "title": "Catalog Example",
                         "icon_url": "https://catalog.example.com/favicon.ico",
+                        "incoming_count": 1,
+                        "outgoing_count": 2,
+                        "connection_count": 3,
+                        "activity_at": "2026-03-31T00:00:00Z",
+                        "identity_complete": True,
                     }
                 ],
                 "page": kwargs.get("page", 1),
@@ -231,8 +252,12 @@ def test_backend_service_preserves_public_api_shape() -> None:
                     "site": kwargs.get("site"),
                     "url": kwargs.get("url"),
                     "status": kwargs.get("status"),
+                    "sort": kwargs.get("sort", "id_desc"),
+                    "has_title": kwargs.get("has_title"),
+                    "has_icon": kwargs.get("has_icon"),
+                    "min_connections": kwargs.get("min_connections", 0),
                 },
-                "sort": "id_desc",
+                "sort": kwargs.get("sort", "id_desc"),
             },
             "get_blog": lambda self, blog_id: {
                 "id": blog_id,
@@ -245,6 +270,11 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "domain": "blog.example.com",
                 "title": "Blog Example",
                 "icon_url": "https://blog.example.com/favicon.ico",
+                "incoming_count": 1,
+                "outgoing_count": 1,
+                "connection_count": 2,
+                "activity_at": "2026-03-31T00:00:00Z",
+                "identity_complete": True,
                 "incoming_edges": [
                     {
                         "id": 10,
@@ -275,6 +305,39 @@ def test_backend_service_preserves_public_api_shape() -> None:
                             "title": "Catalog Example",
                             "icon_url": "https://catalog.example.com/favicon.ico",
                         },
+                    }
+                ],
+                "recommended_blogs": [
+                    {
+                        "blog": {
+                            "id": 4,
+                            "domain": "delta.example.com",
+                            "title": "Delta Example",
+                            "icon_url": "https://delta.example.com/favicon.ico",
+                            "url": "https://delta.example.com",
+                            "normalized_url": "https://delta.example.com",
+                            "status_code": 200,
+                            "crawl_status": "FINISHED",
+                            "friend_links_count": 2,
+                            "last_crawled_at": "2026-03-31T00:00:00Z",
+                            "created_at": "2026-03-31T00:00:00Z",
+                            "updated_at": "2026-03-31T00:00:00Z",
+                            "incoming_count": 1,
+                            "outgoing_count": 0,
+                            "connection_count": 1,
+                            "activity_at": "2026-03-31T00:00:00Z",
+                            "identity_complete": True,
+                        },
+                        "reason": "mutual_connection",
+                        "mutual_connection_count": 1,
+                        "via_blogs": [
+                            {
+                                "id": 3,
+                                "domain": "catalog.example.com",
+                                "title": "Catalog Example",
+                                "icon_url": "https://catalog.example.com/favicon.ico",
+                            }
+                        ],
                     }
                 ],
             },
@@ -403,12 +466,13 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert detail.json()["incoming_edges"][0]["neighbor_blog"]["domain"] == "friend.example.com"
     assert detail.json()["outgoing_edges"][0]["neighbor_blog"]["domain"] == "catalog.example.com"
 
-    catalog = client.get("/api/blogs/catalog?page=2&page_size=25&site=blog&status=FINISHED")
+    catalog = client.get("/api/blogs/catalog?page=2&page_size=25&site=blog&status=FINISHED&sort=connections")
     assert catalog.status_code == 200
     assert catalog.json()["page"] == 2
     assert catalog.json()["page_size"] == 25
     assert catalog.json()["filters"]["site"] == "blog"
     assert catalog.json()["filters"]["status"] == "FINISHED"
+    assert catalog.json()["sort"] == "connections"
 
     core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
     assert core_view.status_code == 200
@@ -468,6 +532,9 @@ def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
         def get_blog(self, blog_id: int) -> None:
+            return None
+
+        def get_blog_detail(self, blog_id: int) -> None:
             return None
 
         def list_edges(self) -> list[dict[str, object]]:

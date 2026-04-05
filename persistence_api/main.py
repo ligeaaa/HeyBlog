@@ -92,6 +92,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         url: str | None = None,
         status: str | None = None,
         q: str | None = None,
+        sort: str = "id_desc",
+        has_title: str | None = None,
+        has_icon: str | None = None,
+        min_connections: str | None = None,
     ) -> dict[str, Any]:
         try:
             return get_state().repository.list_blogs_catalog(
@@ -101,6 +105,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 url=url,
                 status=status,
                 q=q,
+                sort=sort,
+                has_title=has_title,
+                has_icon=has_icon,
+                min_connections=min_connections,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

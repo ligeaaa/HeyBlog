@@ -102,6 +102,10 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         url: str | None = None,
         status: str | None = None,
         q: str | None = None,
+        sort: str = "id_desc",
+        has_title: str | None = None,
+        has_icon: str | None = None,
+        min_connections: str | None = None,
     ) -> dict[str, Any]:
         try:
             return get_state().persistence.list_blogs_catalog(
@@ -111,6 +115,10 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 url=url,
                 status=status,
                 q=q,
+                sort=sort,
+                has_title=has_title,
+                has_icon=has_icon,
+                min_connections=min_connections,
             )
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
@@ -195,8 +203,16 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         return result
 
     @app.get("/api/search")
-    def search(q: str) -> dict[str, Any]:
-        return get_state().search.search(q)
+    def search(q: str, kind: str = "all", limit: int = 10) -> dict[str, Any]:
+        try:
+            return get_state().search.search(q, kind=kind, limit=limit)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/runtime/status")
     def runtime_status() -> dict[str, Any]:
