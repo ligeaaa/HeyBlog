@@ -74,6 +74,9 @@ PostgreSQL-backed persistence:
 docker compose up --build
 ```
 
+If you set `HEYBLOG_DB_DSN` manually, use the SQLAlchemy psycopg v3 form:
+`postgresql+psycopg://...`
+
 Services and default ports:
 
 - `frontend`: `http://127.0.0.1:3000`
@@ -134,6 +137,7 @@ Current caveat: `frontend/src/lib/api.ts` uses same-origin `/api/*`, but
 - [API docs](doc/api-docs.md): public and internal HTTP contracts
 - [Config reference](doc/config-reference.md): environment variables, defaults, and service consumers
 - [Developer workflows](doc/developer-workflows.md): where to start for common tasks
+- [Graph/community PRD](doc/prd-graph-community-discovery.md): future product direction for graph analysis and community discovery
 
 ## Development Rules
 

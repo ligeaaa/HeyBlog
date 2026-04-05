@@ -403,9 +403,7 @@ def build_core_graph_view(
     adjacency, _, _ = _build_adjacency(filtered_nodes, edges)
     ordered_nodes = _sorted_nodes(filtered_nodes)
     if strategy == "seed":
-        seed_nodes = [node for node in ordered_nodes if node.get("source_blog_id") is None]
-        if not seed_nodes:
-            seed_nodes = ordered_nodes[: min(len(ordered_nodes), 18)]
+        seed_nodes = sorted(filtered_nodes, key=lambda node: int(node["id"]))[: min(len(filtered_nodes), 18)]
     else:
         strategy = "degree"
         seed_nodes = ordered_nodes[: min(len(ordered_nodes), max(12, limit // 4))]

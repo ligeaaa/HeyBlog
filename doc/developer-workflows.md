@@ -71,6 +71,10 @@
 - `backend` 负责把这些能力暴露成公共 `/api/graph*`
 - 前端只负责参数组织、交互和渲染
 
+如果你要讨论未来能力规划，再看：
+
+- [prd-graph-community-discovery.md](./prd-graph-community-discovery.md)
+
 ## 4. 我要看搜索链路
 
 先看：

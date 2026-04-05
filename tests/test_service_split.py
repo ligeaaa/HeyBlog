@@ -81,7 +81,6 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
             "url": "https://blog.example.com/",
             "normalized_url": "https://blog.example.com/",
             "domain": "blog.example.com",
-            "source_blog_id": None,
         },
     )
     assert created.status_code == 200
@@ -93,7 +92,6 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
             "url": "https://friend.example.com/",
             "normalized_url": "https://friend.example.com/",
             "domain": "friend.example.com",
-            "source_blog_id": 1,
         },
     )
     assert related.status_code == 200
@@ -170,6 +168,7 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 2
+    assert reset.json()["logs_deleted"] == 0
 
     blogs = client.get("/internal/blogs")
     assert blogs.status_code == 200
@@ -564,7 +563,7 @@ def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:
             return {
                 "blogs": [{"domain": "blog.example.com", "url": "https://blog.example.com/"}],
                 "edges": [{"link_text": "Friend Blog", "link_url_raw": "https://friend.example/"}],
-                "logs": [{"message": "Crawled blog.example.com"}],
+                "logs": [],
             }
 
     service = SearchService(
@@ -580,6 +579,7 @@ def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:
     result = client.get("/internal/search?q=friend")
     assert result.status_code == 200
     assert result.json()["edges"][0]["link_text"] == "Friend Blog"
+    assert result.json()["logs"] == []
 
 
 def test_frontend_service_health_checks_backend(tmp_path: Path, monkeypatch) -> None:

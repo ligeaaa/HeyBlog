@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from persistence_api.repository import RepositoryProtocol
-
+logger = logging.getLogger(__name__)
 
 class CrawlerLogger:
     """Encapsulate crawler log writes so logging policy lives in one place."""
 
-    def __init__(self, repository: RepositoryProtocol) -> None:
-        self.repository = repository
-
     def bootstrap_success(self, seed_path: Path) -> None:
-        """Record a successful seed bootstrap."""
-        self.repository.add_log(stage="bootstrap", result="success", message=f"Imported seeds from {seed_path}")
+        """Emit a bootstrap success event to the process logger."""
+        logger.info("bootstrap succeeded", extra={"seed_path": str(seed_path), "stage": "bootstrap"})
 
     def crawl_success(self, *, blog_id: int, blog_url: str) -> None:
-        """Record a successful blog crawl."""
-        self.repository.add_log(blog_id=blog_id, stage="crawl", result="success", message=f"Crawled {blog_url}")
+        """Emit a crawl success event to the process logger."""
+        logger.info(
+            "crawl succeeded",
+            extra={"blog_id": blog_id, "blog_url": blog_url, "stage": "crawl"},
+        )
 
     def crawl_error(self, *, blog_id: int, error: Exception) -> None:
-        """Record a failed blog crawl."""
-        self.repository.add_log(blog_id=blog_id, stage="crawl", result="error", message=str(error))
-
+        """Emit a crawl failure event to the process logger."""
+        logger.warning(
+            "crawl failed",
+            extra={"blog_id": blog_id, "error": str(error), "stage": "crawl"},
+        )

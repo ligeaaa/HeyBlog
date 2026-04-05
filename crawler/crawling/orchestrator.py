@@ -111,7 +111,6 @@ class CrawlOrchestrator:
                 url=link.url,
                 normalized_url=normalized.normalized_url,
                 domain=normalized.domain,
-                source_blog_id=blog.id,
             )
             edge = FriendLinkEdge(
                 from_blog_id=blog.id,
@@ -159,4 +158,3 @@ class CrawlOrchestrator:
             icon_url=state.icon_url,
         )
         self.logger.crawl_success(blog_id=blog.id, blog_url=blog.url)
-

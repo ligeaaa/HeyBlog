@@ -20,7 +20,6 @@ export type BlogRecord = {
   status_code: number | null;
   crawl_status: string;
   friend_links_count: number;
-  source_blog_id: number | null;
   last_crawled_at: string | null;
   created_at: string;
   updated_at: string;

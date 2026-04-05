@@ -75,7 +75,6 @@ def seed_blog(repository: Repository) -> dict[str, Any]:
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
-        source_blog_id=None,
     )
     blog = repository.get_blog(blog_id)
     assert blog is not None
@@ -132,7 +131,7 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     blogs = repository.list_blogs()
     assert len(blogs) == 2
     child_blog = next(blog_row for blog_row in blogs if blog_row["id"] != blog["id"])
-    assert child_blog["source_blog_id"] == blog["id"]
+    assert child_blog["domain"] == "friend.example"
     assert "depth" not in child_blog
 
 
@@ -240,7 +239,7 @@ def test_pipeline_enqueues_discovered_children_without_depth_gating(tmp_path: Pa
     assert len(edges) == 1
     blogs = repository.list_blogs()
     assert len(blogs) == 2
-    assert blogs[1]["source_blog_id"] == blog["id"]
+    assert blogs[1]["domain"] == "friend.example"
     assert blogs[1]["crawl_status"] == "WAITING"
 
 
