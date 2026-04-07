@@ -14,6 +14,7 @@ DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
 DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS = 2
+DEFAULT_MAX_FETCHED_PAGE_BYTES = 2_000_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "heyblog.sqlite"
 DEFAULT_SEED_PATH = PROJECT_ROOT / "seed.csv"
@@ -87,6 +88,7 @@ class Settings:
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
     priority_seed_normal_queue_slots: int = DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS
+    max_fetched_page_bytes: int = DEFAULT_MAX_FETCHED_PAGE_BYTES
     friend_link_domain_blocklist: tuple[str, ...] = ()
     friend_link_tld_blocklist: tuple[str, ...] = ()
     friend_link_exact_url_blocklist: tuple[str, ...] = ()
@@ -158,6 +160,15 @@ class Settings:
                     os.getenv(
                         "HEYBLOG_PRIORITY_SEED_NORMAL_QUEUE_SLOTS",
                         str(DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS),
+                    )
+                ),
+            ),
+            max_fetched_page_bytes=max(
+                1,
+                int(
+                    os.getenv(
+                        "HEYBLOG_MAX_FETCHED_PAGE_BYTES",
+                        str(DEFAULT_MAX_FETCHED_PAGE_BYTES),
                     )
                 ),
             ),

@@ -453,6 +453,37 @@ def test_pipeline_skips_failed_candidate_page_without_aborting_remaining_pages(t
     assert edges[0]["link_url_raw"] == "https://friend.example/"
 
 
+def test_pipeline_marks_blog_failed_when_candidate_page_is_too_large(tmp_path: Path) -> None:
+    """Oversized candidate pages should fail the source blog instead of being silently skipped."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="<html><body><a href='/friends'>友情链接</a></body></html>",
+            ),
+        },
+        batch_results={
+            "https://blog.example.com/friends": FetchAttempt(
+                request_url="https://blog.example.com/friends",
+                result=None,
+                error_kind="page_too_large",
+            )
+        },
+    )
+
+    result = pipeline.process_blog_row(blog)
+
+    assert result == {"processed": 1, "discovered": 0, "failed": 1}
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["crawl_status"] == "FAILED"
+    assert refreshed["status_code"] == 413
+
+
 def test_pipeline_candidate_page_concurrency_of_one_matches_legacy_behavior(tmp_path: Path) -> None:
     """Concurrency 1 should preserve the existing crawl result semantics."""
     pipeline, repository = build_pipeline(tmp_path)

@@ -9,6 +9,7 @@ from crawler.contracts.results import CrawlRunStats
 from crawler.crawling.bootstrap import BootstrapService
 from crawler.crawling.decisions.chain import UrlDecisionChain
 from crawler.crawling.decisions.rules import RuleBasedDecider
+from crawler.crawling.fetching.base import PageTooLargeError
 from crawler.crawling.fetching.httpx_fetcher import Fetcher
 from crawler.crawling.orchestrator import CrawlOrchestrator
 from crawler.domain.blog_node import BlogNode
@@ -35,6 +36,7 @@ class CrawlPipeline:
         self.fetcher = Fetcher(
             user_agent=settings.user_agent,
             timeout_seconds=settings.request_timeout_seconds,
+            max_page_bytes=settings.max_fetched_page_bytes,
         )
         self.bootstrap_service = BootstrapService(repository, self.logger)
         self.export_service = ExportService(repository, settings.export_dir)
@@ -154,7 +156,8 @@ class CrawlPipeline:
 
     def _mark_blog_failed(self, blog_id: int, error: Exception) -> None:
         """Persist the legacy failed-blog state and crawl log."""
-        state = CrawlState(status="FAILED", status_code=None, friend_links_count=0)
+        status_code = 413 if isinstance(error, PageTooLargeError) else None
+        state = CrawlState(status="FAILED", status_code=status_code, friend_links_count=0)
         self.repository.mark_blog_result(
             blog_id=blog_id,
             crawl_status=state.status,

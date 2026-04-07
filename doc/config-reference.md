@@ -47,6 +47,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_MAX_PATH_PROBES_PER_BLOG` | `50` | `crawler` | 单站点路径探测上限 |
 | `HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY` | `4` | `crawler` | 友链候选页抓取并发度，最小为 `1` |
 | `HEYBLOG_RUNTIME_WORKER_COUNT` | `3` | `crawler` | runtime 持续抓取的 worker 数 |
+| `HEYBLOG_MAX_FETCHED_PAGE_BYTES` | `2000000` | `crawler` | 单个页面允许读取的最大字节数；超限后当前 blog 直接记为 `FAILED`，超大页不会继续进入解析阶段 |
 | `HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST` | 空 | `crawler` | 逗号分隔的域名黑名单 |
 | `HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST` | 空 | `crawler` | 逗号分隔的顶级域黑名单 |
 | `HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST` | 空 | `crawler` | 逗号分隔的精确 URL 黑名单 |

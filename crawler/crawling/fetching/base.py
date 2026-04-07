@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+class PageTooLargeError(Exception):
+    """Raised when a fetched page exceeds the configured byte limit."""
+
+
 @dataclass(slots=True)
 class FetchResult:
     """Represent a successful HTTP fetch response."""

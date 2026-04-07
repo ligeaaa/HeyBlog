@@ -12,6 +12,7 @@ from crawler.crawling.extraction import extract_candidate_links
 from crawler.crawling.fetching.base import FetchAttempt
 from crawler.crawling.fetching.base import FetchResult
 from crawler.crawling.fetching.httpx_fetcher import Fetcher
+from crawler.crawling.fetching.base import PageTooLargeError
 from crawler.crawling.metadata import extract_site_metadata
 from crawler.crawling.normalization import normalize_url
 from crawler.domain.blog_node import BlogNode
@@ -87,6 +88,8 @@ class CrawlOrchestrator:
         for page_url in candidate_pages:
             self._remaining_timeout_seconds(deadline, blog.url)
             page_attempt = page_attempts.get(page_url)
+            if page_attempt is not None and page_attempt.error_kind == "page_too_large":
+                raise PageTooLargeError(f"candidate page exceeded size limit: {page_url}")
             if page_attempt is None or page_attempt.result is None:
                 continue
             discovered_count += self._store_page_links(
