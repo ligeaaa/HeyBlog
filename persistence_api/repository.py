@@ -38,6 +38,7 @@ from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
+from crawler.crawling.normalization import BlogIdentityResolution
 from crawler.crawling.normalization import normalize_url
 from crawler.crawling.normalization import resolve_blog_identity
 from shared.contracts.enums import CrawlStatus
@@ -94,6 +95,14 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
+def _sortable_datetime(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -122,16 +131,39 @@ def normalize_ingestion_email(email: str) -> str:
     return normalized
 
 
+def _uses_tenant_root_canonicalization(reason_codes: list[str]) -> bool:
+    return "tenant_subdomain_collapsed" in reason_codes
+
+
+def _storage_url_and_domain(
+    *,
+    input_url: str,
+    input_normalized_url: str,
+    input_domain: str,
+    identity: BlogIdentityResolution,
+) -> tuple[str, str]:
+    if _uses_tenant_root_canonicalization(identity.reason_codes):
+        return identity.canonical_url, identity.canonical_host
+
+    normalized = normalize_url(input_url or input_normalized_url)
+    domain = normalized.domain or input_domain.strip().lower()
+    return normalized.normalized_url, domain
+
+
 def normalize_homepage_url(homepage_url: str) -> tuple[str, str, str, str, list[str], str]:
     """Normalize one homepage URL and reject obviously invalid inputs."""
     identity = resolve_blog_identity(homepage_url)
-    parsed = urlparse(identity.normalized_url)
+    normalized = normalize_url(homepage_url)
+    use_tenant_root = _uses_tenant_root_canonicalization(identity.reason_codes)
+    storage_url = identity.canonical_url if use_tenant_root else normalized.normalized_url
+    storage_domain = identity.canonical_host if use_tenant_root else normalized.domain
+    parsed = urlparse(storage_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Unsupported homepage URL")
     return (
         homepage_url.strip(),
-        identity.normalized_url,
-        identity.domain,
+        storage_url,
+        storage_domain,
         identity.identity_key,
         identity.reason_codes,
         identity.ruleset_version,
@@ -610,6 +642,7 @@ class SQLAlchemyRepository:
         Base.metadata.create_all(self.engine)
         self._ensure_schema()
         with session_scope(self.session_factory) as session:
+            self._fail_orphaned_dedup_scan_runs(session)
             self._requeue_processing(session)
 
     @property
@@ -631,6 +664,21 @@ class SQLAlchemyRepository:
                 IngestionRequestModel.updated_at: now_utc(),
             }
         )
+
+    def _fail_orphaned_dedup_scan_runs(self, session: Session) -> None:
+        orphaned_runs = session.scalars(
+            select(BlogDedupScanRunModel).where(BlogDedupScanRunModel.status == "RUNNING")
+        ).all()
+        if not orphaned_runs:
+            return
+        failed_at = now_utc()
+        for run in orphaned_runs:
+            started_at = _sortable_datetime(run.started_at)
+            run.status = "FAILED"
+            run.completed_at = failed_at
+            run.duration_ms = max(int((failed_at - started_at).total_seconds() * 1000), 0)
+            run.error_message = "orphaned_dedup_scan_run_cleaned_on_startup"
+            run.updated_at = failed_at
 
     def _ensure_schema(self) -> None:
         inspector = inspect(self.engine)
@@ -728,41 +776,65 @@ class SQLAlchemyRepository:
                                 },
                             )
             blog_rows = connection.execute(
-                text("SELECT id, url, normalized_url FROM blogs")
+                text(
+                    "SELECT id, url, normalized_url, domain, identity_key, identity_ruleset_version "
+                    "FROM blogs"
+                )
             ).mappings().all()
             for row in blog_rows:
+                needs_refresh = (
+                    not row["identity_key"]
+                    or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
+                )
+                if not needs_refresh:
+                    continue
                 identity = resolve_blog_identity(str(row["url"]) or str(row["normalized_url"]))
                 connection.execute(
                     text(
                         "UPDATE blogs SET identity_key = :identity_key, identity_reason_codes = :reason_codes, "
-                        "identity_ruleset_version = :ruleset_version "
-                        "WHERE id = :blog_id AND "
-                        "(identity_key IS NULL OR identity_key = '' OR identity_ruleset_version = '')"
+                        "identity_ruleset_version = :ruleset_version, domain = :domain "
+                        "WHERE id = :blog_id"
                     ),
                     {
                         "blog_id": row["id"],
                         "identity_key": identity.identity_key,
                         "reason_codes": _dump_reason_codes(identity.reason_codes),
                         "ruleset_version": identity.ruleset_version,
+                        "domain": str(row["domain"] or identity.domain),
                     },
                 )
             ingestion_rows = connection.execute(
-                text("SELECT id, requested_url, normalized_url FROM ingestion_requests")
+                text(
+                    "SELECT id, requested_url, normalized_url, identity_key, identity_ruleset_version "
+                    "FROM ingestion_requests"
+                )
             ).mappings().all()
             for row in ingestion_rows:
+                needs_refresh = (
+                    not row["identity_key"]
+                    or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
+                )
+                if not needs_refresh:
+                    continue
                 identity = resolve_blog_identity(str(row["requested_url"]) or str(row["normalized_url"]))
+                storage_url = (
+                    identity.canonical_url
+                    if _uses_tenant_root_canonicalization(identity.reason_codes)
+                    else normalize_url(str(row["requested_url"]) or str(row["normalized_url"])).normalized_url
+                )
                 connection.execute(
                     text(
                         "UPDATE ingestion_requests SET identity_key = :identity_key, "
-                        "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version "
-                        "WHERE id = :request_id AND "
-                        "(identity_key IS NULL OR identity_key = '' OR identity_ruleset_version = '')"
+                        "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version, "
+                        "normalized_url = :normalized_url "
+                        "WHERE id = :request_id"
                     ),
                     {
                         "request_id": row["id"],
                         "identity_key": identity.identity_key,
                         "reason_codes": _dump_reason_codes(identity.reason_codes),
                         "ruleset_version": identity.ruleset_version,
+                        "normalized_url": storage_url,
                     },
                 )
 
@@ -866,16 +938,15 @@ class SQLAlchemyRepository:
         *,
         url: str,
         normalized_url: str,
-    ) -> tuple[str, list[str], str]:
-        identity = resolve_blog_identity(url or normalized_url)
-        return identity.identity_key, identity.reason_codes, identity.ruleset_version
+    ) -> BlogIdentityResolution:
+        return resolve_blog_identity(url or normalized_url)
 
     def _select_survivor(self, blogs: list[BlogModel]) -> tuple[BlogModel, str]:
         ranked = sorted(
             blogs,
             key=lambda blog: (
                 len((blog.normalized_url or "").strip()),
-                blog.created_at or now_utc(),
+                _sortable_datetime(blog.created_at),
                 int(blog.id),
             ),
         )
@@ -900,20 +971,33 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
     ) -> tuple[int, bool]:
-        identity_key, reason_codes, ruleset_version = self._resolve_identity_from_blog_fields(
+        identity = self._resolve_identity_from_blog_fields(
             url=url,
             normalized_url=normalized_url,
         )
+        stored_url, stored_domain = _storage_url_and_domain(
+            input_url=url,
+            input_normalized_url=normalized_url,
+            input_domain=domain,
+            identity=identity,
+        )
+        identity_key = identity.identity_key
+        reason_codes = identity.reason_codes
+        ruleset_version = identity.ruleset_version
         with session_scope(self.session_factory) as session:
             existing = session.scalar(
                 select(BlogModel).where(
                     or_(
-                        BlogModel.normalized_url == normalized_url,
+                        BlogModel.normalized_url == stored_url,
                         BlogModel.identity_key == identity_key,
                     )
                 )
             )
             if existing is not None:
+                if _uses_tenant_root_canonicalization(reason_codes):
+                    existing.url = stored_url
+                    existing.normalized_url = stored_url
+                    existing.domain = stored_domain
                 if email is not None and not (existing.email or "").strip():
                     existing.email = email
                 existing.identity_key = identity_key
@@ -923,12 +1007,12 @@ class SQLAlchemyRepository:
                 return int(existing.id), False
 
             blog = BlogModel(
-                url=url,
-                normalized_url=normalized_url,
+                url=stored_url,
+                normalized_url=stored_url,
                 identity_key=identity_key,
                 identity_reason_codes=_dump_reason_codes(reason_codes),
                 identity_ruleset_version=ruleset_version,
-                domain=domain,
+                domain=stored_domain,
                 email=email,
                 crawl_status=CrawlStatus.WAITING,
                 friend_links_count=0,
@@ -951,6 +1035,10 @@ class SQLAlchemyRepository:
             if existing_blog is not None and not (existing_blog.email or "").strip():
                 existing_blog.email = normalized_email
             if existing_blog is not None:
+                if _uses_tenant_root_canonicalization(reason_codes):
+                    existing_blog.url = normalized_url
+                    existing_blog.normalized_url = normalized_url
+                    existing_blog.domain = domain
                 existing_blog.identity_key = identity_key
                 existing_blog.identity_reason_codes = _dump_reason_codes(reason_codes)
                 existing_blog.identity_ruleset_version = ruleset_version
@@ -977,6 +1065,8 @@ class SQLAlchemyRepository:
             if existing_request is not None:
                 if not (existing_request.requester_email or "").strip():
                     existing_request.requester_email = normalized_email
+                if _uses_tenant_root_canonicalization(reason_codes):
+                    existing_request.normalized_url = normalized_url
                 existing_request.identity_key = identity_key
                 existing_request.identity_reason_codes = _dump_reason_codes(reason_codes)
                 existing_request.identity_ruleset_version = ruleset_version
@@ -985,7 +1075,7 @@ class SQLAlchemyRepository:
 
             if existing_blog is None:
                 existing_blog = BlogModel(
-                    url=requested_url,
+                    url=normalized_url,
                     normalized_url=normalized_url,
                     identity_key=identity_key,
                     identity_reason_codes=_dump_reason_codes(reason_codes),
@@ -1624,16 +1714,22 @@ class SQLAlchemyRepository:
                 run.total_count = len(blogs)
                 groups_map: dict[str, list[int]] = {}
                 for blog in blogs:
-                    identity_key, reason_codes, ruleset_version = self._resolve_identity_from_blog_fields(
+                    identity = self._resolve_identity_from_blog_fields(
                         url=blog.url,
                         normalized_url=blog.normalized_url,
                     )
-                    blog.identity_key = identity_key
-                    blog.identity_reason_codes = _dump_reason_codes(reason_codes)
-                    blog.identity_ruleset_version = ruleset_version
                     if not blog.domain:
-                        blog.domain = resolve_blog_identity(blog.url).domain
-                    groups_map.setdefault(identity_key, []).append(int(blog.id))
+                        _, stored_domain = _storage_url_and_domain(
+                            input_url=blog.url,
+                            input_normalized_url=blog.normalized_url,
+                            input_domain=blog.domain or "",
+                            identity=identity,
+                        )
+                        blog.domain = stored_domain
+                    blog.identity_key = identity.identity_key
+                    blog.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
+                    blog.identity_ruleset_version = identity.ruleset_version
+                    groups_map.setdefault(identity.identity_key, []).append(int(blog.id))
 
                 groups = list(groups_map.values())
 
@@ -1653,8 +1749,16 @@ class SQLAlchemyRepository:
 
                     kept_count += 1
                     identity_key = blogs[0].identity_key
+                    survivor, basis = self._select_survivor(blogs)
+                    survivor_identity = self._resolve_identity_from_blog_fields(
+                        url=survivor.url,
+                        normalized_url=survivor.normalized_url,
+                    )
+                    if _uses_tenant_root_canonicalization(survivor_identity.reason_codes):
+                        survivor.url = survivor_identity.canonical_url
+                        survivor.normalized_url = survivor_identity.canonical_url
+                        survivor.domain = survivor_identity.canonical_host
                     if len(blogs) > 1:
-                        survivor, basis = self._select_survivor(blogs)
                         for duplicate in blogs:
                             if duplicate.id == survivor.id:
                                 continue
@@ -1677,7 +1781,9 @@ class SQLAlchemyRepository:
                                 and duplicate.crawl_status == CrawlStatus.FINISHED
                             ):
                                 survivor.crawl_status = CrawlStatus.FINISHED
-                            if survivor.created_at > duplicate.created_at:
+                            if _sortable_datetime(survivor.created_at) > _sortable_datetime(
+                                duplicate.created_at
+                            ):
                                 survivor.created_at = duplicate.created_at
                             survivor.updated_at = now_utc()
 

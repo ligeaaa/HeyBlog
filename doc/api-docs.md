@@ -1155,6 +1155,11 @@
 }
 ```
 
+补充说明：
+
+- repository 会优先按 `normalized_url` 与 `identity_key` 复用已有 blog。
+- 对满足“tenant-like homepage 子域”启发式的 URL，入库时会直接把 blog URL / `normalized_url` 规范化为 registrable root 的 canonical URL；例如 `zhuruilei.66law.cn` 会收敛为 `https://66law.cn/`。像 `*.github.io`、`*.gitee.io` 这类显式排除的共享托管域名不受该规则影响。
+
 ### `POST /internal/blogs/{blog_id}/result`
 
 用途：回写单个 blog 的抓取结果。
@@ -1351,6 +1356,7 @@
 
 - 去重与复用当前按 `identity_key` 执行，而不再只看 `normalized_url`
 - 返回 payload 会附带 `identity_key`、`identity_reason_codes` 与 `identity_ruleset_version`
+- 对满足“tenant-like homepage 子域”启发式的 URL，`normalized_url` 与 seed blog URL 会直接收敛到 registrable root 的 canonical URL；例如 `*.66law.cn` 会统一收敛到 `https://66law.cn/`。`*.github.io`、`*.gitee.io` 等显式排除域名不会被这样归并。
 
 ### `GET /internal/ingestion-requests/{request_id}`
 

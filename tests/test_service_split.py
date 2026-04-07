@@ -1162,7 +1162,7 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
             self.run = {
                 "id": 7,
                 "status": "PENDING",
-                "ruleset_version": "2026-04-05-v1",
+                "ruleset_version": "2026-04-07-v2",
                 "total_count": 3,
                 "scanned_count": 0,
                 "removed_count": 0,

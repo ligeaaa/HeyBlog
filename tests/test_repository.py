@@ -10,6 +10,7 @@ from persistence_api.models import BlogLabelAssignmentModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
 from persistence_api.models import EdgeModel
+from persistence_api.models import IngestionRequestModel
 from shared.contracts.enums import CrawlStatus
 
 
@@ -374,6 +375,233 @@ def test_repository_dedup_scan_prefers_shortest_normalized_url_as_survivor(tmp_p
     assert [blog["id"] for blog in blogs if blog["identity_key"] == "site:langhai.cc/"] == [shortest_id]
     assert items[0]["removed_blog_id"] == duplicate_id
     assert "normalized_url=https://langhai.cc/" in items[0]["survivor_selection_basis"]
+
+
+def test_repository_upsert_blog_collapses_tenant_like_subdomains_to_root_url(tmp_path: Path) -> None:
+    """Tenant-like homepage subdomains should persist as one canonical root blog URL."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    first_id, first_inserted = repository.upsert_blog(
+        url="https://zhuruilei.66law.cn/",
+        normalized_url="https://zhuruilei.66law.cn/",
+        domain="zhuruilei.66law.cn",
+    )
+    second_id, second_inserted = repository.upsert_blog(
+        url="https://lichenlvs.66law.cn/",
+        normalized_url="https://lichenlvs.66law.cn/",
+        domain="lichenlvs.66law.cn",
+    )
+
+    assert first_inserted is True
+    assert second_inserted is False
+    assert second_id == first_id
+
+    blog = repository.get_blog(first_id)
+    assert blog is not None
+    assert blog["url"] == "https://66law.cn/"
+    assert blog["normalized_url"] == "https://66law.cn/"
+    assert blog["domain"] == "66law.cn"
+    assert blog["identity_key"] == "site:66law.cn/"
+    assert "tenant_subdomain_collapsed" in blog["identity_reason_codes"]
+
+
+def test_repository_ingestion_request_reuses_tenant_like_root_identity(tmp_path: Path) -> None:
+    """Tenant-like subdomains should share one queued seed blog/request identity."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    first = repository.create_ingestion_request(
+        homepage_url="https://zhuruilei.66law.cn/",
+        email="first@example.com",
+    )
+    second = repository.create_ingestion_request(
+        homepage_url="https://lichenlvs.66law.cn/",
+        email="second@example.com",
+    )
+
+    assert first["status"] == "QUEUED"
+    assert second["status"] == "QUEUED"
+    assert second["request_id"] == first["request_id"]
+    assert second["seed_blog_id"] == first["seed_blog_id"]
+    assert second["identity_key"] == "site:66law.cn/"
+
+    blog = repository.get_blog(int(first["seed_blog_id"]))
+    assert blog is not None
+    assert blog["url"] == "https://66law.cn/"
+    assert blog["normalized_url"] == "https://66law.cn/"
+    assert blog["domain"] == "66law.cn"
+
+
+def test_repository_reused_tenant_like_ingestion_request_is_canonicalized_to_root_url(tmp_path: Path) -> None:
+    """Reused active requests should rewrite legacy tenant normalized_url to the registrable root URL."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    with session_scope(repository.session_factory) as session:
+        seed = BlogModel(
+            url="https://66law.cn/",
+            normalized_url="https://66law.cn/",
+            identity_key="site:66law.cn/",
+            identity_reason_codes='["scheme_ignored"]',
+            identity_ruleset_version=repository_module.IDENTITY_RULESET_VERSION,
+            domain="66law.cn",
+            email=None,
+            title=None,
+            icon_url=None,
+            status_code=None,
+            crawl_status=CrawlStatus.WAITING,
+            friend_links_count=0,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(seed)
+        session.flush()
+        request = IngestionRequestModel(
+            requested_url="https://zhuruilei.66law.cn/",
+            normalized_url="https://zhuruilei.66law.cn/",
+            identity_key="site:66law.cn/",
+            identity_reason_codes='["scheme_ignored"]',
+            identity_ruleset_version=repository_module.IDENTITY_RULESET_VERSION,
+            requester_email="existing@example.com",
+            status="QUEUED",
+            priority=100,
+            seed_blog_id=int(seed.id),
+            matched_blog_id=None,
+            request_token="legacy-token",
+            expires_at=None,
+            error_message=None,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(request)
+        session.flush()
+        request_id = int(request.id)
+
+    reused = repository.create_ingestion_request(
+        homepage_url="https://lichenlvs.66law.cn/",
+        email="next@example.com",
+    )
+
+    assert reused["request_id"] == request_id
+    assert reused["normalized_url"] == "https://66law.cn/"
+    assert reused["identity_key"] == "site:66law.cn/"
+
+
+def test_repository_dedup_scan_canonicalizes_tenant_like_survivor_to_root_url(tmp_path: Path) -> None:
+    """Historical tenant-like subdomains should merge into one root survivor after dedup scan."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    with session_scope(repository.session_factory) as session:
+        first = BlogModel(
+            url="https://zhuruilei.66law.cn/",
+            normalized_url="https://zhuruilei.66law.cn/",
+            identity_key="",
+            identity_reason_codes="[]",
+            identity_ruleset_version="",
+            domain="zhuruilei.66law.cn",
+            email=None,
+            title=None,
+            icon_url=None,
+            status_code=None,
+            crawl_status=CrawlStatus.WAITING,
+            friend_links_count=0,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        second = BlogModel(
+            url="https://lichenlvs.66law.cn/",
+            normalized_url="https://lichenlvs.66law.cn/",
+            identity_key="",
+            identity_reason_codes="[]",
+            identity_ruleset_version="",
+            domain="lichenlvs.66law.cn",
+            email=None,
+            title=None,
+            icon_url=None,
+            status_code=None,
+            crawl_status=CrawlStatus.WAITING,
+            friend_links_count=0,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(first)
+        session.add(second)
+        session.flush()
+        first_id = int(first.id)
+
+    summary = repository.run_blog_dedup_scan(crawler_was_running=False)
+    assert summary["removed_count"] == 1
+
+    blogs = repository.list_blogs()
+    assert [blog["id"] for blog in blogs] == [first_id]
+    assert blogs[0]["url"] == "https://66law.cn/"
+    assert blogs[0]["normalized_url"] == "https://66law.cn/"
+    assert blogs[0]["domain"] == "66law.cn"
+    assert blogs[0]["identity_key"] == "site:66law.cn/"
+
+
+def test_repository_startup_migrates_legacy_tenant_like_rows_and_merges_to_root_url(tmp_path: Path) -> None:
+    """Repository startup should refresh stale ruleset rows without auto-running admin dedup."""
+    db_path = tmp_path / "db.sqlite"
+    repository = repository_module.build_repository(db_path=db_path)
+
+    with session_scope(repository.session_factory) as session:
+        first = BlogModel(
+            url="https://zhuruilei.66law.cn/",
+            normalized_url="https://zhuruilei.66law.cn/",
+            identity_key="site:zhuruilei.66law.cn/",
+            identity_reason_codes='["scheme_ignored"]',
+            identity_ruleset_version="2026-04-05-v1",
+            domain="zhuruilei.66law.cn",
+            email=None,
+            title=None,
+            icon_url=None,
+            status_code=None,
+            crawl_status=CrawlStatus.WAITING,
+            friend_links_count=0,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        second = BlogModel(
+            url="https://lichenlvs.66law.cn/",
+            normalized_url="https://lichenlvs.66law.cn/",
+            identity_key="site:lichenlvs.66law.cn/",
+            identity_reason_codes='["scheme_ignored"]',
+            identity_ruleset_version="2026-04-05-v1",
+            domain="lichenlvs.66law.cn",
+            email=None,
+            title=None,
+            icon_url=None,
+            status_code=None,
+            crawl_status=CrawlStatus.WAITING,
+            friend_links_count=0,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(first)
+        session.add(second)
+
+    migrated = repository_module.build_repository(db_path=db_path)
+    blogs = migrated.list_blogs()
+    latest_run = migrated.get_latest_blog_dedup_scan_run()
+
+    assert len(blogs) == 2
+    assert {blog["identity_key"] for blog in blogs} == {"site:66law.cn/"}
+    assert all(blog["identity_ruleset_version"] == repository_module.IDENTITY_RULESET_VERSION for blog in blogs)
+    assert latest_run is None
+
+
+def test_repository_startup_marks_orphaned_dedup_scan_run_failed(tmp_path: Path) -> None:
+    """Startup should not leave stale RUNNING dedup scan summaries hanging forever."""
+    db_path = tmp_path / "db.sqlite"
+    repository = repository_module.build_repository(db_path=db_path)
+    run = repository.create_blog_dedup_scan_run(crawler_was_running=False)
+
+    restarted = repository_module.build_repository(db_path=db_path)
+    latest_run = restarted.get_latest_blog_dedup_scan_run()
+
+    assert latest_run is not None
+    assert latest_run["id"] == run["id"]
+    assert latest_run["status"] == "FAILED"
+    assert latest_run["error_message"] == "orphaned_dedup_scan_run_cleaned_on_startup"
 
 
 def test_repository_requeues_processing_blogs_on_restart(tmp_path: Path) -> None:
@@ -783,7 +1011,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         "normalized_url": "https://delta.example/",
         "identity_key": "site:delta.example/",
         "identity_reason_codes": ["scheme_ignored"],
-        "identity_ruleset_version": "2026-04-05-v1",
+        "identity_ruleset_version": "2026-04-07-v5",
         "domain": "delta.example",
         "email": None,
         "title": "delta.example title",
