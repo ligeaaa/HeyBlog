@@ -14,10 +14,11 @@ test("renders primary navigation entries", () => {
     </QueryClientProvider>,
   );
 
-  expect(screen.getByText("统计总览")).toBeInTheDocument();
-  expect(screen.getByText("发现博客")).toBeInTheDocument();
-  expect(screen.getByText("搜索发现")).toBeInTheDocument();
-  expect(screen.getByText("当前处理")).toBeInTheDocument();
-  expect(screen.getByText("控制台")).toBeInTheDocument();
-  expect(screen.getByText("项目介绍")).toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /统计总览/i })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /发现博客/i })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /搜索发现/i })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /当前处理/i })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /控制台/i })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /项目介绍/i })).toBeInTheDocument();
 });

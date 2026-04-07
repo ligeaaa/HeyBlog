@@ -54,7 +54,21 @@ export function ControlPage() {
         title="控制界面"
         description="控制 crawler 开启、关闭，触发新的 N 个 blog 批处理，或在测试开发时重置数据库。"
       />
-      <Surface title="当前运行态" note="来自 /api/runtime/status">
+      <div className="stats-grid">
+        <section className="stat-card">
+          <span>Runner</span>
+          <strong>{runtimeStatus ?? "idle"}</strong>
+        </section>
+        <section className="stat-card">
+          <span>维护模式</span>
+          <strong>{maintenanceInProgress ? "进行中" : "关闭"}</strong>
+        </section>
+        <section className="stat-card">
+          <span>最近消息</span>
+          <strong className="stat-copy-small">{message}</strong>
+        </section>
+      </div>
+      <Surface title="当前运行态" note="来自 /api/runtime/status" variant="muted">
         <p className="status-line">runner_status: {runtime.data?.runner_status ?? "idle"}</p>
         {maintenanceInProgress ? (
           <p className="error-copy">当前正在执行管理员维护任务，新的运行时启动和批处理会被拒绝。</p>
@@ -104,7 +118,7 @@ export function ControlPage() {
           </button>
         </div>
       </Surface>
-      <Surface title="Blog 规则重扫">
+      <Surface title="Blog 规则重扫" variant="danger">
         <p className="page-copy">
           按当前 `identity_key` 规则对全库 blog 做一次归并，不重跑 crawler；执行时会自动停爬并在结束后按需恢复。
         </p>
@@ -169,7 +183,7 @@ export function ControlPage() {
           </table>
         ) : null}
       </Surface>
-      <Surface title="数据库维护">
+      <Surface title="数据库维护" variant="danger">
         <p className="page-copy">
           清空 blogs、edges 数据并同步重建搜索快照；日志不会写入数据库。
         </p>
@@ -194,7 +208,7 @@ export function ControlPage() {
           重置数据库
         </button>
       </Surface>
-      <Surface title="批量爬取 N 个 blog">
+      <Surface title="批量爬取 N 个 blog" variant="muted">
         <form className="batch-form" onSubmit={handleRunBatch}>
           <label>
             <span>Max nodes</span>
@@ -214,7 +228,7 @@ export function ControlPage() {
           </button>
         </form>
       </Surface>
-      <Surface title="操作结果">
+      <Surface title="操作结果" variant="muted">
         <p>{message}</p>
       </Surface>
     </div>

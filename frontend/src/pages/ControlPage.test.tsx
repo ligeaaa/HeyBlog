@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ControlPage } from "./ControlPage";
@@ -105,7 +105,9 @@ test("confirms and triggers database reset", async () => {
 
   expect(confirmSpy).toHaveBeenCalled();
   expect(actions.resetDatabase.mutateAsync).toHaveBeenCalled();
-  expect(await screen.findByText(/database reset:/i)).toBeInTheDocument();
+  const resultSection = screen.getByRole("heading", { name: "操作结果" }).closest("section");
+  expect(resultSection).not.toBeNull();
+  expect(await within(resultSection as HTMLElement).findByText(/database reset:/i)).toBeInTheDocument();
 
   confirmSpy.mockRestore();
 });

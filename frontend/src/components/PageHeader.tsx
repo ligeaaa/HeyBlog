@@ -10,9 +10,11 @@ type Props = {
 export function PageHeader({ eyebrow, title, description, actions }: Props) {
   return (
     <header className="page-header">
-      <div>
+      <div className="page-header-main">
         <p className="eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
+        <div className="page-header-title-row">
+          <h2>{title}</h2>
+        </div>
         <p className="page-copy">{description}</p>
       </div>
       {actions ? <div className="page-actions">{actions}</div> : null}

@@ -229,6 +229,11 @@ export function BlogsPage() {
 
       <Surface title="发现控制台" note={`来自 /api/blogs/catalog · 每页 ${DEFAULT_PAGE_SIZE} 条`}>
         <div className="catalog-controls">
+          <div className="catalog-summary">
+            <p className="meta-copy">
+              用站点身份、抓取状态和关系密度快速缩小范围；筛选仍由 URL 参数驱动，可直接分享当前视图。
+            </p>
+          </div>
           <div className="search-form">
             <label className="search-field">
               <span>通用搜索</span>

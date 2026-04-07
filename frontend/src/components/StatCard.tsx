@@ -6,8 +6,8 @@ type Props = {
 export function StatCard({ label, value }: Props) {
   return (
     <article className="stat-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
+      <span className="stat-label">{label}</span>
+      <strong className="stat-value">{value}</strong>
     </article>
   );
 }
