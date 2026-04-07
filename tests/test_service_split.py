@@ -1003,6 +1003,67 @@ def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
     assert response.json()["detail"] == "Unsupported crawl status: BAD"
 
 
+def test_backend_graph_neighbors_surfaces_upstream_not_found() -> None:
+    """Public graph neighborhood endpoint should preserve upstream 404 errors."""
+
+    class GraphNeighborNotFoundStub:
+        def stats(self) -> dict[str, object]:
+            return {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "average_friend_links": 0.0,
+            }
+
+        def list_blogs(self) -> list[dict[str, object]]:
+            return []
+
+        def get_blog(self, blog_id: int) -> None:
+            return None
+
+        def get_blog_detail(self, blog_id: int) -> None:
+            return None
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return []
+
+        def graph(self) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+        def graph_view(self, **_: object) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def graph_neighbors(self, blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, object]:
+            request = httpx.Request("GET", f"http://persistence/internal/graph/nodes/{blog_id}/neighbors")
+            response = httpx.Response(404, request=request, json={"detail": "graph_node_not_found"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def latest_graph_snapshot(self) -> dict[str, object]:
+            return {"version": "v1"}
+
+        def graph_snapshot(self, version: str) -> dict[str, object]:
+            return {"version": version, "nodes": [], "edges": [], "meta": {}}
+
+        def list_logs(self) -> list[dict[str, object]]:
+            return []
+
+        def reset(self) -> dict[str, object]:
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+
+    app = create_backend_app(
+        BackendState(persistence=GraphNeighborNotFoundStub(), crawler=StubCrawler(), search=StubSearch())
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/graph/nodes/99/neighbors?hops=1&limit=40")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "graph_node_not_found"
+
+
 def test_backend_database_reset_requires_idle_runtime() -> None:
     """Database reset should be rejected while the crawler runtime is busy."""
 

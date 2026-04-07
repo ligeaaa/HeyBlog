@@ -32,35 +32,35 @@ function formatLastUpdated(timestamp: number) {
   return new Date(timestamp).toLocaleString();
 }
 
-function graphLimitForHops(hops: number) {
-  if (hops <= 1) {
+function graphLimitForHops(hops: 1 | 2) {
+  if (hops === 1) {
     return 40;
   }
-  if (hops === 2) {
-    return 90;
-  }
-  return 160;
+  return 120;
 }
 
 export function BlogDetailPage() {
   const { blogId: rawBlogId } = useParams();
   const blogId = parseBlogId(rawBlogId);
   const detailView = useBlogDetailView(blogId);
-  const [graphDepth, setGraphDepth] = useState<1 | 2 | 3>(1);
+  const [graphDepth, setGraphDepth] = useState<1 | 2>(1);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(blogId ? String(blogId) : null);
   const [showRecommendations, setShowRecommendations] = useState(false);
   const rendererRef = useRef<GraphRendererHandle | null>(null);
   const overlayRef = useRef(createEmptyGraphOverlay());
+  const pendingAutoFitSignatureRef = useRef<string | null>(null);
+  const graphEnabled = blogId != null && detailView.blog?.crawl_status === "FINISHED";
   const graphQuery = useGraphNeighbors({
     blogId,
     hops: graphDepth,
     limit: graphLimitForHops(graphDepth),
-    enabled: blogId != null,
+    enabled: graphEnabled,
   });
 
   useEffect(() => {
     setSelectedNodeId(blogId ? String(blogId) : null);
     overlayRef.current = createEmptyGraphOverlay();
+    pendingAutoFitSignatureRef.current = null;
   }, [blogId]);
 
   const graphBundle = useMemo(() => buildGraphScene(graphQuery.data, overlayRef.current), [graphQuery.data]);
@@ -82,15 +82,14 @@ export function BlogDetailPage() {
 
   useEffect(() => {
     const renderer = rendererRef.current;
-    if (!renderer || graphBundle.nodes.length === 0) {
+    if (!renderer || !graphEnabled || graphQuery.isLoading || graphQuery.error || graphBundle.nodes.length === 0) {
       return;
     }
+
     renderer.restoreViewport(DEFAULT_GRAPH_VIEWPORT);
-    renderer.fitView();
-    if (graphBundle.shouldRunLayout) {
-      renderer.requestRelayout("soft");
-    }
-  }, [graphBundle.signature, graphBundle.nodes.length, graphBundle.shouldRunLayout]);
+    pendingAutoFitSignatureRef.current = graphBundle.signature;
+    renderer.requestRelayout("full");
+  }, [graphBundle.nodes.length, graphBundle.signature, graphEnabled, graphQuery.error, graphQuery.isLoading]);
 
   if (blogId == null) {
     return (
@@ -163,6 +162,12 @@ export function BlogDetailPage() {
 
   const blog = detailView.blog;
   const selectedDetails = selectedNodeId ? graphBundle.detailsById.get(selectedNodeId) ?? null : null;
+  const graphUnavailableMessage =
+    blog.crawl_status !== "FINISHED"
+      ? "当前博客还没完成抓取，关系图谱会在状态变成 FINISHED 后可用。"
+      : graphQuery.error instanceof ApiError && graphQuery.error.status === 404
+        ? "当前博客暂时不在已完成图谱快照中，稍后重试或先重新抓取一次。"
+        : null;
 
   return (
     <div className="page-stack">
@@ -224,7 +229,7 @@ export function BlogDetailPage() {
               <div>
                 <p className="eyebrow">Relationship Graph</p>
                 <p className="graph-toolbar-copy">
-                  默认展示当前博客一层邻居，可切换为 2 层或 3 层继续展开。点击节点可查看对应博客的入/出边统计。
+                  以当前博客为根节点，支持展开 1 层或 2 层邻居。每次载入新图后会自动触发一次完整重布局，方便直接观察局部结构。
                 </p>
               </div>
               <div className="graph-toolbar-actions">
@@ -233,20 +238,20 @@ export function BlogDetailPage() {
                   <select
                     aria-label="关系图谱深度"
                     value={graphDepth}
+                    disabled={!graphEnabled}
                     onChange={(event) => {
                       const value = Number(event.target.value);
-                      setGraphDepth(value === 2 ? 2 : value === 3 ? 3 : 1);
+                      setGraphDepth(value === 2 ? 2 : 1);
                     }}
                   >
                     <option value={1}>1 层</option>
                     <option value={2}>2 层</option>
-                    <option value={3}>3 层</option>
                   </select>
                 </label>
                 <button
                   type="button"
                   className="secondary-button"
-                  disabled={graphQuery.isFetching}
+                  disabled={!graphEnabled || graphQuery.isFetching}
                   onClick={() => {
                     graphQuery.refetch();
                   }}
@@ -256,6 +261,18 @@ export function BlogDetailPage() {
                 <button
                   type="button"
                   className="secondary-button"
+                  disabled={!graphEnabled || graphBundle.nodes.length === 0}
+                  onClick={() => {
+                    pendingAutoFitSignatureRef.current = graphBundle.signature;
+                    rendererRef.current?.requestRelayout("full");
+                  }}
+                >
+                  重新布局
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!graphEnabled || graphBundle.nodes.length === 0}
                   onClick={() => {
                     rendererRef.current?.fitView();
                   }}
@@ -265,13 +282,16 @@ export function BlogDetailPage() {
               </div>
             </div>
 
-            {graphQuery.isLoading ? <p>正在加载关系图谱…</p> : null}
-            {graphQuery.error ? <p className="error-copy">图谱加载失败：{graphQuery.error.message}</p> : null}
-            {!graphQuery.isLoading && !graphQuery.error && graphBundle.nodes.length === 0 ? (
+            {!graphEnabled ? <p>{graphUnavailableMessage}</p> : null}
+            {graphEnabled && graphQuery.isLoading ? <p>正在加载关系图谱…</p> : null}
+            {graphEnabled && graphQuery.error && !graphUnavailableMessage ? (
+              <p className="error-copy">图谱加载失败：{graphQuery.error.message}</p>
+            ) : null}
+            {graphEnabled && !graphQuery.isLoading && !graphQuery.error && graphBundle.nodes.length === 0 ? (
               <p>当前还没有可展示的关系图谱数据。</p>
             ) : null}
 
-            {graphBundle.nodes.length > 0 ? (
+            {graphEnabled && graphBundle.nodes.length > 0 ? (
               <D3GraphCanvas
                 ref={rendererRef}
                 scene={graphBundle}
@@ -280,6 +300,10 @@ export function BlogDetailPage() {
                 onViewportChange={() => undefined}
                 onOverlayChange={(overlay) => {
                   overlayRef.current = overlay;
+                  if (pendingAutoFitSignatureRef.current === graphBundle.signature) {
+                    pendingAutoFitSignatureRef.current = null;
+                    rendererRef.current?.fitView();
+                  }
                 }}
               />
             ) : null}

@@ -308,7 +308,15 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.get("/api/graph/nodes/{blog_id}/neighbors")
     def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
-        return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+        try:
+            return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/graph/snapshots/latest")
     def get_latest_graph_snapshot() -> dict[str, Any]:

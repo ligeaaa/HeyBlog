@@ -1,3 +1,4 @@
+import { forwardRef, useImperativeHandle } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
@@ -5,10 +6,28 @@ import { ApiError } from "../lib/api";
 import { BlogDetailPage } from "./BlogDetailPage";
 import { useBlogDetailView, useGraphNeighbors } from "../lib/hooks";
 
+const mockRendererSpies = {
+  captureViewport: vi.fn(() => ({ x: 0, y: 0, k: 1 })),
+  restoreViewport: vi.fn(),
+  fitView: vi.fn(),
+  requestRelayout: vi.fn(),
+  clearSelection: vi.fn(),
+};
+
 vi.mock("../components/graph/D3GraphCanvas", () => ({
-  D3GraphCanvas: ({ selectedNodeId }: { selectedNodeId: string | null }) => (
-    <div data-testid="blog-detail-graph">selected:{selectedNodeId ?? "none"}</div>
-  ),
+  D3GraphCanvas: forwardRef(function MockD3GraphCanvas(
+    { selectedNodeId }: { selectedNodeId: string | null },
+    ref,
+  ) {
+    useImperativeHandle(ref, () => ({
+      captureViewport: mockRendererSpies.captureViewport,
+      restoreViewport: mockRendererSpies.restoreViewport,
+      fitView: mockRendererSpies.fitView,
+      requestRelayout: mockRendererSpies.requestRelayout,
+      clearSelection: mockRendererSpies.clearSelection,
+    }));
+    return <div data-testid="blog-detail-graph">selected:{selectedNodeId ?? "none"}</div>;
+  }),
 }));
 
 vi.mock("../components/graph/GraphInspector", () => ({
@@ -35,6 +54,12 @@ function renderDetailPage(initialEntry = "/blogs/1") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockRendererSpies.captureViewport.mockReset();
+  mockRendererSpies.captureViewport.mockReturnValue({ x: 0, y: 0, k: 1 });
+  mockRendererSpies.restoreViewport.mockReset();
+  mockRendererSpies.fitView.mockReset();
+  mockRendererSpies.requestRelayout.mockReset();
+  mockRendererSpies.clearSelection.mockReset();
   mockedUseBlogDetailView.mockReturnValue({
     blog: {
       id: 1,
@@ -171,6 +196,7 @@ test("renders the relationship graph before collapsed friend-of-friend recommend
   );
   expect(screen.getByText("关系图谱")).toBeInTheDocument();
   expect(screen.getByTestId("blog-detail-graph")).toHaveTextContent("selected:1");
+  expect(mockRendererSpies.requestRelayout).toHaveBeenCalledWith("full");
   expect(screen.getByText("展开推荐")).toBeInTheDocument();
   expect(screen.queryByText(/通过 Beta 认识/)).not.toBeInTheDocument();
 });
@@ -187,15 +213,55 @@ test("expands friend-of-friend recommendations on demand", () => {
 test("allows changing relationship graph depth", () => {
   renderDetailPage();
 
-  fireEvent.change(screen.getByLabelText("关系图谱深度"), { target: { value: "3" } });
+  fireEvent.change(screen.getByLabelText("关系图谱深度"), { target: { value: "2" } });
 
   expect(mockedUseGraphNeighbors).toHaveBeenLastCalledWith(
     expect.objectContaining({
       blogId: 1,
-      hops: 3,
-      limit: 160,
+      hops: 2,
+      limit: 120,
     }),
   );
+});
+
+test("shows a graph-unavailable message for non-finished blogs", () => {
+  mockedUseBlogDetailView.mockReturnValue({
+    blog: {
+      id: 1,
+      url: "https://alpha.example",
+      normalized_url: "https://alpha.example",
+      domain: "alpha.example",
+      title: "Alpha Blog",
+      icon_url: "https://alpha.example/favicon.ico",
+      status_code: 200,
+      crawl_status: "WAITING",
+      friend_links_count: 0,
+      last_crawled_at: null,
+      created_at: "2026-03-29T00:00:00Z",
+      updated_at: "2026-03-29T00:00:00Z",
+      incoming_count: 0,
+      outgoing_count: 0,
+      connection_count: 0,
+      activity_at: null,
+      identity_complete: false,
+      recommended_blogs: [],
+      outgoing_edges: [],
+    },
+    incomingEdges: [],
+    outgoingEdges: [],
+    isLoading: false,
+    error: null,
+  } as unknown as ReturnType<typeof useBlogDetailView>);
+
+  renderDetailPage();
+
+  expect(mockedUseGraphNeighbors).toHaveBeenCalledWith(
+    expect.objectContaining({
+      blogId: 1,
+      enabled: false,
+    }),
+  );
+  expect(screen.getByText("当前博客还没完成抓取，关系图谱会在状态变成 FINISHED 后可用。")).toBeInTheDocument();
 });
 
 test("shows an invalid-state message for malformed blog ids", () => {

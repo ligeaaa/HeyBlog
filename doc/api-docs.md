@@ -572,6 +572,10 @@
 - `meta.focus_node_id` 为当前中心节点
 - `meta.hops` 为实际展开跳数
 
+错误说明：
+
+- 当目标 blog 不在当前已完成图谱快照中时，返回 `404 graph_node_not_found`
+
 #### `GET /api/graph/snapshots/latest`
 
 用途：返回最新离线图快照 manifest。
@@ -1268,6 +1272,11 @@
 ### `GET /internal/graph/nodes/{blog_id}/neighbors`
 
 用途：返回单节点邻域扩展结果。
+
+补充说明：
+
+- 当前只支持 `1` 或 `2` 跳扩展
+- 当目标 blog 不在当前已完成图谱快照中时，返回 `404 graph_node_not_found`
 
 ### `GET /internal/graph/snapshots/latest`
 
