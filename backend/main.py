@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import sleep
+from threading import Thread
 from typing import Any
 
 import httpx
@@ -22,6 +24,7 @@ class BackendState:
     persistence: Any
     crawler: Any
     search: Any
+    maintenance_in_progress: bool = False
 
 
 class RunBatchRequest(BaseModel):
@@ -39,6 +42,11 @@ class ReplaceBlogLabelsRequest(BaseModel):
 
 class CreateBlogLabelTagRequest(BaseModel):
     name: str
+
+
+def _raise_for_maintenance(state: BackendState) -> None:
+    if state.maintenance_in_progress:
+        raise HTTPException(status_code=409, detail="maintenance_in_progress")
 
 
 def build_backend_state(settings: Settings | None = None) -> BackendState:
@@ -60,6 +68,51 @@ def build_backend_state(settings: Settings | None = None) -> BackendState:
     )
 
 
+def _execute_blog_dedup_scan_in_background(
+    state: BackendState,
+    *,
+    run_id: int,
+    crawler_was_running: bool,
+) -> None:
+    restart_attempted = False
+    restart_succeeded = False
+    search_reindexed = False
+    error_message: str | None = None
+    try:
+        state.persistence.execute_blog_dedup_scan_run(run_id=run_id)
+        try:
+            state.search.reindex()
+            search_reindexed = True
+        except Exception:  # noqa: BLE001
+            search_reindexed = False
+    except httpx.HTTPStatusError as exc:
+        try:
+            error_message = exc.response.json().get("detail", "upstream_error")
+        except Exception:  # noqa: BLE001
+            error_message = "upstream_error"
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)
+    finally:
+        if crawler_was_running:
+            restart_attempted = True
+            try:
+                state.crawler.start()
+                restart_succeeded = True
+            except Exception:  # noqa: BLE001
+                restart_succeeded = False
+        try:
+            state.persistence.finalize_blog_dedup_scan_run(
+                run_id=run_id,
+                crawler_restart_attempted=restart_attempted,
+                crawler_restart_succeeded=restart_succeeded,
+                search_reindexed=search_reindexed,
+                error_message=error_message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        state.maintenance_in_progress = False
+
+
 def create_app(state: BackendState | None = None) -> FastAPI:
     """Create the public backend app."""
     app = FastAPI(title="HeyBlog Backend Service", version="0.1.0")
@@ -67,6 +120,15 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     def get_state() -> BackendState:
         return app.state.backend_state
+
+    def ensure_runtime_idle(*, retries: int = 20, delay_seconds: float = 0.1) -> dict[str, Any]:
+        last_runtime = get_state().crawler.runtime_status()
+        for _ in range(retries):
+            if last_runtime.get("runner_status") == "idle":
+                return last_runtime
+            sleep(delay_seconds)
+            last_runtime = get_state().crawler.runtime_status()
+        raise HTTPException(status_code=409, detail="crawler_stop_timeout")
 
     @app.get("/")
     def root() -> dict[str, str]:
@@ -316,9 +378,85 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
+    @app.post("/api/admin/blog-dedup-scans")
+    def run_blog_dedup_scan() -> dict[str, Any]:
+        state = get_state()
+        if state.maintenance_in_progress:
+            raise HTTPException(status_code=409, detail="maintenance_in_progress")
+
+        runtime_before = state.crawler.runtime_status()
+        crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
+        state.maintenance_in_progress = True
+        try:
+            if crawler_was_running:
+                state.crawler.stop()
+                ensure_runtime_idle()
+            payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", "upstream_error")
+            except Exception:  # noqa: BLE001
+                detail = "upstream_error"
+            state.maintenance_in_progress = False
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        except HTTPException as exc:
+            state.maintenance_in_progress = False
+            raise
+        except Exception as exc:  # noqa: BLE001
+            state.maintenance_in_progress = False
+            raise HTTPException(status_code=500, detail="blog_dedup_scan_failed") from exc
+        Thread(
+            target=_execute_blog_dedup_scan_in_background,
+            kwargs={
+                "state": state,
+                "run_id": int(payload["id"]),
+                "crawler_was_running": crawler_was_running,
+            },
+            daemon=True,
+        ).start()
+        return payload
+
+    @app.get("/api/admin/blog-dedup-scans/latest")
+    def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
+        try:
+            return get_state().persistence.latest_blog_dedup_scan_run()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-dedup-scans/{run_id}")
+    def get_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
+        try:
+            return get_state().persistence.get_blog_dedup_scan_run(run_id)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
+    def get_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_blog_dedup_scan_run_items(run_id)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
     @app.get("/api/runtime/status")
     def runtime_status() -> dict[str, Any]:
-        return get_state().crawler.runtime_status()
+        payload = get_state().crawler.runtime_status()
+        payload["maintenance_in_progress"] = bool(get_state().maintenance_in_progress)
+        return payload
 
     @app.get("/api/runtime/current")
     def runtime_current() -> dict[str, Any]:
@@ -326,6 +464,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.post("/api/runtime/start")
     def runtime_start() -> dict[str, Any]:
+        _raise_for_maintenance(get_state())
         return get_state().crawler.start()
 
     @app.post("/api/runtime/stop")
@@ -334,6 +473,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.post("/api/runtime/run-batch")
     def runtime_run_batch(payload: RunBatchRequest) -> dict[str, Any]:
+        _raise_for_maintenance(get_state())
         result = get_state().crawler.run_batch(payload.max_nodes)
         try:
             get_state().search.reindex()

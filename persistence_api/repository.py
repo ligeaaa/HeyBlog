@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC, datetime
+import json
 from math import ceil
 from pathlib import Path
 from secrets import token_urlsafe
@@ -31,10 +32,14 @@ from persistence_api.models import Base
 from persistence_api.models import BlogLabelAssignmentModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
+from persistence_api.models import BlogDedupScanRunItemModel
+from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
+from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
 from crawler.crawling.normalization import normalize_url
+from crawler.crawling.normalization import resolve_blog_identity
 from shared.contracts.enums import CrawlStatus
 
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
@@ -93,6 +98,22 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _dump_reason_codes(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=True)
+
+
+def _load_reason_codes(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload]
+
+
 def normalize_ingestion_email(email: str) -> str:
     """Normalize and validate one user-supplied contact email."""
     normalized = email.strip().lower()
@@ -101,13 +122,20 @@ def normalize_ingestion_email(email: str) -> str:
     return normalized
 
 
-def normalize_homepage_url(homepage_url: str) -> tuple[str, str, str]:
+def normalize_homepage_url(homepage_url: str) -> tuple[str, str, str, str, list[str], str]:
     """Normalize one homepage URL and reject obviously invalid inputs."""
-    normalized = normalize_url(homepage_url)
-    parsed = urlparse(normalized.normalized_url)
+    identity = resolve_blog_identity(homepage_url)
+    parsed = urlparse(identity.normalized_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Unsupported homepage URL")
-    return homepage_url.strip(), normalized.normalized_url, normalized.domain
+    return (
+        homepage_url.strip(),
+        identity.normalized_url,
+        identity.domain,
+        identity.identity_key,
+        identity.reason_codes,
+        identity.ruleset_version,
+    )
 
 
 def _normalize_catalog_text(value: str | None) -> str | None:
@@ -251,6 +279,9 @@ def _blog_payload(
         "id": int(model.id),
         "url": model.url,
         "normalized_url": model.normalized_url,
+        "identity_key": model.identity_key,
+        "identity_reason_codes": _load_reason_codes(model.identity_reason_codes),
+        "identity_ruleset_version": model.identity_ruleset_version,
         "domain": model.domain,
         "email": model.email,
         "title": resolved_title,
@@ -330,6 +361,9 @@ def _ingestion_request_payload(
         "request_id": int(model.id),
         "requested_url": model.requested_url,
         "normalized_url": model.normalized_url,
+        "identity_key": model.identity_key,
+        "identity_reason_codes": _load_reason_codes(model.identity_reason_codes),
+        "identity_ruleset_version": model.identity_ruleset_version,
         "email": model.requester_email,
         "status": model.status,
         "priority": int(model.priority),
@@ -354,6 +388,45 @@ def _blog_label_tag_payload(model: BlogLabelTagModel) -> dict[str, Any]:
         "slug": model.slug,
         "created_at": _iso(model.created_at),
         "updated_at": _iso(model.updated_at),
+    }
+
+
+def _blog_dedup_scan_run_payload(model: BlogDedupScanRunModel) -> dict[str, Any]:
+    return {
+        "id": int(model.id),
+        "status": model.status,
+        "ruleset_version": model.ruleset_version,
+        "started_at": _iso(model.started_at),
+        "completed_at": _iso(model.completed_at),
+        "duration_ms": int(model.duration_ms),
+        "total_count": int(model.total_count),
+        "scanned_count": int(model.scanned_count),
+        "removed_count": int(model.removed_count),
+        "kept_count": int(model.kept_count),
+        "crawler_was_running": bool(model.crawler_was_running),
+        "crawler_restart_attempted": bool(model.crawler_restart_attempted),
+        "crawler_restart_succeeded": bool(model.crawler_restart_succeeded),
+        "search_reindexed": bool(model.search_reindexed),
+        "error_message": model.error_message,
+        "created_at": _iso(model.created_at),
+        "updated_at": _iso(model.updated_at),
+    }
+
+
+def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[str, Any]:
+    return {
+        "id": int(model.id),
+        "run_id": int(model.run_id),
+        "survivor_blog_id": int(model.survivor_blog_id) if model.survivor_blog_id is not None else None,
+        "removed_blog_id": int(model.removed_blog_id) if model.removed_blog_id is not None else None,
+        "survivor_identity_key": model.survivor_identity_key,
+        "removed_url": model.removed_url,
+        "removed_normalized_url": model.removed_normalized_url,
+        "removed_domain": model.removed_domain,
+        "reason_code": model.reason_code,
+        "reason_codes": _load_reason_codes(model.reason_codes),
+        "survivor_selection_basis": model.survivor_selection_basis,
+        "created_at": _iso(model.created_at),
     }
 
 
@@ -498,6 +571,28 @@ class RepositoryProtocol(Protocol):
 
     def stats(self) -> dict[str, Any]: ...
 
+    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
+
+    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]: ...
+
+    def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
+
+    def finalize_blog_dedup_scan_run(
+        self,
+        *,
+        run_id: int,
+        crawler_restart_attempted: bool,
+        crawler_restart_succeeded: bool,
+        search_reindexed: bool,
+        error_message: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None: ...
+
+    def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, Any] | None: ...
+
+    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]: ...
+
     def reset(self) -> dict[str, Any]: ...
 
 
@@ -540,10 +635,52 @@ class SQLAlchemyRepository:
     def _ensure_schema(self) -> None:
         inspector = inspect(self.engine)
         blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
+        ingestion_columns = {column["name"] for column in inspector.get_columns("ingestion_requests")}
         existing_tables = set(inspector.get_table_names())
         with self.engine.begin() as connection:
             if "email" not in blog_columns:
                 connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
+            if "identity_key" not in blog_columns:
+                connection.execute(text("ALTER TABLE blogs ADD COLUMN identity_key TEXT"))
+            if "identity_reason_codes" not in blog_columns:
+                connection.execute(
+                    text("ALTER TABLE blogs ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL")
+                )
+            if "identity_ruleset_version" not in blog_columns:
+                connection.execute(
+                    text("ALTER TABLE blogs ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL")
+                )
+            if "identity_key" not in ingestion_columns:
+                connection.execute(text("ALTER TABLE ingestion_requests ADD COLUMN identity_key TEXT"))
+            if "identity_reason_codes" not in ingestion_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE ingestion_requests ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL"
+                    )
+                )
+            if "identity_ruleset_version" not in ingestion_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE ingestion_requests ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL"
+                    )
+                )
+            if "blog_dedup_scan_runs" in existing_tables:
+                run_columns = {column["name"] for column in inspector.get_columns("blog_dedup_scan_runs")}
+                if "total_count" not in run_columns:
+                    connection.execute(
+                        text("ALTER TABLE blog_dedup_scan_runs ADD COLUMN total_count INTEGER DEFAULT 0 NOT NULL")
+                    )
+            if "ix_blogs_identity_key" not in {index["name"] for index in inspector.get_indexes("blogs")}:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_blogs_identity_key ON blogs (identity_key)"))
+            if "ix_ingestion_requests_identity_key" not in {
+                index["name"] for index in inspector.get_indexes("ingestion_requests")
+            }:
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_ingestion_requests_identity_key "
+                        "ON ingestion_requests (identity_key)"
+                    )
+                )
             if "blog_link_labels" in existing_tables and "blog_label_tags" in existing_tables and "blog_label_assignments" in existing_tables:
                 old_columns = {column["name"] for column in inspector.get_columns("blog_link_labels")}
                 if {"blog_id", "label"}.issubset(old_columns):
@@ -590,6 +727,44 @@ class SQLAlchemyRepository:
                                     "updated_at": row["updated_at"] or now_utc(),
                                 },
                             )
+            blog_rows = connection.execute(
+                text("SELECT id, url, normalized_url FROM blogs")
+            ).mappings().all()
+            for row in blog_rows:
+                identity = resolve_blog_identity(str(row["url"]) or str(row["normalized_url"]))
+                connection.execute(
+                    text(
+                        "UPDATE blogs SET identity_key = :identity_key, identity_reason_codes = :reason_codes, "
+                        "identity_ruleset_version = :ruleset_version "
+                        "WHERE id = :blog_id AND "
+                        "(identity_key IS NULL OR identity_key = '' OR identity_ruleset_version = '')"
+                    ),
+                    {
+                        "blog_id": row["id"],
+                        "identity_key": identity.identity_key,
+                        "reason_codes": _dump_reason_codes(identity.reason_codes),
+                        "ruleset_version": identity.ruleset_version,
+                    },
+                )
+            ingestion_rows = connection.execute(
+                text("SELECT id, requested_url, normalized_url FROM ingestion_requests")
+            ).mappings().all()
+            for row in ingestion_rows:
+                identity = resolve_blog_identity(str(row["requested_url"]) or str(row["normalized_url"]))
+                connection.execute(
+                    text(
+                        "UPDATE ingestion_requests SET identity_key = :identity_key, "
+                        "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version "
+                        "WHERE id = :request_id AND "
+                        "(identity_key IS NULL OR identity_key = '' OR identity_ruleset_version = '')"
+                    ),
+                    {
+                        "request_id": row["id"],
+                        "identity_key": identity.identity_key,
+                        "reason_codes": _dump_reason_codes(identity.reason_codes),
+                        "ruleset_version": identity.ruleset_version,
+                    },
+                )
 
     def _blog_labeling_select(self) -> tuple[Any, dict[str, Any]]:
         statement, metrics = self._blog_select()
@@ -686,6 +861,31 @@ class SQLAlchemyRepository:
         )
         return _ingestion_request_payload(request, seed_blog=seed_blog, matched_blog=matched_blog)
 
+    def _resolve_identity_from_blog_fields(
+        self,
+        *,
+        url: str,
+        normalized_url: str,
+    ) -> tuple[str, list[str], str]:
+        identity = resolve_blog_identity(url or normalized_url)
+        return identity.identity_key, identity.reason_codes, identity.ruleset_version
+
+    def _select_survivor(self, blogs: list[BlogModel]) -> tuple[BlogModel, str]:
+        ranked = sorted(
+            blogs,
+            key=lambda blog: (
+                len((blog.normalized_url or "").strip()),
+                blog.created_at or now_utc(),
+                int(blog.id),
+            ),
+        )
+        survivor = ranked[0]
+        basis_parts = [f"normalized_url_length={len((survivor.normalized_url or '').strip())}"]
+        basis_parts.append(f"normalized_url={survivor.normalized_url}")
+        basis_parts.append(f"created_at={_iso(survivor.created_at)}")
+        basis_parts.append(f"id={int(survivor.id)}")
+        return survivor, ", ".join(basis_parts)
+
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
     ) -> None:
@@ -700,19 +900,34 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
     ) -> tuple[int, bool]:
+        identity_key, reason_codes, ruleset_version = self._resolve_identity_from_blog_fields(
+            url=url,
+            normalized_url=normalized_url,
+        )
         with session_scope(self.session_factory) as session:
             existing = session.scalar(
-                select(BlogModel).where(BlogModel.normalized_url == normalized_url)
+                select(BlogModel).where(
+                    or_(
+                        BlogModel.normalized_url == normalized_url,
+                        BlogModel.identity_key == identity_key,
+                    )
+                )
             )
             if existing is not None:
                 if email is not None and not (existing.email or "").strip():
                     existing.email = email
-                    existing.updated_at = now_utc()
+                existing.identity_key = identity_key
+                existing.identity_reason_codes = _dump_reason_codes(reason_codes)
+                existing.identity_ruleset_version = ruleset_version
+                existing.updated_at = now_utc()
                 return int(existing.id), False
 
             blog = BlogModel(
                 url=url,
                 normalized_url=normalized_url,
+                identity_key=identity_key,
+                identity_reason_codes=_dump_reason_codes(reason_codes),
+                identity_ruleset_version=ruleset_version,
                 domain=domain,
                 email=email,
                 crawl_status=CrawlStatus.WAITING,
@@ -725,14 +940,20 @@ class SQLAlchemyRepository:
             return int(blog.id), True
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
-        requested_url, normalized_url, domain = normalize_homepage_url(homepage_url)
+        requested_url, normalized_url, domain, identity_key, reason_codes, ruleset_version = normalize_homepage_url(
+            homepage_url
+        )
         normalized_email = normalize_ingestion_email(email)
         with session_scope(self.session_factory) as session:
             existing_blog = session.scalar(
-                select(BlogModel).where(BlogModel.normalized_url == normalized_url)
+                select(BlogModel).where(BlogModel.identity_key == identity_key)
             )
             if existing_blog is not None and not (existing_blog.email or "").strip():
                 existing_blog.email = normalized_email
+            if existing_blog is not None:
+                existing_blog.identity_key = identity_key
+                existing_blog.identity_reason_codes = _dump_reason_codes(reason_codes)
+                existing_blog.identity_ruleset_version = ruleset_version
                 existing_blog.updated_at = now_utc()
 
             if existing_blog is not None and existing_blog.crawl_status == CrawlStatus.FINISHED:
@@ -746,18 +967,29 @@ class SQLAlchemyRepository:
                 }
 
             existing_request = session.scalar(
-                select(IngestionRequestModel).where(IngestionRequestModel.normalized_url == normalized_url)
+                select(IngestionRequestModel)
+                .where(
+                    IngestionRequestModel.identity_key == identity_key,
+                    IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
+                )
+                .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
             )
             if existing_request is not None:
                 if not (existing_request.requester_email or "").strip():
                     existing_request.requester_email = normalized_email
-                    existing_request.updated_at = now_utc()
+                existing_request.identity_key = identity_key
+                existing_request.identity_reason_codes = _dump_reason_codes(reason_codes)
+                existing_request.identity_ruleset_version = ruleset_version
+                existing_request.updated_at = now_utc()
                 return self._ingestion_request_row_payload(session, existing_request)
 
             if existing_blog is None:
                 existing_blog = BlogModel(
                     url=requested_url,
                     normalized_url=normalized_url,
+                    identity_key=identity_key,
+                    identity_reason_codes=_dump_reason_codes(reason_codes),
+                    identity_ruleset_version=ruleset_version,
                     domain=domain,
                     email=normalized_email,
                     crawl_status=CrawlStatus.WAITING,
@@ -779,6 +1011,9 @@ class SQLAlchemyRepository:
             request = IngestionRequestModel(
                 requested_url=requested_url,
                 normalized_url=normalized_url,
+                identity_key=identity_key,
+                identity_reason_codes=_dump_reason_codes(reason_codes),
+                identity_ruleset_version=ruleset_version,
                 requester_email=normalized_email,
                 status=request_status,
                 priority=100,
@@ -1341,6 +1576,230 @@ class SQLAlchemyRepository:
                 "finished_tasks": int(status_counts.get(CrawlStatus.FINISHED.value, 0)),
             }
 
+    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        started_at = now_utc()
+        with session_scope(self.session_factory) as session:
+            total_count = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
+            run = BlogDedupScanRunModel(
+                status="RUNNING",
+                ruleset_version=IDENTITY_RULESET_VERSION,
+                started_at=started_at,
+                completed_at=None,
+                duration_ms=0,
+                total_count=total_count,
+                scanned_count=0,
+                removed_count=0,
+                kept_count=0,
+                crawler_was_running=crawler_was_running,
+                crawler_restart_attempted=False,
+                crawler_restart_succeeded=False,
+                search_reindexed=False,
+                error_message=None,
+                created_at=started_at,
+                updated_at=started_at,
+            )
+            session.add(run)
+            session.flush()
+            return _blog_dedup_scan_run_payload(run)
+
+    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
+        started_at = now_utc()
+        groups: list[list[int]] = []
+        try:
+            with session_scope(self.session_factory) as session:
+                run = session.get(BlogDedupScanRunModel, run_id)
+                if run is None:
+                    raise ValueError("blog_dedup_scan_run_not_found")
+                run.status = "RUNNING"
+                run.started_at = run.started_at or started_at
+                run.completed_at = None
+                run.duration_ms = 0
+                run.scanned_count = 0
+                run.removed_count = 0
+                run.kept_count = 0
+                run.error_message = None
+                run.updated_at = started_at
+
+                blogs = session.scalars(select(BlogModel).order_by(BlogModel.id.asc())).all()
+                run.total_count = len(blogs)
+                groups_map: dict[str, list[int]] = {}
+                for blog in blogs:
+                    identity_key, reason_codes, ruleset_version = self._resolve_identity_from_blog_fields(
+                        url=blog.url,
+                        normalized_url=blog.normalized_url,
+                    )
+                    blog.identity_key = identity_key
+                    blog.identity_reason_codes = _dump_reason_codes(reason_codes)
+                    blog.identity_ruleset_version = ruleset_version
+                    if not blog.domain:
+                        blog.domain = resolve_blog_identity(blog.url).domain
+                    groups_map.setdefault(identity_key, []).append(int(blog.id))
+
+                groups = list(groups_map.values())
+
+            scanned_count = 0
+            removed_count = 0
+            kept_count = 0
+            for group_ids in groups:
+                with session_scope(self.session_factory) as session:
+                    run = session.get(BlogDedupScanRunModel, run_id)
+                    if run is None:
+                        raise ValueError("blog_dedup_scan_run_not_found")
+                    blogs = session.scalars(
+                        select(BlogModel).where(BlogModel.id.in_(group_ids)).order_by(BlogModel.id.asc())
+                    ).all()
+                    if not blogs:
+                        continue
+
+                    kept_count += 1
+                    identity_key = blogs[0].identity_key
+                    if len(blogs) > 1:
+                        survivor, basis = self._select_survivor(blogs)
+                        for duplicate in blogs:
+                            if duplicate.id == survivor.id:
+                                continue
+                            removed_count += 1
+                            survivor.title = survivor.title or duplicate.title
+                            survivor.icon_url = survivor.icon_url or duplicate.icon_url
+                            survivor.email = survivor.email or duplicate.email
+                            survivor.status_code = survivor.status_code or duplicate.status_code
+                            survivor.friend_links_count = max(
+                                int(survivor.friend_links_count or 0),
+                                int(duplicate.friend_links_count or 0),
+                            )
+                            if survivor.last_crawled_at is None or (
+                                duplicate.last_crawled_at is not None
+                                and duplicate.last_crawled_at > survivor.last_crawled_at
+                            ):
+                                survivor.last_crawled_at = duplicate.last_crawled_at
+                            if (
+                                survivor.crawl_status != CrawlStatus.FINISHED
+                                and duplicate.crawl_status == CrawlStatus.FINISHED
+                            ):
+                                survivor.crawl_status = CrawlStatus.FINISHED
+                            if survivor.created_at > duplicate.created_at:
+                                survivor.created_at = duplicate.created_at
+                            survivor.updated_at = now_utc()
+
+                            session.query(EdgeModel).filter(
+                                or_(
+                                    EdgeModel.from_blog_id == duplicate.id,
+                                    EdgeModel.to_blog_id == duplicate.id,
+                                )
+                            ).delete(synchronize_session=False)
+                            session.query(BlogLabelAssignmentModel).filter(
+                                BlogLabelAssignmentModel.blog_id == duplicate.id
+                            ).delete(synchronize_session=False)
+                            session.query(IngestionRequestModel).filter(
+                                IngestionRequestModel.seed_blog_id == duplicate.id
+                            ).update({IngestionRequestModel.seed_blog_id: survivor.id})
+                            session.query(IngestionRequestModel).filter(
+                                IngestionRequestModel.matched_blog_id == duplicate.id
+                            ).update({IngestionRequestModel.matched_blog_id: survivor.id})
+
+                            duplicate_reason_codes = _load_reason_codes(duplicate.identity_reason_codes)
+                            session.add(
+                                BlogDedupScanRunItemModel(
+                                    run_id=int(run.id),
+                                    survivor_blog_id=int(survivor.id),
+                                    removed_blog_id=int(duplicate.id),
+                                    survivor_identity_key=identity_key,
+                                    removed_url=duplicate.url,
+                                    removed_normalized_url=duplicate.normalized_url,
+                                    removed_domain=duplicate.domain,
+                                    reason_code=(
+                                        duplicate_reason_codes[0]
+                                        if duplicate_reason_codes
+                                        else "identity_key_match"
+                                    ),
+                                    reason_codes=_dump_reason_codes(duplicate_reason_codes),
+                                    survivor_selection_basis=basis,
+                                    created_at=now_utc(),
+                                )
+                            )
+                            session.delete(duplicate)
+
+                    scanned_count += len(group_ids)
+                    completed_so_far = now_utc()
+                    run.scanned_count = scanned_count
+                    run.removed_count = removed_count
+                    run.kept_count = kept_count
+                    run.duration_ms = max(int((completed_so_far - started_at).total_seconds() * 1000), 0)
+                    run.updated_at = completed_so_far
+
+            with session_scope(self.session_factory) as session:
+                run = session.get(BlogDedupScanRunModel, run_id)
+                if run is None:
+                    raise ValueError("blog_dedup_scan_run_not_found")
+                completed_at = now_utc()
+                run.status = "SUCCEEDED"
+                run.completed_at = completed_at
+                run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
+                run.scanned_count = scanned_count
+                run.removed_count = removed_count
+                run.kept_count = kept_count
+                run.updated_at = completed_at
+                session.flush()
+                return _blog_dedup_scan_run_payload(run)
+        except Exception as exc:
+            with session_scope(self.session_factory) as session:
+                run = session.get(BlogDedupScanRunModel, run_id)
+                if run is not None:
+                    completed_at = now_utc()
+                    run.status = "FAILED"
+                    run.completed_at = completed_at
+                    run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
+                    run.error_message = str(exc)
+                    run.updated_at = completed_at
+            raise
+
+    def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        run = self.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+        return self.execute_blog_dedup_scan_run(run_id=int(run["id"]))
+
+    def finalize_blog_dedup_scan_run(
+        self,
+        *,
+        run_id: int,
+        crawler_restart_attempted: bool,
+        crawler_restart_succeeded: bool,
+        search_reindexed: bool,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        with session_scope(self.session_factory) as session:
+            run = session.get(BlogDedupScanRunModel, run_id)
+            if run is None:
+                raise ValueError("blog_dedup_scan_run_not_found")
+            run.crawler_restart_attempted = crawler_restart_attempted
+            run.crawler_restart_succeeded = crawler_restart_succeeded
+            run.search_reindexed = search_reindexed
+            if error_message:
+                run.error_message = error_message
+            run.updated_at = now_utc()
+            session.flush()
+            return _blog_dedup_scan_run_payload(run)
+
+    def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None:
+        with session_scope(self.session_factory) as session:
+            row = session.scalar(
+                select(BlogDedupScanRunModel).order_by(BlogDedupScanRunModel.id.desc()).limit(1)
+            )
+            return _blog_dedup_scan_run_payload(row) if row is not None else None
+
+    def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, Any] | None:
+        with session_scope(self.session_factory) as session:
+            row = session.get(BlogDedupScanRunModel, run_id)
+            return _blog_dedup_scan_run_payload(row) if row is not None else None
+
+    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
+        with session_scope(self.session_factory) as session:
+            rows = session.scalars(
+                select(BlogDedupScanRunItemModel)
+                .where(BlogDedupScanRunItemModel.run_id == run_id)
+                .order_by(BlogDedupScanRunItemModel.id.asc())
+            ).all()
+            return [_blog_dedup_scan_run_item_payload(row) for row in rows]
+
     def reset(self) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
             blogs_deleted = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
@@ -1348,14 +1807,23 @@ class SQLAlchemyRepository:
             requests_deleted = int(session.scalar(select(func.count()).select_from(IngestionRequestModel)) or 0)
             labels_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelAssignmentModel)) or 0)
             tag_defs_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelTagModel)) or 0)
+            scan_items_deleted = int(
+                session.scalar(select(func.count()).select_from(BlogDedupScanRunItemModel)) or 0
+            )
+            scan_runs_deleted = int(
+                session.scalar(select(func.count()).select_from(BlogDedupScanRunModel)) or 0
+            )
             if self.dialect_name == "postgresql":
                 session.execute(
                     text(
-                        "TRUNCATE TABLE blog_label_assignments, blog_label_tags, ingestion_requests, edges, blogs "
+                        "TRUNCATE TABLE blog_dedup_scan_run_items, blog_dedup_scan_runs, "
+                        "blog_label_assignments, blog_label_tags, ingestion_requests, edges, blogs "
                         "RESTART IDENTITY CASCADE"
                     )
                 )
             else:
+                session.query(BlogDedupScanRunItemModel).delete()
+                session.query(BlogDedupScanRunModel).delete()
                 session.query(BlogLabelAssignmentModel).delete()
                 session.query(BlogLabelTagModel).delete()
                 session.query(IngestionRequestModel).delete()
@@ -1369,6 +1837,8 @@ class SQLAlchemyRepository:
                 "ingestion_requests_deleted": requests_deleted,
                 "blog_link_labels_deleted": labels_deleted,
                 "blog_label_tags_deleted": tag_defs_deleted,
+                "blog_dedup_scan_items_deleted": scan_items_deleted,
+                "blog_dedup_scan_runs_deleted": scan_runs_deleted,
             }
 
 

@@ -27,7 +27,12 @@ class FetchAttempt:
 class FetchingStrategy(Protocol):
     """Fetch one or more URLs for the crawler pipeline."""
 
-    def fetch(self, url: str) -> FetchResult: ...
+    def fetch(self, url: str, *, timeout_seconds: float | None = None) -> FetchResult: ...
 
-    def fetch_many(self, urls: list[str], *, max_concurrency: int) -> dict[str, FetchAttempt]: ...
-
+    def fetch_many(
+        self,
+        urls: list[str],
+        *,
+        max_concurrency: int,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, FetchAttempt]: ...

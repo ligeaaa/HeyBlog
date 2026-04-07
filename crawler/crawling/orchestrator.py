@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from time import monotonic
+
 from crawler.contracts.results import BlogCrawlResult
 from crawler.crawling.decisions.chain import UrlDecisionChain
 from crawler.crawling.discovery import discover_friend_links_pages
@@ -42,10 +44,19 @@ class CrawlOrchestrator:
     def crawl_blog(self, blog: dict[str, object]) -> int:
         """Crawl one blog and persist outgoing blog links."""
         blog_record = BlogNode.from_row(blog)
-        homepage = self.fetcher.fetch(blog_record.url)
+        deadline = monotonic() + self.settings.blog_crawl_timeout_seconds
+        homepage = self.fetcher.fetch(
+            blog_record.url,
+            timeout_seconds=self._remaining_timeout_seconds(deadline, blog_record.url),
+        )
         metadata = extract_site_metadata(homepage.url, homepage.text)
         candidate_pages = self._discover_candidate_pages(homepage)
-        discovered_count = self._crawl_candidate_pages(blog_record, candidate_pages)
+        discovered_count = self._crawl_candidate_pages(
+            blog_record,
+            candidate_pages,
+            deadline=deadline,
+        )
+        self._remaining_timeout_seconds(deadline, blog_record.url)
         self._mark_blog_finished(
             blog_record,
             BlogCrawlResult(
@@ -61,13 +72,20 @@ class CrawlOrchestrator:
         """Return the candidate friend-link pages to visit for one homepage."""
         return unique_in_order(discover_friend_links_pages(homepage.url, homepage.text))
 
-    def _crawl_candidate_pages(self, blog: BlogNode, candidate_pages: list[str]) -> int:
+    def _crawl_candidate_pages(
+        self,
+        blog: BlogNode,
+        candidate_pages: list[str],
+        *,
+        deadline: float,
+    ) -> int:
         """Fetch each candidate page and persist accepted child links."""
         discovered_count = 0
         seen_normalized: set[str] = set()
-        page_attempts = self._fetch_candidate_pages(candidate_pages)
+        page_attempts = self._fetch_candidate_pages(candidate_pages, deadline=deadline, blog_url=blog.url)
 
         for page_url in candidate_pages:
+            self._remaining_timeout_seconds(deadline, blog.url)
             page_attempt = page_attempts.get(page_url)
             if page_attempt is None or page_attempt.result is None:
                 continue
@@ -79,13 +97,20 @@ class CrawlOrchestrator:
 
         return discovered_count
 
-    def _fetch_candidate_pages(self, candidate_pages: list[str]) -> dict[str, FetchAttempt]:
+    def _fetch_candidate_pages(
+        self,
+        candidate_pages: list[str],
+        *,
+        deadline: float,
+        blog_url: str,
+    ) -> dict[str, FetchAttempt]:
         """Fetch candidate pages while preserving the original candidate ordering contract."""
         if not candidate_pages:
             return {}
         return self.fetcher.fetch_many(
             candidate_pages,
             max_concurrency=self.settings.candidate_page_fetch_concurrency,
+            timeout_seconds=self._remaining_timeout_seconds(deadline, blog_url),
         )
 
     def _store_page_links(
@@ -158,3 +183,12 @@ class CrawlOrchestrator:
             icon_url=state.icon_url,
         )
         self.logger.crawl_success(blog_id=blog.id, blog_url=blog.url)
+
+    def _remaining_timeout_seconds(self, deadline: float, blog_url: str) -> float:
+        """Return the remaining crawl budget or raise once the per-blog deadline is exhausted."""
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"blog crawl timed out after {self.settings.blog_crawl_timeout_seconds:g} seconds: {blog_url}"
+            )
+        return remaining

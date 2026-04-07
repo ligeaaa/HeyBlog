@@ -88,6 +88,10 @@
 - `GET /api/search`
 - `POST /api/ingestion-requests`
 - `GET /api/ingestion-requests/{request_id}`
+- `POST /api/admin/blog-dedup-scans`
+- `GET /api/admin/blog-dedup-scans/latest`
+- `GET /api/admin/blog-dedup-scans/{run_id}`
+- `GET /api/admin/blog-dedup-scans/{run_id}/items`
 - `GET /api/runtime/status`
 - `GET /api/runtime/current`
 - `POST /api/runtime/start`
@@ -102,6 +106,7 @@
 - 浏览器实际访问的是 `frontend` 服务。
 - [frontend/server.py](../frontend/server.py) 会把 `/api/*` 代理到 `backend`。
 - 因此“公共 API 由 backend 提供”与“浏览器经 frontend 访问 API”这两件事同时成立。
+- blog 规则重扫接口同样由 `frontend -> backend` 访问，但实际归并动作发生在 persistence 层。
 
 ### 2.2 内部服务 API
 
@@ -672,7 +677,8 @@
 补充说明：
 
 - 后端会先做 URL normalize 与 email 基础校验
-- 同一 `normalized_url` 的活跃请求会复用，而不是重复创建 crawl
+- 当前去重主键已经扩展为 `identity_key`；它会忽略 `http/https`、主页默认首页路径、`www.`，以及白名单博客别名子域（如 `blog.`）
+- 活跃请求会按 `identity_key + ACTIVE_INGESTION_REQUEST_STATUSES` 复用，而不是重复创建 crawl
 - `request_token` 是无账号体系下查询请求状态所需的轻量凭证
 
 #### `GET /api/ingestion-requests/{request_id}?request_token=...`
@@ -745,6 +751,60 @@
 
 ### 3.6 数据维护接口
 
+#### `POST /api/admin/blog-dedup-scans`
+
+用途：管理员手动触发一次基于当前 `identity_key` 规则的全库 blog 归并扫描。
+
+行为说明：
+
+- backend 会先读取 crawler runtime；若扫描前 crawler 正在运行，则先停爬并等待 `idle`
+- 扫描期间 backend 会打开 `maintenance_in_progress` 维护锁
+- `POST` 请求现在只负责创建一个 `RUNNING` scan run 并启动后台任务，因此前端会立刻收到可轮询的 run 摘要
+- 维护窗口内新的 `POST /api/runtime/start` 与 `POST /api/runtime/run-batch` 会返回 `409 maintenance_in_progress`
+- persistence 负责重算 `identity_key`、选择 survivor，并直接删除被合并 blog 相关的 edge 与标签关联；`ingestion_request` 关联会保持不悬挂，并把 run summary 与 removed items 落库
+- 当前 survivor 规则为：同一 `identity_key` 分组内优先保留 `normalized_url` 最短的 blog；若长度相同，再按 `created_at`、`id` 打破平局
+- 扫描成功后 backend 会尝试调用 search reindex
+- 若扫描前 crawler 原本在运行，backend 会在结束后尝试恢复 crawler，并把恢复结果写回 run summary
+- 前端可通过 `GET /api/admin/blog-dedup-scans/latest` 或 `GET /api/admin/blog-dedup-scans/{run_id}` 轮询实时进度，其中 `scanned_count / total_count` 表示“已扫描节点 / 总共节点”
+
+返回字段重点包括：
+
+- `id`
+- `status`
+- `ruleset_version`
+- `total_count`
+- `scanned_count`
+- `removed_count`
+- `kept_count`
+- `crawler_was_running`
+- `crawler_restart_attempted`
+- `crawler_restart_succeeded`
+- `search_reindexed`
+- `error_message`
+- `started_at` / `completed_at` / `duration_ms`
+
+#### `GET /api/admin/blog-dedup-scans/latest`
+
+用途：返回最近一次扫描摘要。
+
+#### `GET /api/admin/blog-dedup-scans/{run_id}`
+
+用途：返回指定扫描 run 的摘要。
+
+#### `GET /api/admin/blog-dedup-scans/{run_id}/items`
+
+用途：返回该次扫描中被移除 blog 的明细与原因。
+
+每条 item 至少包含：
+
+- `survivor_blog_id`
+- `removed_blog_id`
+- `survivor_identity_key`
+- `removed_url`
+- `reason_code`
+- `reason_codes`
+- `survivor_selection_basis`
+
 #### `POST /api/database/reset`
 
 用途：重置数据库中的 crawler 相关数据，便于测试和开发时快速回到初始状态。
@@ -783,6 +843,10 @@
 
 结构见“数据模型”中的 `RuntimeSnapshot`。
 
+补充字段：
+
+- `maintenance_in_progress`: backend 当前是否处于管理员维护窗口；为 `true` 时新的 runtime 启动与批处理请求会被拒绝
+
 #### `GET /api/runtime/current`
 
 用途：查看当前正在执行的 blog 简要信息。
@@ -815,6 +879,7 @@
 
 - 若当前已在 `starting/running/stopping`，直接返回当前快照
 - 成功启动后会创建新的 `active_run_id`
+- 若 backend 当前处于 blog dedup 维护窗口，返回 `409 maintenance_in_progress`
 
 #### `POST /api/runtime/stop`
 
@@ -828,6 +893,10 @@
 #### `POST /api/runtime/run-batch`
 
 用途：在运行器空闲时同步执行一批 crawl 任务。
+
+补充说明：
+
+- 若 backend 当前处于 blog dedup 维护窗口，返回 `409 maintenance_in_progress`
 
 请求体：
 
@@ -1014,6 +1083,7 @@
 补充说明：
 
 - 当前 `BlogRecord` 已包含可空的 `email` 字段，用于记录博主在自助优先录入时留下的联系邮箱
+- 当前 `BlogRecord` 同时包含 `identity_key`、`identity_reason_codes` 与 `identity_ruleset_version`
 
 ### `GET /internal/blogs/catalog`
 
@@ -1268,6 +1338,11 @@
 - 已收录时：`DEDUPED_EXISTING`
 - 新建或复用请求时：请求 payload，包含 `request_id`、`request_token`、`status`、`seed_blog_id`
 
+补充说明：
+
+- 去重与复用当前按 `identity_key` 执行，而不再只看 `normalized_url`
+- 返回 payload 会附带 `identity_key`、`identity_reason_codes` 与 `identity_ruleset_version`
+
 ### `GET /internal/ingestion-requests/{request_id}`
 
 用途：通过 `request_id + request_token` 查询请求状态。
@@ -1279,6 +1354,42 @@
 ### `POST /internal/ingestion-requests/by-blog/{blog_id}/crawling`
 
 用途：当 crawler 真正开始处理某个 seed blog 时，把关联请求推进到 `CRAWLING_SEED`。
+
+### `POST /internal/blog-dedup-scans`
+
+用途：同步执行一次 persistence 侧全库规则重扫；主要保留给内部测试与兼容调用。
+
+查询参数：
+
+- `crawler_was_running`: backend 透传的预扫描 runtime 状态
+
+### `POST /internal/blog-dedup-scans/runs`
+
+用途：创建一个 `RUNNING` 的 dedup scan run，并立即返回初始摘要，供 backend 异步编排使用。
+
+查询参数：
+
+- `crawler_was_running`: backend 透传的预扫描 runtime 状态
+
+### `POST /internal/blog-dedup-scans/{run_id}/execute`
+
+用途：执行指定 run 的 persistence 侧规则重扫逻辑，并在执行过程中持续更新 `total_count`、`scanned_count`、`removed_count`、`kept_count`。
+
+### `POST /internal/blog-dedup-scans/{run_id}/finalize`
+
+用途：由 backend 在扫描编排完成后回写 crawler 恢复和 search reindex 结果。
+
+### `GET /internal/blog-dedup-scans/latest`
+
+用途：返回最近一次 run summary。
+
+### `GET /internal/blog-dedup-scans/{run_id}`
+
+用途：返回指定 run summary。
+
+### `GET /internal/blog-dedup-scans/{run_id}/items`
+
+用途：返回指定 run 的 removed item 明细。
 
 ## 5. 数据模型整理
 
@@ -1297,7 +1408,10 @@
 | --- | --- | --- |
 | `id` | `number` | blog 主键 |
 | `url` | `string` | 原始 URL |
-| `normalized_url` | `string` | 归一化 URL，唯一键 |
+| `normalized_url` | `string` | 归一化 URL，用于抓取与展示 |
+| `identity_key` | `string` | blog 身份键，例如 `site:langhai.cc/` |
+| `identity_reason_codes` | `string[]` | 当前 identity 解析命中的原因码 |
+| `identity_ruleset_version` | `string` | 解析该 identity 时使用的规则版本 |
 | `domain` | `string` | 域名 |
 | `email` | `string \| null` | 博主联系邮箱；仅在用户自助优先录入时写入，默认 `null` |
 | `title` | `string \| null` | 站点主页解析出的 `<title>`，缺失时为 `null` |
@@ -1356,6 +1470,9 @@
 | `id` / `request_id` | `number` | 请求主键 |
 | `requested_url` | `string` | 用户提交的原始首页 URL |
 | `normalized_url` | `string` | 归一化后的 URL |
+| `identity_key` | `string` | 当前请求命中的 blog 身份键 |
+| `identity_reason_codes` | `string[]` | 当前 identity 解析原因码 |
+| `identity_ruleset_version` | `string` | 当前 identity 规则版本 |
 | `email` | `string` | 用户提交的联系邮箱 |
 | `status` | `string` | 请求状态 |
 | `priority` | `number` | 当前固定优先级值 |
@@ -1423,6 +1540,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `runner_status` | `string` | 运行器状态，常见值有 `idle` `starting` `running` `stopping` `error` |
+| `maintenance_in_progress` | `boolean \| null` | backend 维护锁状态；存在且为 `true` 时表示管理员规则重扫正在进行 |
 | `active_run_id` | `string \| null` | 当前运行 ID |
 | `worker_count` | `number` | 当前 runtime 配置的 worker 数量 |
 | `active_workers` | `number` | 当前仍持有 blog 任务、尚未完成收尾的 worker 数量；在 `stopping` 期间也会计入 |

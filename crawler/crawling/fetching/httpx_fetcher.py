@@ -22,13 +22,22 @@ class Fetcher:
         }
         self.client = httpx.Client(**self._client_kwargs)
 
-    def fetch(self, url: str) -> FetchResult:
+    def fetch(self, url: str, *, timeout_seconds: float | None = None) -> FetchResult:
         """Fetch one URL and raise on non-success status codes."""
-        response = self.client.get(url)
+        request_kwargs: dict[str, Any] = {}
+        if timeout_seconds is not None:
+            request_kwargs["timeout"] = timeout_seconds
+        response = self.client.get(url, **request_kwargs)
         response.raise_for_status()
         return FetchResult(url=str(response.url), status_code=response.status_code, text=response.text)
 
-    def fetch_many(self, urls: list[str], *, max_concurrency: int) -> dict[str, FetchAttempt]:
+    def fetch_many(
+        self,
+        urls: list[str],
+        *,
+        max_concurrency: int,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, FetchAttempt]:
         """Fetch a batch of URLs while preserving the original request key space."""
         self._validate_fetch_many_inputs(urls, max_concurrency=max_concurrency)
         if not urls:
@@ -36,7 +45,13 @@ class Fetcher:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.fetch_many_async(urls, max_concurrency=max_concurrency))
+            return asyncio.run(
+                self.fetch_many_async(
+                    urls,
+                    max_concurrency=max_concurrency,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
         raise RuntimeError(
             "Fetcher.fetch_many() cannot be called from a running asyncio event loop. "
             "Use 'await fetch_many_async(...)' instead."
@@ -47,18 +62,24 @@ class Fetcher:
         urls: list[str],
         *,
         max_concurrency: int,
+        timeout_seconds: float | None = None,
     ) -> dict[str, FetchAttempt]:
         """Async batch-fetch entrypoint for callers already in an event loop."""
         self._validate_fetch_many_inputs(urls, max_concurrency=max_concurrency)
         if not urls:
             return {}
-        return await self._fetch_many_async(urls, max_concurrency=max_concurrency)
+        return await self._fetch_many_async(
+            urls,
+            max_concurrency=max_concurrency,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def _fetch_many_async(
         self,
         urls: list[str],
         *,
         max_concurrency: int,
+        timeout_seconds: float | None = None,
     ) -> dict[str, FetchAttempt]:
         """Fetch multiple URLs concurrently with the same HTTP contract as fetch()."""
         semaphore = asyncio.Semaphore(max_concurrency)
@@ -66,7 +87,10 @@ class Fetcher:
         async def fetch_one(client: httpx.AsyncClient, request_url: str) -> tuple[str, FetchAttempt]:
             async with semaphore:
                 try:
-                    response = await client.get(request_url)
+                    request_kwargs: dict[str, Any] = {}
+                    if timeout_seconds is not None:
+                        request_kwargs["timeout"] = timeout_seconds
+                    response = await client.get(request_url, **request_kwargs)
                     response.raise_for_status()
                 except httpx.InvalidURL:
                     return (request_url, FetchAttempt(request_url=request_url, result=None, error_kind="invalid_url"))
@@ -103,4 +127,3 @@ class Fetcher:
             raise ValueError("max_concurrency must be >= 1")
         if len(urls) != len(set(urls)):
             raise ValueError("fetch_many() requires unique request URLs")
-

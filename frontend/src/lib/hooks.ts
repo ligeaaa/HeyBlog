@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BlogCatalogPagePayload,
+  BlogDedupScanRunPayload,
+  BlogDedupScanRunItemPayload,
   BlogLabelTagRecord,
   BlogLabelingPagePayload,
   CreateBlogLabelTagPayload,
@@ -197,6 +199,41 @@ export function useStats() {
     queryKey: ["stats"],
     queryFn: api.stats,
     refetchInterval: 4000,
+  });
+}
+
+export function useLatestBlogDedupScanRun(options: QueryTuning = {}) {
+  return useQuery({
+    queryKey: ["blog-dedup-scan-latest"],
+    queryFn: api.latestBlogDedupScanRun,
+    enabled: options.enabled ?? true,
+    staleTime: options.staleTime ?? 0,
+    refetchInterval: options.refetchInterval ?? 1000,
+    retry: false,
+  });
+}
+
+export function useBlogDedupScanRunItems(runId: number | null, options: QueryTuning = {}) {
+  return useQuery({
+    queryKey: ["blog-dedup-scan-items", runId],
+    queryFn: () => api.blogDedupScanRunItems(runId as number),
+    enabled: (options.enabled ?? true) && runId != null,
+    staleTime: options.staleTime ?? 0,
+    refetchInterval: options.refetchInterval ?? false,
+    retry: false,
+  });
+}
+
+export function useRunBlogDedupScan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.runBlogDedupScan(),
+    onSuccess: async (payload: BlogDedupScanRunPayload) => {
+      queryClient.setQueryData(["blog-dedup-scan-latest"], payload);
+      await queryClient.invalidateQueries({ queryKey: ["blog-dedup-scan-latest"] });
+      await queryClient.invalidateQueries({ queryKey: ["blog-dedup-scan-items", payload.id] });
+      await queryClient.invalidateQueries({ queryKey: ["status"] });
+    },
   });
 }
 

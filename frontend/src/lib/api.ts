@@ -1,5 +1,6 @@
 export type RuntimeStatus = {
   runner_status: string;
+  maintenance_in_progress?: boolean;
   active_run_id: string | null;
   worker_count: number;
   active_workers: number;
@@ -37,6 +38,9 @@ export type BlogRecord = {
   id: number;
   url: string;
   normalized_url: string;
+  identity_key?: string;
+  identity_reason_codes?: string[];
+  identity_ruleset_version?: string;
   domain: string;
   email?: string | null;
   title: string | null;
@@ -243,6 +247,9 @@ export type IngestionRequestPayload = {
   request_id: number;
   requested_url: string;
   normalized_url: string;
+  identity_key?: string;
+  identity_reason_codes?: string[];
+  identity_ruleset_version?: string;
   email: string;
   status: string;
   priority: number;
@@ -304,6 +311,41 @@ export type ResetDatabasePayload = {
   search_reindexed: boolean;
   search: Record<string, unknown> | null;
   search_error?: string;
+};
+
+export type BlogDedupScanRunPayload = {
+  id: number;
+  status: string;
+  ruleset_version: string;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number;
+  total_count: number;
+  scanned_count: number;
+  removed_count: number;
+  kept_count: number;
+  crawler_was_running: boolean;
+  crawler_restart_attempted: boolean;
+  crawler_restart_succeeded: boolean;
+  search_reindexed: boolean;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type BlogDedupScanRunItemPayload = {
+  id: number;
+  run_id: number;
+  survivor_blog_id: number | null;
+  removed_blog_id: number | null;
+  survivor_identity_key: string;
+  removed_url: string;
+  removed_normalized_url: string;
+  removed_domain: string;
+  reason_code: string;
+  reason_codes: string[];
+  survivor_selection_basis: string;
+  created_at: string | null;
 };
 
 export class ApiError extends Error {
@@ -471,4 +513,12 @@ export const api = {
     }),
   bootstrap: () => request<Record<string, unknown>>("/api/crawl/bootstrap", { method: "POST" }),
   resetDatabase: () => request<ResetDatabasePayload>("/api/database/reset", { method: "POST" }),
+  runBlogDedupScan: () =>
+    request<BlogDedupScanRunPayload>("/api/admin/blog-dedup-scans", { method: "POST" }),
+  latestBlogDedupScanRun: () =>
+    request<BlogDedupScanRunPayload>("/api/admin/blog-dedup-scans/latest"),
+  blogDedupScanRun: (runId: number) =>
+    request<BlogDedupScanRunPayload>(`/api/admin/blog-dedup-scans/${runId}`),
+  blogDedupScanRunItems: (runId: number) =>
+    request<BlogDedupScanRunItemPayload[]>(`/api/admin/blog-dedup-scans/${runId}/items`),
 };

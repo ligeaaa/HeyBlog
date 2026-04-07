@@ -1,6 +1,7 @@
 """Tests for the split-service entrypoints."""
 
 from pathlib import Path
+from time import sleep
 
 import httpx
 from fastapi.testclient import TestClient
@@ -1051,6 +1052,218 @@ def test_backend_database_reset_requires_idle_runtime() -> None:
 
     assert reset.status_code == 409
     assert reset.json()["detail"] == "crawler_busy"
+
+
+def test_persistence_service_exposes_blog_dedup_scan_endpoints(tmp_path: Path) -> None:
+    """Persistence should expose scan summary and removed item endpoints."""
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    app = create_persistence_app(build_persistence_state(settings))
+    client = TestClient(app)
+
+    first = client.post(
+        "/internal/blogs/upsert",
+        json={
+            "url": "https://langhai.cc/",
+            "normalized_url": "https://langhai.cc/",
+            "domain": "langhai.cc",
+        },
+    )
+    assert first.status_code == 200
+
+    run = client.post("/internal/blog-dedup-scans", params={"crawler_was_running": "true"})
+    assert run.status_code == 200
+    assert run.json()["status"] == "SUCCEEDED"
+    assert run.json()["total_count"] == 1
+
+    latest = client.get("/internal/blog-dedup-scans/latest")
+    assert latest.status_code == 200
+    assert latest.json()["id"] == run.json()["id"]
+
+    by_id = client.get(f"/internal/blog-dedup-scans/{run.json()['id']}")
+    assert by_id.status_code == 200
+    assert by_id.json()["ruleset_version"] == run.json()["ruleset_version"]
+
+    items = client.get(f"/internal/blog-dedup-scans/{run.json()['id']}/items")
+    assert items.status_code == 200
+    assert isinstance(items.json(), list)
+
+
+def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_actions() -> None:
+    """Admin scan should orchestrate stop/scan/restart and expose maintenance lock."""
+
+    class ScanPersistenceStub:
+        def __init__(self) -> None:
+            self.finalize_calls: list[dict[str, object]] = []
+            self.run = {
+                "id": 7,
+                "status": "PENDING",
+                "ruleset_version": "2026-04-05-v1",
+                "total_count": 3,
+                "scanned_count": 0,
+                "removed_count": 0,
+                "kept_count": 0,
+                "crawler_was_running": True,
+                "crawler_restart_attempted": False,
+                "crawler_restart_succeeded": False,
+                "search_reindexed": False,
+                "error_message": None,
+            }
+
+        def stats(self) -> dict[str, object]:
+            return {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "average_friend_links": 0.0,
+            }
+
+        def list_blogs(self) -> list[dict[str, object]]:
+            return []
+
+        def get_blog(self, blog_id: int) -> None:
+            return None
+
+        def get_blog_detail(self, blog_id: int) -> None:
+            return None
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return []
+
+        def graph(self) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+        def graph_view(self, **_: object) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def graph_neighbors(self, blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def latest_graph_snapshot(self) -> dict[str, object]:
+            return {"version": "v1"}
+
+        def graph_snapshot(self, version: str) -> dict[str, object]:
+            return {"version": version, "nodes": [], "edges": [], "meta": {}}
+
+        def list_logs(self) -> list[dict[str, object]]:
+            return []
+
+        def reset(self) -> dict[str, object]:
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+
+        def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run.update(
+                {
+                    "status": "RUNNING",
+                    "crawler_was_running": crawler_was_running,
+                    "crawler_restart_attempted": False,
+                    "crawler_restart_succeeded": False,
+                    "search_reindexed": False,
+                    "error_message": None,
+                }
+            )
+            return dict(self.run)
+
+        def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, object]:
+            sleep(0.05)
+            self.run.update(
+                {
+                    "id": run_id,
+                    "status": "SUCCEEDED",
+                    "scanned_count": 3,
+                    "removed_count": 2,
+                    "kept_count": 1,
+                }
+            )
+            return dict(self.run)
+
+        def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+            return self.execute_blog_dedup_scan_run(run_id=7)
+
+        def finalize_blog_dedup_scan_run(self, **payload: object) -> dict[str, object]:
+            self.finalize_calls.append(payload)
+            self.run.update(
+                {
+                    "id": int(payload["run_id"]),
+                    "crawler_restart_attempted": bool(payload["crawler_restart_attempted"]),
+                    "crawler_restart_succeeded": bool(payload["crawler_restart_succeeded"]),
+                    "search_reindexed": bool(payload["search_reindexed"]),
+                    "error_message": payload.get("error_message"),
+                }
+            )
+            return dict(self.run)
+
+        def latest_blog_dedup_scan_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, object]:
+            return self.latest_blog_dedup_scan_run() | {"id": run_id}
+
+        def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": 1,
+                    "run_id": run_id,
+                    "removed_url": "http://blog.langhai.cc/index.html",
+                    "reason_code": "blog_alias_collapsed",
+                    "survivor_selection_basis": "FINISHED, created_at=2026-04-05T00:00:00Z, id=1",
+                }
+            ]
+
+    class ToggleCrawler(StubCrawler):
+        def __init__(self) -> None:
+            self.runner_status = "running"
+            self.stop_calls = 0
+            self.start_calls = 0
+
+        def runtime_status(self) -> dict[str, object]:
+            payload = super().runtime_status()
+            payload["runner_status"] = self.runner_status
+            return payload
+
+        def stop(self) -> dict[str, object]:
+            self.stop_calls += 1
+            self.runner_status = "idle"
+            return self.runtime_status()
+
+        def start(self) -> dict[str, object]:
+            self.start_calls += 1
+            self.runner_status = "running"
+            return self.runtime_status()
+
+    persistence = ScanPersistenceStub()
+    crawler = ToggleCrawler()
+    search = StubSearch()
+    app = create_backend_app(BackendState(persistence=persistence, crawler=crawler, search=search))
+    client = TestClient(app)
+
+    response = client.post("/api/admin/blog-dedup-scans")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "RUNNING"
+    assert response.json()["total_count"] == 3
+    assert crawler.stop_calls == 1
+    for _ in range(20):
+        latest = client.get("/api/admin/blog-dedup-scans/latest")
+        assert latest.status_code == 200
+        if latest.json()["status"] == "SUCCEEDED":
+            break
+        sleep(0.05)
+    assert latest.json()["crawler_restart_attempted"] is True
+    assert latest.json()["crawler_restart_succeeded"] is True
+    assert latest.json()["search_reindexed"] is True
+    assert crawler.start_calls == 1
+    items = client.get("/api/admin/blog-dedup-scans/7/items")
+    assert items.status_code == 200
+    assert items.json()[0]["reason_code"] == "blog_alias_collapsed"
 
 
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:

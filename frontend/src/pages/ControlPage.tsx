@@ -2,7 +2,13 @@ import { FormEvent, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { Surface } from "../components/Surface";
 import { ResetDatabasePayload } from "../lib/api";
-import { useCrawlerActions, useRuntimeStatus } from "../lib/hooks";
+import {
+  useBlogDedupScanRunItems,
+  useCrawlerActions,
+  useLatestBlogDedupScanRun,
+  useRunBlogDedupScan,
+  useRuntimeStatus,
+} from "../lib/hooks";
 
 function formatResetMessage(result: ResetDatabasePayload) {
   const summary = `database reset: blogs=${result.blogs_deleted}, edges=${result.edges_deleted}, logs=${result.logs_deleted}`;
@@ -15,13 +21,20 @@ function formatResetMessage(result: ResetDatabasePayload) {
 export function ControlPage() {
   const runtime = useRuntimeStatus();
   const actions = useCrawlerActions();
+  const scan = useRunBlogDedupScan();
+  const latestScan = useLatestBlogDedupScanRun({ refetchInterval: 1000 });
+  const latestScanId = latestScan.data?.id ?? null;
+  const latestScanItems = useBlogDedupScanRunItems(latestScanId, { enabled: latestScanId != null });
   const [batchCount, setBatchCount] = useState("10");
   const [message, setMessage] = useState("Ready.");
   const runtimeStatus = runtime.data?.runner_status;
+  const maintenanceInProgress = runtime.data?.maintenance_in_progress ?? false;
+  const scanIsRunning = latestScan.data?.status === "RUNNING";
   const resetBlocked =
     runtime.isLoading ||
     runtimeStatus == null ||
-    ["starting", "running", "stopping"].includes(runtimeStatus);
+    ["starting", "running", "stopping"].includes(runtimeStatus) ||
+    maintenanceInProgress;
 
   const handleRunBatch = async (event: FormEvent) => {
     event.preventDefault();
@@ -43,10 +56,13 @@ export function ControlPage() {
       />
       <Surface title="当前运行态" note="来自 /api/runtime/status">
         <p className="status-line">runner_status: {runtime.data?.runner_status ?? "idle"}</p>
+        {maintenanceInProgress ? (
+          <p className="error-copy">当前正在执行管理员维护任务，新的运行时启动和批处理会被拒绝。</p>
+        ) : null}
         <div className="action-row">
           <button
             className="primary-button"
-            disabled={actions.start.isPending}
+            disabled={actions.start.isPending || maintenanceInProgress}
             onClick={async () => {
               try {
                 const result = await actions.start.mutateAsync();
@@ -60,7 +76,7 @@ export function ControlPage() {
           </button>
           <button
             className="secondary-button"
-            disabled={actions.stop.isPending}
+            disabled={actions.stop.isPending || maintenanceInProgress}
             onClick={async () => {
               try {
                 const result = await actions.stop.mutateAsync();
@@ -74,7 +90,7 @@ export function ControlPage() {
           </button>
           <button
             className="secondary-button"
-            disabled={actions.bootstrap.isPending}
+            disabled={actions.bootstrap.isPending || maintenanceInProgress}
             onClick={async () => {
               try {
                 const result = await actions.bootstrap.mutateAsync();
@@ -87,6 +103,71 @@ export function ControlPage() {
             导入 Seed
           </button>
         </div>
+      </Surface>
+      <Surface title="Blog 规则重扫">
+        <p className="page-copy">
+          按当前 `identity_key` 规则对全库 blog 做一次归并，不重跑 crawler；执行时会自动停爬并在结束后按需恢复。
+        </p>
+        <button
+          className="danger-button"
+          disabled={scan.isPending || maintenanceInProgress || scanIsRunning}
+          onClick={async () => {
+            if (!window.confirm("确认执行全库规则重扫吗？执行期间会阻止新的 runtime 启动和批处理。")) {
+              return;
+            }
+            try {
+              const result = await scan.mutateAsync();
+              setMessage(
+                `blog dedup scan started: scanned=${result.scanned_count}/${result.total_count}, kept=${result.kept_count}, removed=${result.removed_count}`,
+              );
+            } catch (error) {
+              setMessage(`blog dedup scan failed: ${(error as Error).message}`);
+            }
+          }}
+        >
+          {scanIsRunning ? "全库规则重扫进行中" : "执行全库规则重扫"}
+        </button>
+        {latestScan.data ? (
+          <div className="page-copy">
+            <p>
+              扫描进度：已扫描节点 {latestScan.data.scanned_count} / 总共节点 {latestScan.data.total_count}
+            </p>
+            <p>
+              最近一次扫描：status={latestScan.data.status}，scanned={latestScan.data.scanned_count}/
+              {latestScan.data.total_count}，kept={latestScan.data.kept_count}，removed=
+              {latestScan.data.removed_count}，
+              duration_ms={latestScan.data.duration_ms}
+            </p>
+            <p>
+              crawler_restart_attempted={String(latestScan.data.crawler_restart_attempted)}，
+              crawler_restart_succeeded={String(latestScan.data.crawler_restart_succeeded)}，
+              search_reindexed={String(latestScan.data.search_reindexed)}
+            </p>
+            {latestScan.data.error_message ? (
+              <p className="error-copy">错误：{latestScan.data.error_message}</p>
+            ) : null}
+          </div>
+        ) : null}
+        {latestScanItems.data && latestScanItems.data.length > 0 ? (
+          <table>
+            <thead>
+              <tr>
+                <th>Removed URL</th>
+                <th>Reason</th>
+                <th>Survivor Basis</th>
+              </tr>
+            </thead>
+            <tbody>
+              {latestScanItems.data.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.removed_url}</td>
+                  <td>{item.reason_code}</td>
+                  <td>{item.survivor_selection_basis}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
       </Surface>
       <Surface title="数据库维护">
         <p className="page-copy">
@@ -124,7 +205,11 @@ export function ControlPage() {
               onChange={(event) => setBatchCount(event.target.value)}
             />
           </label>
-          <button className="primary-button" disabled={actions.runBatch.isPending} type="submit">
+          <button
+            className="primary-button"
+            disabled={actions.runBatch.isPending || maintenanceInProgress}
+            type="submit"
+          >
             爬取新的 N 个 blog
           </button>
         </form>

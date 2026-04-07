@@ -15,6 +15,7 @@ class FakeAsyncClient:
     created_kwargs: dict[str, object] | None = None
     responses: dict[str, object] = {}
     started: list[str] = []
+    request_timeouts: list[float | None] = []
     max_inflight: int = 0
     inflight: int = 0
 
@@ -27,8 +28,9 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         return None
 
-    async def get(self, url: str) -> httpx.Response:
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
         type(self).started.append(url)
+        type(self).request_timeouts.append(kwargs.get("timeout") if "timeout" in kwargs else None)
         type(self).inflight += 1
         type(self).max_inflight = max(type(self).max_inflight, type(self).inflight)
         try:
@@ -46,6 +48,7 @@ def reset_fake_async_client() -> None:
     FakeAsyncClient.created_kwargs = None
     FakeAsyncClient.responses = {}
     FakeAsyncClient.started = []
+    FakeAsyncClient.request_timeouts = []
     FakeAsyncClient.max_inflight = 0
     FakeAsyncClient.inflight = 0
 
@@ -129,6 +132,21 @@ def test_fetch_many_reuses_fetch_contract_for_headers_timeout_and_redirects(monk
         "follow_redirects": True,
         "timeout": 7.5,
     }
+    assert FakeAsyncClient.request_timeouts == [None]
+
+
+def test_fetch_many_allows_per_call_timeout_override(monkeypatch) -> None:
+    """Batch fetching should allow callers to tighten the timeout per crawl budget."""
+    reset_fake_async_client()
+    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=7.5)
+    FakeAsyncClient.responses = {
+        "https://example.com/ok": build_response("https://example.com/ok")
+    }
+
+    fetcher.fetch_many(["https://example.com/ok"], max_concurrency=1, timeout_seconds=2.25)
+
+    assert FakeAsyncClient.request_timeouts == [2.25]
 
 
 def test_fetch_many_classifies_failures_by_error_kind(monkeypatch) -> None:

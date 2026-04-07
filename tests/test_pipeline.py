@@ -2,6 +2,9 @@
 
 from pathlib import Path
 from typing import Any
+from typing import Callable
+
+import pytest
 
 from crawler.fetcher import FetchAttempt
 from crawler.fetcher import FetchResult
@@ -18,19 +21,35 @@ class FakeFetcher:
         responses: dict[str, FetchResult],
         *,
         batch_results: dict[str, FetchAttempt] | None = None,
+        on_fetch: Callable[[str, float | None], None] | None = None,
+        on_fetch_many: Callable[[list[str], float | None], None] | None = None,
     ) -> None:
         self.responses = responses
         self.batch_results = batch_results or {}
+        self.on_fetch = on_fetch
+        self.on_fetch_many = on_fetch_many
         self.calls: list[str] = []
-        self.fetch_many_calls: list[tuple[list[str], int]] = []
+        self.fetch_timeouts: list[float | None] = []
+        self.fetch_many_calls: list[tuple[list[str], int, float | None]] = []
         self.batch_completion_order: list[str] = []
 
-    def fetch(self, url: str) -> FetchResult:
+    def fetch(self, url: str, *, timeout_seconds: float | None = None) -> FetchResult:
         self.calls.append(url)
+        self.fetch_timeouts.append(timeout_seconds)
+        if self.on_fetch is not None:
+            self.on_fetch(url, timeout_seconds)
         return self.responses[url]
 
-    def fetch_many(self, urls: list[str], *, max_concurrency: int) -> dict[str, FetchAttempt]:
-        self.fetch_many_calls.append((list(urls), max_concurrency))
+    def fetch_many(
+        self,
+        urls: list[str],
+        *,
+        max_concurrency: int,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, FetchAttempt]:
+        self.fetch_many_calls.append((list(urls), max_concurrency, timeout_seconds))
+        if self.on_fetch_many is not None:
+            self.on_fetch_many(urls, timeout_seconds)
         if self.batch_results:
             self.batch_completion_order.extend(list(self.batch_results))
             attempts = {
@@ -365,15 +384,15 @@ def test_pipeline_fetches_candidate_pages_concurrently_but_persists_in_candidate
     discovered = pipeline._crawl_blog(blog)
 
     assert discovered == 1
-    assert pipeline.fetcher.fetch_many_calls == [
-        (
-            [
-                "https://blog.example.com/friends-a",
-                "https://blog.example.com/friends-b",
-            ],
-            4,
-        )
+    assert len(pipeline.fetcher.fetch_many_calls) == 1
+    fetched_urls, concurrency, timeout_seconds = pipeline.fetcher.fetch_many_calls[0]
+    assert fetched_urls == [
+        "https://blog.example.com/friends-a",
+        "https://blog.example.com/friends-b",
     ]
+    assert concurrency == 4
+    assert timeout_seconds is not None
+    assert timeout_seconds <= 60.0
     assert pipeline.fetcher.batch_completion_order == [
         "https://blog.example.com/friends-b",
         "https://blog.example.com/friends-a",
@@ -468,5 +487,66 @@ def test_pipeline_candidate_page_concurrency_of_one_matches_legacy_behavior(tmp_
     discovered = pipeline._crawl_blog(blog)
 
     assert discovered == 1
-    assert pipeline.fetcher.fetch_many_calls == [(["https://blog.example.com/friends"], 1)]
+    assert len(pipeline.fetcher.fetch_many_calls) == 1
+    fetched_urls, concurrency, timeout_seconds = pipeline.fetcher.fetch_many_calls[0]
+    assert fetched_urls == ["https://blog.example.com/friends"]
+    assert concurrency == 1
+    assert timeout_seconds is not None
+    assert timeout_seconds <= 60.0
     assert repository.list_edges()[0]["link_url_raw"] == "https://friend.example/"
+
+
+def test_pipeline_marks_blog_failed_when_total_crawl_time_budget_is_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single blog crawl should fail once its total time budget is exhausted."""
+    pipeline, repository = build_pipeline(tmp_path)
+    pipeline.settings.blog_crawl_timeout_seconds = 60.0
+    blog = seed_blog(repository)
+
+    clock = {"now": 1_000.0}
+
+    def fake_monotonic() -> float:
+        return clock["now"]
+
+    monkeypatch.setattr("crawler.crawling.orchestrator.monotonic", fake_monotonic)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="<html><body><a href='/friends'>友情链接</a></body></html>",
+            ),
+        },
+        batch_results={
+            "https://blog.example.com/friends": FetchAttempt(
+                request_url="https://blog.example.com/friends",
+                result=FetchResult(
+                    url="https://blog.example.com/friends",
+                    status_code=200,
+                    text="""
+                    <html><body><section><h2>友情链接</h2>
+                      <a href="https://friend.example/">Friend</a>
+                    </section></body></html>
+                    """,
+                ),
+                error_kind=None,
+            ),
+        },
+        on_fetch=lambda _url, _timeout: clock.__setitem__("now", clock["now"] + 20.0),
+        on_fetch_many=lambda _urls, _timeout: clock.__setitem__("now", clock["now"] + 45.0),
+    )
+
+    result = pipeline.process_blog_row(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert result == {"processed": 1, "discovered": 0, "failed": 1}
+    assert refreshed is not None
+    assert refreshed["crawl_status"] == "FAILED"
+    assert refreshed["friend_links_count"] == 0
+    assert pipeline.fetcher.fetch_timeouts == [60.0]
+    assert pipeline.fetcher.fetch_many_calls == [
+        (["https://blog.example.com/friends"], 4, 40.0)
+    ]

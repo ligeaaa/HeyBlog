@@ -165,6 +165,40 @@ class RecordingPipeline:
         return {}
 
 
+class FailThenSucceedPipeline:
+    """Simulate one failed blog followed by a successful continuation."""
+
+    def __init__(self) -> None:
+        self.repository = QueueRepository([1, 2])
+        self.processed_ids: list[int] = []
+        self.failed_ids: list[int] = []
+
+    def process_blog_row(
+        self,
+        row: dict[str, object],
+        *,
+        on_blog_start=None,
+        on_blog_finish=None,
+        on_blog_error=None,
+    ) -> dict[str, int]:
+        blog_id = int(row["id"])
+        if on_blog_start is not None:
+            on_blog_start(row)
+        self.processed_ids.append(blog_id)
+        if blog_id == 1:
+            error = TimeoutError("blog crawl timed out after 60 seconds")
+            self.failed_ids.append(blog_id)
+            if on_blog_error is not None:
+                on_blog_error(row, error)
+            return {"processed": 1, "discovered": 0, "failed": 1}
+        if on_blog_finish is not None:
+            on_blog_finish(row, {"discovered": 0})
+        return {"processed": 1, "discovered": 0, "failed": 0}
+
+    def write_exports(self) -> dict[str, object]:
+        return {}
+
+
 def test_runtime_stop_waits_for_active_workers_to_finish_without_starting_more_blogs() -> None:
     """Stop should let the current worker set finish, then prevent any new blog from starting."""
     pipeline = BlockingQueuePipeline([1, 2, 3, 4, 5, 6], target_active_runs=3)
@@ -278,3 +312,17 @@ def test_runtime_releases_normal_queue_slots_after_each_priority_seed() -> None:
 
     assert result["accepted"] is True
     assert repository.claim_order[:4] == [101, 1, 2, 102]
+
+
+def test_runtime_continues_to_next_waiting_blog_after_one_timeout_failure() -> None:
+    """A failed blog should not stop the runtime from claiming the next queued blog."""
+    pipeline = FailThenSucceedPipeline()
+    runtime = CrawlerRuntimeService(pipeline, worker_count=1)
+
+    result = runtime.run_batch(2)
+
+    assert result["accepted"] is True
+    assert result["result"]["processed"] == 2
+    assert result["result"]["failed"] == 1
+    assert pipeline.failed_ids == [1]
+    assert pipeline.processed_ids == [1, 2]

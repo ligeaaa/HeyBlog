@@ -91,6 +91,49 @@ class PersistenceHttpClient:
             {"request_token": request_token},
         )
 
+    def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        return self._post(
+            f"/internal/blog-dedup-scans?crawler_was_running={str(crawler_was_running).lower()}",
+            {},
+        )
+
+    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        return self._post(
+            f"/internal/blog-dedup-scans/runs?crawler_was_running={str(crawler_was_running).lower()}",
+            {},
+        )
+
+    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
+        return self._post(f"/internal/blog-dedup-scans/{run_id}/execute", {})
+
+    def finalize_blog_dedup_scan_run(
+        self,
+        *,
+        run_id: int,
+        crawler_restart_attempted: bool,
+        crawler_restart_succeeded: bool,
+        search_reindexed: bool,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/internal/blog-dedup-scans/{run_id}/finalize",
+            {
+                "crawler_restart_attempted": crawler_restart_attempted,
+                "crawler_restart_succeeded": crawler_restart_succeeded,
+                "search_reindexed": search_reindexed,
+                "error_message": error_message,
+            },
+        )
+
+    def latest_blog_dedup_scan_run(self) -> dict[str, Any]:
+        return self._get("/internal/blog-dedup-scans/latest")
+
+    def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, Any]:
+        return self._get(f"/internal/blog-dedup-scans/{run_id}")
+
+    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
+        return self._get(f"/internal/blog-dedup-scans/{run_id}/items")
+
     def get_next_priority_blog(self) -> dict[str, Any] | None:
         return self._get("/internal/queue/priority-next")
 

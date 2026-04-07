@@ -8,6 +8,7 @@ from pathlib import Path
 
 DEFAULT_USER_AGENT = "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
+DEFAULT_BLOG_CRAWL_TIMEOUT_SECONDS = 60.0
 DEFAULT_MAX_NODES_PER_RUN = 10
 DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
@@ -80,6 +81,7 @@ class Settings:
     search_cache_dir: Path | None = None
     user_agent: str = DEFAULT_USER_AGENT
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    blog_crawl_timeout_seconds: float = DEFAULT_BLOG_CRAWL_TIMEOUT_SECONDS
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
     max_path_probes_per_blog: int = DEFAULT_MAX_PATH_PROBES_PER_BLOG
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
@@ -113,6 +115,15 @@ class Settings:
                     "HEYBLOG_REQUEST_TIMEOUT_SECONDS",
                     str(DEFAULT_REQUEST_TIMEOUT_SECONDS),
                 )
+            ),
+            blog_crawl_timeout_seconds=max(
+                0.001,
+                float(
+                    os.getenv(
+                        "HEYBLOG_BLOG_CRAWL_TIMEOUT_SECONDS",
+                        str(DEFAULT_BLOG_CRAWL_TIMEOUT_SECONDS),
+                    )
+                ),
             ),
             max_nodes_per_run=int(
                 os.getenv("HEYBLOG_MAX_NODES_PER_RUN", str(DEFAULT_MAX_NODES_PER_RUN))

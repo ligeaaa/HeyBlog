@@ -5,6 +5,12 @@ from pathlib import Path
 import pytest
 
 import persistence_api.repository as repository_module
+from persistence_api.db import session_scope
+from persistence_api.models import BlogLabelAssignmentModel
+from persistence_api.models import BlogLabelTagModel
+from persistence_api.models import BlogModel
+from persistence_api.models import EdgeModel
+from shared.contracts.enums import CrawlStatus
 
 
 def test_build_repository_roundtrip_works_with_path_backed_repository(tmp_path: Path) -> None:
@@ -50,15 +56,15 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
 
     result = repository.reset()
 
-    assert result == {
-        "ok": True,
-        "blogs_deleted": 2,
-        "edges_deleted": 1,
-        "logs_deleted": 0,
-        "ingestion_requests_deleted": 0,
-        "blog_link_labels_deleted": 0,
-        "blog_label_tags_deleted": 0,
-    }
+    assert result["ok"] is True
+    assert result["blogs_deleted"] == 2
+    assert result["edges_deleted"] == 1
+    assert result["logs_deleted"] == 0
+    assert result["ingestion_requests_deleted"] == 0
+    assert result["blog_link_labels_deleted"] == 0
+    assert result["blog_label_tags_deleted"] == 0
+    assert result["blog_dedup_scan_items_deleted"] == 0
+    assert result["blog_dedup_scan_runs_deleted"] == 0
     assert repository.list_blogs() == []
     assert repository.list_edges() == []
     assert repository.list_logs() == []
@@ -179,6 +185,195 @@ def test_repository_dedupes_existing_finished_blog_before_creating_request(tmp_p
     assert response["status"] == "DEDUPED_EXISTING"
     assert response["blog_id"] == blog_id
     assert response["request_id"] is None
+
+
+def test_repository_dedupes_ingestion_request_by_identity_key_but_keeps_history(tmp_path: Path) -> None:
+    """Alias URLs should reuse one active request, but completed history must not block a new request."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    first = repository.create_ingestion_request(
+        homepage_url="https://langhai.cc/",
+        email="owner@example.com",
+    )
+    second = repository.create_ingestion_request(
+        homepage_url="http://blog.langhai.cc/index.html",
+        email="owner@example.com",
+    )
+
+    assert first["request_id"] == second["request_id"]
+    assert first["identity_key"] == "site:langhai.cc/"
+
+    repository.mark_blog_result(
+        blog_id=first["seed_blog_id"],
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+    )
+
+    third = repository.create_ingestion_request(
+        homepage_url="http://www.langhai.cc/",
+        email="owner@example.com",
+    )
+
+    assert third["request_id"] is None
+    assert third["status"] == "DEDUPED_EXISTING"
+    assert len(repository.list_blogs()) == 1
+
+
+def test_repository_run_blog_dedup_scan_deletes_duplicate_edges_and_labels_and_records_items(
+    tmp_path: Path,
+) -> None:
+    """Full-library dedup scan should keep one survivor and delete duplicate-owned edges and labels."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    canonical_id, inserted = repository.upsert_blog(
+        url="https://langhai.cc/",
+        normalized_url="https://langhai.cc/",
+        domain="langhai.cc",
+    )
+    assert inserted is True
+    external_id, inserted = repository.upsert_blog(
+        url="https://friend.example/",
+        normalized_url="https://friend.example/",
+        domain="friend.example",
+    )
+    assert inserted is True
+
+    with session_scope(repository.session_factory) as session:
+        duplicate = BlogModel(
+            url="http://blog.langhai.cc/index.html",
+            normalized_url="http://blog.langhai.cc/index.html",
+            identity_key="",
+            identity_reason_codes="[]",
+            identity_ruleset_version="",
+            domain="blog.langhai.cc",
+            email=None,
+            title="Duplicate Langhai",
+            icon_url=None,
+            status_code=200,
+            crawl_status=CrawlStatus.FINISHED,
+            friend_links_count=1,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(duplicate)
+        session.flush()
+        duplicate_id = int(duplicate.id)
+        tag = BlogLabelTagModel(
+            name="blog",
+            slug="blog",
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(tag)
+        session.flush()
+        session.add(
+            BlogLabelAssignmentModel(
+                blog_id=duplicate_id,
+                tag_id=int(tag.id),
+                labeled_at=repository_module.now_utc(),
+                created_at=repository_module.now_utc(),
+                updated_at=repository_module.now_utc(),
+            )
+        )
+        session.add(
+            EdgeModel(
+                from_blog_id=external_id,
+                to_blog_id=duplicate_id,
+                link_url_raw="http://blog.langhai.cc/index.html",
+                link_text="duplicate",
+                discovered_at=repository_module.now_utc(),
+            )
+        )
+
+    repository.add_edge(
+        from_blog_id=external_id,
+        to_blog_id=canonical_id,
+        link_url_raw="https://langhai.cc/",
+        link_text="canonical",
+    )
+    repository.add_edge(
+        from_blog_id=external_id,
+        to_blog_id=duplicate_id,
+        link_url_raw="http://blog.langhai.cc/index.html",
+        link_text="duplicate",
+    )
+    queued = repository.create_ingestion_request(
+        homepage_url="http://www.langhai.cc/",
+        email="owner@example.com",
+    )
+
+    summary = repository.run_blog_dedup_scan(crawler_was_running=True)
+    items = repository.list_blog_dedup_scan_run_items(summary["id"])
+    blogs = repository.list_blogs()
+    edges = repository.list_edges()
+    labeling = repository.list_blog_labeling_candidates()
+
+    assert summary["status"] == "SUCCEEDED"
+    assert summary["crawler_was_running"] is True
+    assert summary["removed_count"] == 1
+    assert len(items) == 1
+    assert items[0]["survivor_identity_key"] == "site:langhai.cc/"
+    assert items[0]["survivor_selection_basis"].startswith("normalized_url_length=")
+    assert sum(1 for blog in blogs if blog["identity_key"] == "site:langhai.cc/") == 1
+    assert edges == [
+        {
+            "id": edges[0]["id"],
+            "from_blog_id": external_id,
+            "to_blog_id": canonical_id,
+            "link_url_raw": "https://langhai.cc/",
+            "link_text": "canonical",
+            "discovered_at": edges[0]["discovered_at"],
+        }
+    ]
+    assert [row["id"] for row in labeling["items"]] == [canonical_id]
+    assert labeling["items"][0]["labels"] == []
+    request = repository.get_ingestion_request(
+        request_id=queued["request_id"],
+        request_token=queued["request_token"],
+    )
+    assert request is not None
+    assert request["identity_key"] == "site:langhai.cc/"
+
+
+def test_repository_dedup_scan_prefers_shortest_normalized_url_as_survivor(tmp_path: Path) -> None:
+    """Within one identity group, the shortest normalized_url should survive."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    shortest_id, inserted = repository.upsert_blog(
+        url="https://langhai.cc/",
+        normalized_url="https://langhai.cc/",
+        domain="langhai.cc",
+    )
+    assert inserted is True
+
+    with session_scope(repository.session_factory) as session:
+        duplicate = BlogModel(
+            url="http://blog.langhai.cc/index.html",
+            normalized_url="http://blog.langhai.cc/index.html",
+            identity_key="",
+            identity_reason_codes="[]",
+            identity_ruleset_version="",
+            domain="blog.langhai.cc",
+            email=None,
+            title=None,
+            icon_url=None,
+            status_code=None,
+            crawl_status=CrawlStatus.FINISHED,
+            friend_links_count=0,
+            created_at=repository_module.now_utc(),
+            updated_at=repository_module.now_utc(),
+        )
+        session.add(duplicate)
+        session.flush()
+        duplicate_id = int(duplicate.id)
+
+    summary = repository.run_blog_dedup_scan(crawler_was_running=False)
+    blogs = repository.list_blogs()
+    items = repository.list_blog_dedup_scan_run_items(summary["id"])
+
+    assert summary["removed_count"] == 1
+    assert [blog["id"] for blog in blogs if blog["identity_key"] == "site:langhai.cc/"] == [shortest_id]
+    assert items[0]["removed_blog_id"] == duplicate_id
+    assert "normalized_url=https://langhai.cc/" in items[0]["survivor_selection_basis"]
 
 
 def test_repository_requeues_processing_blogs_on_restart(tmp_path: Path) -> None:
@@ -582,37 +777,36 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
             },
         }
     ]
-    assert detail["recommended_blogs"] == [
+    assert detail["recommended_blogs"][0]["blog"] == {
+        "id": delta_id,
+        "url": "https://delta.example/",
+        "normalized_url": "https://delta.example/",
+        "identity_key": "site:delta.example/",
+        "identity_reason_codes": ["scheme_ignored"],
+        "identity_ruleset_version": "2026-04-05-v1",
+        "domain": "delta.example",
+        "email": None,
+        "title": "delta.example title",
+        "icon_url": "https://delta.example/favicon.ico",
+        "status_code": 200,
+        "crawl_status": "FINISHED",
+        "friend_links_count": 1,
+        "last_crawled_at": detail["recommended_blogs"][0]["blog"]["last_crawled_at"],
+        "created_at": detail["recommended_blogs"][0]["blog"]["created_at"],
+        "updated_at": detail["recommended_blogs"][0]["blog"]["updated_at"],
+        "incoming_count": 1,
+        "outgoing_count": 0,
+        "connection_count": 1,
+        "activity_at": detail["recommended_blogs"][0]["blog"]["activity_at"],
+        "identity_complete": True,
+    }
+    assert detail["recommended_blogs"][0]["reason"] == "mutual_connection"
+    assert detail["recommended_blogs"][0]["mutual_connection_count"] == 1
+    assert detail["recommended_blogs"][0]["via_blogs"] == [
         {
-            "blog": {
-                "id": delta_id,
-                "url": "https://delta.example/",
-                "normalized_url": "https://delta.example/",
-                "domain": "delta.example",
-                "email": None,
-                "title": "delta.example title",
-                "icon_url": "https://delta.example/favicon.ico",
-                "status_code": 200,
-                "crawl_status": "FINISHED",
-                "friend_links_count": 1,
-                "last_crawled_at": detail["recommended_blogs"][0]["blog"]["last_crawled_at"],
-                "created_at": detail["recommended_blogs"][0]["blog"]["created_at"],
-                "updated_at": detail["recommended_blogs"][0]["blog"]["updated_at"],
-                "incoming_count": 1,
-                "outgoing_count": 0,
-                "connection_count": 1,
-                "activity_at": detail["recommended_blogs"][0]["blog"]["activity_at"],
-                "identity_complete": True,
-            },
-            "reason": "mutual_connection",
-            "mutual_connection_count": 1,
-            "via_blogs": [
-                {
-                    "id": beta_id,
-                    "domain": "beta.example",
-                    "title": "beta.example title",
-                    "icon_url": "https://beta.example/favicon.ico",
-                }
-            ],
+            "id": beta_id,
+            "domain": "beta.example",
+            "title": "beta.example title",
+            "icon_url": "https://beta.example/favicon.ico",
         }
     ]

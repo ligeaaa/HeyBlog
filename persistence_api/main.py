@@ -72,6 +72,13 @@ class CreateBlogLabelTagRequest(BaseModel):
     name: str
 
 
+class FinalizeBlogDedupScanRunRequest(BaseModel):
+    crawler_restart_attempted: bool
+    crawler_restart_succeeded: bool
+    search_reindexed: bool
+    error_message: str | None = None
+
+
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
     """Construct the persistence service state."""
     resolved = settings or Settings.from_env()
@@ -210,6 +217,46 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         if payload is None:
             raise HTTPException(status_code=404, detail="ingestion_request_not_found")
         return payload
+
+    @app.post("/internal/blog-dedup-scans")
+    def run_blog_dedup_scan(crawler_was_running: bool = False) -> dict[str, Any]:
+        return get_state().repository.run_blog_dedup_scan(crawler_was_running=crawler_was_running)
+
+    @app.post("/internal/blog-dedup-scans/runs")
+    def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
+        return get_state().repository.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+
+    @app.post("/internal/blog-dedup-scans/{run_id}/execute")
+    def execute_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
+        try:
+            return get_state().repository.execute_blog_dedup_scan_run(run_id=run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/internal/blog-dedup-scans/{run_id}/finalize")
+    def finalize_blog_dedup_scan_run(run_id: int, payload: FinalizeBlogDedupScanRunRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.finalize_blog_dedup_scan_run(run_id=run_id, **payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-dedup-scans/latest")
+    def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
+        payload = get_state().repository.get_latest_blog_dedup_scan_run()
+        if payload is None:
+            raise HTTPException(status_code=404, detail="blog_dedup_scan_run_not_found")
+        return payload
+
+    @app.get("/internal/blog-dedup-scans/{run_id}")
+    def get_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
+        payload = get_state().repository.get_blog_dedup_scan_run(run_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="blog_dedup_scan_run_not_found")
+        return payload
+
+    @app.get("/internal/blog-dedup-scans/{run_id}/items")
+    def list_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
+        return get_state().repository.list_blog_dedup_scan_run_items(run_id)
 
     @app.post("/internal/ingestion-requests/by-blog/{blog_id}/crawling")
     def mark_ingestion_request_crawling(blog_id: int) -> dict[str, bool]:
