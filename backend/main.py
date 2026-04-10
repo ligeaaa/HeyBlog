@@ -8,7 +8,7 @@ from threading import Thread
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from shared.config import Settings
@@ -25,6 +25,8 @@ class BackendState:
     crawler: Any
     search: Any
     maintenance_in_progress: bool = False
+    admin_token: str | None = None
+    admin_dev_bypass: bool = False
 
 
 class RunBatchRequest(BaseModel):
@@ -65,6 +67,8 @@ def build_backend_state(settings: Settings | None = None) -> BackendState:
             resolved.search_base_url,
             timeout_seconds=resolved.request_timeout_seconds,
         ),
+        admin_token=resolved.admin_token,
+        admin_dev_bypass=resolved.admin_dev_bypass,
     )
 
 
@@ -120,6 +124,21 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     def get_state() -> BackendState:
         return app.state.backend_state
+
+    def require_admin_access(request: Request) -> None:
+        state = get_state()
+        if state.admin_dev_bypass:
+            return
+        if not state.admin_token:
+            raise HTTPException(status_code=503, detail="admin_auth_not_configured")
+        authorization = request.headers.get("authorization", "").strip()
+        if not authorization:
+            raise HTTPException(status_code=401, detail="admin_auth_required")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="admin_auth_required")
+        if token != state.admin_token:
+            raise HTTPException(status_code=403, detail="admin_auth_invalid")
 
     def ensure_runtime_idle(*, retries: int = 20, delay_seconds: float = 0.1) -> dict[str, Any]:
         last_runtime = get_state().crawler.runtime_status()
@@ -203,7 +222,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.get("/api/blog-labeling/candidates")
+    @app.get("/api/admin/blog-labeling/candidates")
     def get_blog_labeling_candidates(
         page: int = 1,
         page_size: int = 50,
@@ -211,6 +230,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         label: str | None = None,
         labeled: str | None = None,
         sort: str = "id_desc",
+        _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
         try:
             return get_state().persistence.list_blog_labeling_candidates(
@@ -229,8 +249,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.get("/api/blog-labeling/tags")
-    def get_blog_label_tags() -> list[dict[str, Any]]:
+    @app.get("/api/admin/blog-labeling/tags")
+    def get_blog_label_tags(_: None = Depends(require_admin_access)) -> list[dict[str, Any]]:
         try:
             return get_state().persistence.list_blog_label_tags()
         except httpx.HTTPStatusError as exc:
@@ -241,8 +261,11 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.post("/api/blog-labeling/tags")
-    def post_blog_label_tag(payload: CreateBlogLabelTagRequest) -> dict[str, Any]:
+    @app.post("/api/admin/blog-labeling/tags")
+    def post_blog_label_tag(
+        payload: CreateBlogLabelTagRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
         try:
             return get_state().persistence.create_blog_label_tag(name=payload.name)
         except httpx.HTTPStatusError as exc:
@@ -253,8 +276,12 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.put("/api/blog-labeling/labels/{blog_id}")
-    def put_blog_labels(blog_id: int, payload: ReplaceBlogLabelsRequest) -> dict[str, Any]:
+    @app.put("/api/admin/blog-labeling/labels/{blog_id}")
+    def put_blog_labels(
+        blog_id: int,
+        payload: ReplaceBlogLabelsRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
         try:
             return get_state().persistence.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
         except httpx.HTTPStatusError as exc:
@@ -334,12 +361,12 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_logs() -> list[dict[str, Any]]:
         return get_state().persistence.list_logs()
 
-    @app.post("/api/crawl/bootstrap")
-    def bootstrap() -> dict[str, Any]:
+    @app.post("/api/admin/crawl/bootstrap")
+    def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.bootstrap()
 
-    @app.post("/api/crawl/run")
-    def run_crawl(max_nodes: int | None = None) -> dict[str, Any]:
+    @app.post("/api/admin/crawl/run")
+    def run_crawl(max_nodes: int | None = None, _: None = Depends(require_admin_access)) -> dict[str, Any]:
         result = get_state().crawler.run(max_nodes=max_nodes)
         try:
             get_state().search.reindex()
@@ -387,7 +414,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.post("/api/admin/blog-dedup-scans")
-    def run_blog_dedup_scan() -> dict[str, Any]:
+    def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         state = get_state()
         if state.maintenance_in_progress:
             raise HTTPException(status_code=409, detail="maintenance_in_progress")
@@ -425,7 +452,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         return payload
 
     @app.get("/api/admin/blog-dedup-scans/latest")
-    def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
+    def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         try:
             return get_state().persistence.latest_blog_dedup_scan_run()
         except httpx.HTTPStatusError as exc:
@@ -437,7 +464,10 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/admin/blog-dedup-scans/{run_id}")
-    def get_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
+    def get_blog_dedup_scan_run(
+        run_id: int,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
         try:
             return get_state().persistence.get_blog_dedup_scan_run(run_id)
         except httpx.HTTPStatusError as exc:
@@ -449,7 +479,10 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
-    def get_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
+    def get_blog_dedup_scan_run_items(
+        run_id: int,
+        _: None = Depends(require_admin_access),
+    ) -> list[dict[str, Any]]:
         try:
             return get_state().persistence.list_blog_dedup_scan_run_items(run_id)
         except httpx.HTTPStatusError as exc:
@@ -460,27 +493,30 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.get("/api/runtime/status")
-    def runtime_status() -> dict[str, Any]:
+    @app.get("/api/admin/runtime/status")
+    def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         payload = get_state().crawler.runtime_status()
         payload["maintenance_in_progress"] = bool(get_state().maintenance_in_progress)
         return payload
 
-    @app.get("/api/runtime/current")
-    def runtime_current() -> dict[str, Any]:
+    @app.get("/api/admin/runtime/current")
+    def runtime_current(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.current()
 
-    @app.post("/api/runtime/start")
-    def runtime_start() -> dict[str, Any]:
+    @app.post("/api/admin/runtime/start")
+    def runtime_start(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         _raise_for_maintenance(get_state())
         return get_state().crawler.start()
 
-    @app.post("/api/runtime/stop")
-    def runtime_stop() -> dict[str, Any]:
+    @app.post("/api/admin/runtime/stop")
+    def runtime_stop(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.stop()
 
-    @app.post("/api/runtime/run-batch")
-    def runtime_run_batch(payload: RunBatchRequest) -> dict[str, Any]:
+    @app.post("/api/admin/runtime/run-batch")
+    def runtime_run_batch(
+        payload: RunBatchRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
         _raise_for_maintenance(get_state())
         result = get_state().crawler.run_batch(payload.max_nodes)
         try:
@@ -489,8 +525,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             pass
         return result
 
-    @app.post("/api/database/reset")
-    def reset_database() -> dict[str, Any]:
+    @app.post("/api/admin/database/reset")
+    def reset_database(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         runtime = get_state().crawler.runtime_status()
         if runtime.get("runner_status") in {"starting", "running", "stopping"}:
             raise HTTPException(status_code=409, detail="crawler_busy")

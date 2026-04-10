@@ -25,7 +25,7 @@ export function CurrentRuntimePage() {
         title="当前正在处理的 URL"
         description="观察 crawler 运行器当前是否正在处理某个 blog，以及它处于哪个阶段。"
       />
-      <Surface title="当前任务" note="来自 /api/runtime/current">
+      <Surface title="当前任务" note="来自 /api/admin/runtime/current">
         {current.isLoading ? <p>正在读取当前处理状态…</p> : null}
         {current.error ? <p className="error-copy">读取失败：{current.error.message}</p> : null}
         <dl className="detail-grid">
@@ -61,7 +61,7 @@ export function CurrentRuntimePage() {
           </div>
         </dl>
       </Surface>
-      <Surface title="运行器快照" note="来自 /api/runtime/status">
+      <Surface title="运行器快照" note="来自 /api/admin/runtime/status">
         {status.isLoading ? <p>正在加载运行器快照…</p> : null}
         <pre className="runtime-json">
           {JSON.stringify(status.data ?? { runner_status: "idle" }, null, 2)}

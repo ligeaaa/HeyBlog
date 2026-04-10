@@ -68,7 +68,7 @@ export function ControlPage() {
           <strong className="stat-copy-small">{message}</strong>
         </section>
       </div>
-      <Surface title="当前运行态" note="来自 /api/runtime/status" variant="muted">
+      <Surface title="当前运行态" note="来自 /api/admin/runtime/status" variant="muted">
         <p className="status-line">runner_status: {runtime.data?.runner_status ?? "idle"}</p>
         {maintenanceInProgress ? (
           <p className="error-copy">当前正在执行管理员维护任务，新的运行时启动和批处理会被拒绝。</p>

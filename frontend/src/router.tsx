@@ -1,5 +1,6 @@
 import { createBrowserRouter } from "react-router-dom";
-import { AppLayout } from "./shell/AppLayout";
+import { AdminLayout } from "./shell/AdminLayout";
+import { PublicLayout } from "./shell/PublicLayout";
 import { AboutPage } from "./pages/AboutPage";
 import { BlogDetailPage } from "./pages/BlogDetailPage";
 import { BlogLabelingPage } from "./pages/BlogLabelingPage";
@@ -14,19 +15,26 @@ import { StatsPage } from "./pages/StatsPage";
 export const router = createBrowserRouter([
   {
     path: "/",
-    element: <AppLayout />,
+    element: <PublicLayout />,
     children: [
       { index: true, element: <StatsPage /> },
+      { path: "stats", element: <StatsPage /> },
       { path: "blogs", element: <BlogsPage /> },
-      { path: "blog-labeling", element: <BlogLabelingPage /> },
       { path: "blogs/:blogId", element: <BlogDetailPage /> },
       { path: "search", element: <SearchPage /> },
       { path: "graph", element: <GraphPage /> },
+      { path: "about", element: <AboutPage /> },
+    ],
+  },
+  {
+    path: "/admin",
+    element: <AdminLayout />,
+    children: [
+      { index: true, element: <ControlPage /> },
+      { path: "control", element: <ControlPage /> },
       { path: "runtime/progress", element: <RuntimeProgressPage /> },
       { path: "runtime/current", element: <CurrentRuntimePage /> },
-      { path: "stats", element: <StatsPage /> },
-      { path: "about", element: <AboutPage /> },
-      { path: "control", element: <ControlPage /> },
+      { path: "blog-labeling", element: <BlogLabelingPage /> },
     ],
   },
 ]);

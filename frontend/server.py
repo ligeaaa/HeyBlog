@@ -1,4 +1,4 @@
-"""Frontend service serving the operator panel and proxying API calls."""
+"""Frontend service serving the public/admin SPA and proxying API calls."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi import HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from shared.config import Settings
@@ -41,8 +41,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS_DIR), name="assets")
 
     @app.get("/")
-    def root() -> RedirectResponse:
-        return RedirectResponse(url="/stats", status_code=307)
+    def root() -> HTMLResponse:
+        if FRONTEND_DIST_DIR.exists():
+            return HTMLResponse((FRONTEND_DIST_DIR / "index.html").read_text(encoding="utf-8"))
+        return HTMLResponse(FALLBACK_HTML)
 
     @app.get("/internal/health")
     def health() -> dict[str, str]:
@@ -61,7 +63,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 target,
                 params=request.query_params,
                 content=await request.body(),
-                headers={"content-type": request.headers.get("content-type", "application/json")},
+                headers={
+                    "content-type": request.headers.get("content-type", "application/json"),
+                    "authorization": request.headers.get("authorization", ""),
+                },
             )
         return Response(
             content=forwarded.content,

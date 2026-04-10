@@ -31,6 +31,8 @@ services:
       HEYBLOG_CRAWLER_BASE_URL: ${HEYBLOG_DOCKER_CRAWLER_BASE_URL:-http://crawler:8010}
       HEYBLOG_SEARCH_BASE_URL: ${HEYBLOG_DOCKER_SEARCH_BASE_URL:-http://search:8020}
       HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
+      HEYBLOG_ADMIN_TOKEN: ${HEYBLOG_ADMIN_TOKEN:-}
+      HEYBLOG_ADMIN_DEV_BYPASS: ${HEYBLOG_ADMIN_DEV_BYPASS:-}
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_BACKEND_PORT:-8000}"]
     healthcheck:
       test:

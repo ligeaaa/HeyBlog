@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./api";
+import { publicApi } from "./api";
 import { useBlogCatalog, useBlogDetailView, useGraphNeighbors } from "./hooks";
 
 vi.mock("@tanstack/react-query", () => ({
@@ -10,6 +10,11 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 vi.mock("./api", () => ({
+  publicApi: {
+    blogCatalog: vi.fn(),
+    blog: vi.fn(),
+    graphNeighbors: vi.fn(),
+  },
   api: {
     blogCatalog: vi.fn(),
     blog: vi.fn(),
@@ -20,7 +25,7 @@ vi.mock("./api", () => ({
 describe("useBlogCatalog", () => {
   test("uses a non-polling query configuration", async () => {
     vi.mocked(useQuery).mockReturnValue({} as never);
-    vi.mocked(api.blogCatalog).mockResolvedValue({} as never);
+    vi.mocked(publicApi.blogCatalog).mockResolvedValue({} as never);
 
     useBlogCatalog({
       page: 2,
@@ -58,7 +63,7 @@ describe("useBlogCatalog", () => {
     };
     await queryConfig.queryFn({} as never);
 
-    expect(api.blogCatalog).toHaveBeenCalledWith({
+    expect(publicApi.blogCatalog).toHaveBeenCalledWith({
       page: 2,
       pageSize: 50,
       q: null,
@@ -117,7 +122,7 @@ describe("useBlogDetailView", () => {
       isLoading: false,
       error: null,
     } as never);
-    vi.mocked(api.blog).mockResolvedValue({} as never);
+    vi.mocked(publicApi.blog).mockResolvedValue({} as never);
 
     const result = useBlogDetailView(5);
 
@@ -135,7 +140,7 @@ describe("useBlogDetailView", () => {
     };
     await queryConfig.queryFn();
 
-    expect(api.blog).toHaveBeenCalledWith(5);
+    expect(publicApi.blog).toHaveBeenCalledWith(5);
     expect(result.incomingEdges[0].neighborBlog?.domain).toBe("gamma.example");
     expect(result.outgoingEdges[0].neighborBlog?.domain).toBe("beta.example");
   });
@@ -145,7 +150,7 @@ describe("useGraphNeighbors", () => {
   test("uses a focused non-polling graph neighbor query", async () => {
     vi.clearAllMocks();
     vi.mocked(useQuery).mockReturnValue({} as never);
-    vi.mocked(api.graphNeighbors).mockResolvedValue({} as never);
+    vi.mocked(publicApi.graphNeighbors).mockResolvedValue({} as never);
 
     useGraphNeighbors({
       blogId: 5,
@@ -169,7 +174,7 @@ describe("useGraphNeighbors", () => {
     };
     await queryConfig.queryFn();
 
-    expect(api.graphNeighbors).toHaveBeenCalledWith(5, {
+    expect(publicApi.graphNeighbors).toHaveBeenCalledWith(5, {
       hops: 2,
       limit: 90,
     });

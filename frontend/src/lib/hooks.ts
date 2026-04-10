@@ -10,7 +10,8 @@ import {
   EdgeRecord,
   ReplaceBlogLinkLabelsPayload,
 } from "./api";
-import { api } from "./api";
+import { adminApi, publicApi } from "./api";
+import { getAdminToken } from "./adminAuth";
 
 type QueryTuning = {
   enabled?: boolean;
@@ -27,7 +28,7 @@ export const BLOG_CRAWL_STATUS_OPTIONS = ["WAITING", "PROCESSING", "FINISHED", "
 export function useBlogs(options: QueryTuning = {}) {
   return useQuery({
     queryKey: ["blogs"],
-    queryFn: api.blogs,
+    queryFn: publicApi.blogs,
     enabled: options.enabled ?? true,
     refetchInterval: options.refetchInterval ?? 5000,
     staleTime: options.staleTime,
@@ -76,7 +77,7 @@ export function useBlogCatalog(options: BlogCatalogOptions) {
   return useQuery({
     queryKey: ["blog-catalog", queryOptions],
     queryFn: () =>
-      api.blogCatalog({
+      publicApi.blogCatalog({
         page: queryOptions.page,
         pageSize: queryOptions.pageSize,
         q: queryOptions.q,
@@ -111,7 +112,7 @@ export function useBlogLabelingCandidates(options: BlogLabelingOptions) {
   return useQuery({
     queryKey: ["blog-labeling-candidates", queryOptions],
     queryFn: () =>
-      api.blogLabelingCandidates({
+      adminApi.blogLabelingCandidates(getAdminToken(), {
         page: queryOptions.page,
         pageSize: queryOptions.pageSize,
         q: queryOptions.q,
@@ -132,7 +133,7 @@ export function useCreateBlogLabelTag() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (params: { name: string }) => api.createBlogLabelTag(params),
+    mutationFn: (params: { name: string }) => adminApi.createBlogLabelTag(getAdminToken(), params),
     onSuccess: async (payload: CreateBlogLabelTagPayload) => {
       queryClient.setQueriesData(
         { queryKey: ["blog-labeling-candidates"] },
@@ -157,7 +158,8 @@ export function useReplaceBlogLinkLabels() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (params: { blogId: number; tagIds: number[] }) => api.replaceBlogLinkLabels(params),
+    mutationFn: (params: { blogId: number; tagIds: number[] }) =>
+      adminApi.replaceBlogLinkLabels(getAdminToken(), params),
     onSuccess: (payload: ReplaceBlogLinkLabelsPayload) => {
       queryClient.setQueriesData(
         { queryKey: ["blog-labeling-candidates"] },
@@ -189,7 +191,7 @@ export function useReplaceBlogLinkLabels() {
 export function useStatus() {
   return useQuery({
     queryKey: ["status"],
-    queryFn: api.status,
+    queryFn: publicApi.status,
     refetchInterval: 4000,
   });
 }
@@ -197,7 +199,7 @@ export function useStatus() {
 export function useStats() {
   return useQuery({
     queryKey: ["stats"],
-    queryFn: api.stats,
+    queryFn: publicApi.stats,
     refetchInterval: 4000,
   });
 }
@@ -205,7 +207,7 @@ export function useStats() {
 export function useLatestBlogDedupScanRun(options: QueryTuning = {}) {
   return useQuery({
     queryKey: ["blog-dedup-scan-latest"],
-    queryFn: api.latestBlogDedupScanRun,
+    queryFn: () => adminApi.latestBlogDedupScanRun(getAdminToken()),
     enabled: options.enabled ?? true,
     staleTime: options.staleTime ?? 0,
     refetchInterval: options.refetchInterval ?? 1000,
@@ -216,7 +218,7 @@ export function useLatestBlogDedupScanRun(options: QueryTuning = {}) {
 export function useBlogDedupScanRunItems(runId: number | null, options: QueryTuning = {}) {
   return useQuery({
     queryKey: ["blog-dedup-scan-items", runId],
-    queryFn: () => api.blogDedupScanRunItems(runId as number),
+    queryFn: () => adminApi.blogDedupScanRunItems(getAdminToken(), runId as number),
     enabled: (options.enabled ?? true) && runId != null,
     staleTime: options.staleTime ?? 0,
     refetchInterval: options.refetchInterval ?? false,
@@ -227,7 +229,7 @@ export function useBlogDedupScanRunItems(runId: number | null, options: QueryTun
 export function useRunBlogDedupScan() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api.runBlogDedupScan(),
+    mutationFn: () => adminApi.runBlogDedupScan(getAdminToken()),
     onSuccess: async (payload: BlogDedupScanRunPayload) => {
       queryClient.setQueryData(["blog-dedup-scan-latest"], payload);
       await queryClient.invalidateQueries({ queryKey: ["blog-dedup-scan-latest"] });
@@ -266,7 +268,7 @@ export function useGraphView(options: GraphViewOptions) {
   return useQuery({
     queryKey: ["graph-view", options],
     queryFn: () =>
-      api.graphView({
+      publicApi.graphView({
         strategy: options.strategy,
         limit: options.limit,
         sampleMode: options.sampleMode,
@@ -282,7 +284,7 @@ export function useGraphNeighbors(options: GraphNeighborOptions) {
   return useQuery({
     queryKey: ["graph-neighbors", options.blogId, options.hops, options.limit],
     queryFn: () =>
-      api.graphNeighbors(options.blogId as number, {
+      publicApi.graphNeighbors(options.blogId as number, {
         hops: options.hops,
         limit: options.limit,
       }),
@@ -297,7 +299,7 @@ export function useGraphNeighbors(options: GraphNeighborOptions) {
 export function useEdges(options: QueryTuning = {}) {
   return useQuery({
     queryKey: ["edges"],
-    queryFn: api.edges,
+    queryFn: publicApi.edges,
     enabled: options.enabled ?? true,
     refetchInterval: options.refetchInterval ?? false,
     staleTime: options.staleTime ?? 600000,
@@ -315,7 +317,7 @@ export function useSearch(
   return useQuery({
     queryKey: ["search", query, options.kind ?? "all", options.limit ?? 10],
     queryFn: () =>
-      api.search({
+      publicApi.search({
         query,
         kind: options.kind ?? "all",
         limit: options.limit ?? 10,
@@ -327,7 +329,8 @@ export function useSearch(
 
 export function useCreateIngestionRequest() {
   return useMutation({
-    mutationFn: (params: { homepageUrl: string; email: string }) => api.createIngestionRequest(params),
+    mutationFn: (params: { homepageUrl: string; email: string }) =>
+      publicApi.createIngestionRequest(params),
   });
 }
 
@@ -338,7 +341,7 @@ export function useIngestionRequestStatus(
 ) {
   return useQuery({
     queryKey: ["ingestion-request", requestId, requestToken],
-    queryFn: () => api.ingestionRequest(requestId as number, requestToken as string),
+    queryFn: () => publicApi.ingestionRequest(requestId as number, requestToken as string),
     enabled: (options.enabled ?? true) && requestId != null && requestToken != null,
     staleTime: options.staleTime ?? 0,
     refetchInterval: options.refetchInterval ?? 2500,
@@ -348,7 +351,7 @@ export function useIngestionRequestStatus(
 export function useBlogDetail(blogId: number | string | null) {
   return useQuery({
     queryKey: ["blog-detail", blogId],
-    queryFn: () => api.blog(blogId as number | string),
+    queryFn: () => publicApi.blog(blogId as number | string),
     enabled: blogId != null,
     staleTime: 60000,
   });
@@ -380,7 +383,7 @@ export function useBlogDetailView(blogId: number | null) {
 export function useRuntimeStatus() {
   return useQuery({
     queryKey: ["runtime-status"],
-    queryFn: api.runtimeStatus,
+    queryFn: () => adminApi.runtimeStatus(getAdminToken()),
     refetchInterval: 1500,
   });
 }
@@ -388,7 +391,7 @@ export function useRuntimeStatus() {
 export function useRuntimeCurrent() {
   return useQuery({
     queryKey: ["runtime-current"],
-    queryFn: api.runtimeCurrent,
+    queryFn: () => adminApi.runtimeCurrent(getAdminToken()),
     refetchInterval: 1500,
   });
 }
@@ -396,7 +399,7 @@ export function useRuntimeCurrent() {
 export function useRuntimeWorkers() {
   return useQuery({
     queryKey: ["runtime-workers"],
-    queryFn: api.runtimeStatus,
+    queryFn: () => adminApi.runtimeStatus(getAdminToken()),
     refetchInterval: 1500,
     select: (payload) => payload.workers,
   });
@@ -422,23 +425,23 @@ export function useCrawlerActions() {
 
   return {
     bootstrap: useMutation({
-      mutationFn: api.bootstrap,
+      mutationFn: () => adminApi.bootstrap(getAdminToken()),
       onSuccess: invalidateAll,
     }),
     start: useMutation({
-      mutationFn: api.startCrawler,
+      mutationFn: () => adminApi.startCrawler(getAdminToken()),
       onSuccess: invalidateAll,
     }),
     stop: useMutation({
-      mutationFn: api.stopCrawler,
+      mutationFn: () => adminApi.stopCrawler(getAdminToken()),
       onSuccess: invalidateAll,
     }),
     runBatch: useMutation({
-      mutationFn: api.runBatch,
+      mutationFn: (maxNodes: number) => adminApi.runBatch(getAdminToken(), maxNodes),
       onSuccess: invalidateAll,
     }),
     resetDatabase: useMutation({
-      mutationFn: api.resetDatabase,
+      mutationFn: () => adminApi.resetDatabase(getAdminToken()),
       onSuccess: invalidateAll,
     }),
   };

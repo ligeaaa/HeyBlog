@@ -2,7 +2,7 @@
 
 HeyBlog is a split-service MVP for crawling the blog friend-link ecosystem. It starts
 from `seed.csv`, discovers friend-link pages, extracts outbound blog links, stores the
-resulting graph in SQLite or PostgreSQL, and serves a browser panel plus public API on
+resulting graph in SQLite or PostgreSQL, and serves a public discovery surface, a protected admin surface, and a public API on
 top of `frontend` + `backend` + `crawler` + `search` + `persistence-api`.
 
 ## Runtime Model
@@ -92,7 +92,7 @@ Docker volumes persist runtime data under:
 
 ### 3. Frontend development path
 
-Use this when you are changing `frontend/src/` and want the panel plus the real backend
+Use this when you are changing `frontend/src/` and want the public/admin SPA plus the real backend
 API behind it.
 
 Install frontend dependencies once:
@@ -121,20 +121,20 @@ Current caveat: `frontend/src/lib/api.ts` uses same-origin `/api/*`, but
 
 ## Suggested Flow
 
-1. Import seeds with `POST /api/crawl/bootstrap`.
-2. Process pending blogs with `POST /api/crawl/run` or runtime batch controls.
-3. Inspect status, blogs, graph, search, and logs through the public `/api/*` surface.
-4. Read exported graph artifacts under `data/exports/` or `volumes/exports/`.
+1. Use the public surface for discovery: browse blogs, search, inspect graph, and submit ingestion requests.
+2. Use the protected `/admin` surface for runtime control, manual crawl/bootstrap, labeling, dedup, and maintenance actions.
+3. Read exported graph artifacts under `data/exports/` or `volumes/exports/`.
 
 ## Documentation Map
 
 - [Project structure](doc/project-structure.md): directories, source-of-truth packages, and entrypoints
 - [Services overview](doc/services-overview.md): service responsibilities, dependencies, and edit boundaries
 - [Service architecture](doc/service-architecture.md): runtime call chains and data ownership
-- [API docs](doc/api-docs.md): public and internal HTTP contracts
+- [API docs](doc/api-docs.md): public, admin, and internal HTTP contracts
 - [Config reference](doc/config-reference.md): environment variables, defaults, and service consumers
 - [Developer workflows](doc/developer-workflows.md): where to start for common tasks
 - [Graph/community PRD](doc/prd-graph-community-discovery.md): future product direction for graph analysis and community discovery
+- [Public/admin boundary](doc/public-admin-boundary.md): route, API, and auth matrix for the split surfaces
 
 ## Development Rules
 

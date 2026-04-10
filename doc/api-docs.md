@@ -35,7 +35,7 @@
 
 当前代码实现对应的服务分层如下：
 
-- `frontend`：前端与操作面板
+- `frontend`：public discovery surface + protected admin surface
 - `backend`：统一对外 API 聚合层
 - `crawler`：爬虫执行与运行时控制
 - `search`：搜索索引与查询
@@ -61,19 +61,15 @@
 
 ## 2. API 分层总览
 
-### 2.1 公共 API
+### 2.1 Public API
 
-公共 API 由 `backend` 服务统一暴露，前端当前直接调用的就是这一层：
+Public API 由 `backend` 服务统一暴露，供 public 浏览、搜索、图谱与 ingestion 流程使用：
 
 - `GET /`
 - `GET /internal/health`
 - `GET /api/status`
 - `GET /api/blogs`
 - `GET /api/blogs/catalog`
-- `GET /api/blog-labeling/candidates`
-- `GET /api/blog-labeling/tags`
-- `POST /api/blog-labeling/tags`
-- `PUT /api/blog-labeling/labels/{blog_id}`
 - `GET /api/blogs/{blog_id}`
 - `GET /api/edges`
 - `GET /api/graph`
@@ -83,21 +79,9 @@
 - `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
 - `GET /api/logs`
-- `POST /api/crawl/bootstrap`
-- `POST /api/crawl/run`
 - `GET /api/search`
 - `POST /api/ingestion-requests`
 - `GET /api/ingestion-requests/{request_id}`
-- `POST /api/admin/blog-dedup-scans`
-- `GET /api/admin/blog-dedup-scans/latest`
-- `GET /api/admin/blog-dedup-scans/{run_id}`
-- `GET /api/admin/blog-dedup-scans/{run_id}/items`
-- `GET /api/runtime/status`
-- `GET /api/runtime/current`
-- `POST /api/runtime/start`
-- `POST /api/runtime/stop`
-- `POST /api/runtime/run-batch`
-- `POST /api/database/reset`
 
 源码位置： [backend/main.py](../backend/main.py)
 
@@ -107,6 +91,33 @@
 - [frontend/server.py](../frontend/server.py) 会把 `/api/*` 代理到 `backend`。
 - 因此“公共 API 由 backend 提供”与“浏览器经 frontend 访问 API”这两件事同时成立。
 - blog 规则重扫接口同样由 `frontend -> backend` 访问，但实际归并动作发生在 persistence 层。
+
+### 2.2 Admin API
+
+Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并要求 `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>`：
+
+- `GET /api/admin/runtime/status`
+- `GET /api/admin/runtime/current`
+- `POST /api/admin/runtime/start`
+- `POST /api/admin/runtime/stop`
+- `POST /api/admin/runtime/run-batch`
+- `POST /api/admin/crawl/bootstrap`
+- `POST /api/admin/crawl/run`
+- `POST /api/admin/database/reset`
+- `GET /api/admin/blog-labeling/candidates`
+- `GET /api/admin/blog-labeling/tags`
+- `POST /api/admin/blog-labeling/tags`
+- `PUT /api/admin/blog-labeling/labels/{blog_id}`
+- `POST /api/admin/blog-dedup-scans`
+- `GET /api/admin/blog-dedup-scans/latest`
+- `GET /api/admin/blog-dedup-scans/{run_id}`
+- `GET /api/admin/blog-dedup-scans/{run_id}/items`
+
+认证语义：
+
+- 未提供 token：`401 admin_auth_required`
+- token 不合法：`403 admin_auth_invalid`
+- 未配置 `HEYBLOG_ADMIN_TOKEN` 且未开启 `HEYBLOG_ADMIN_DEV_BYPASS=true`：`503 admin_auth_not_configured`
 
 ### 2.2 内部服务 API
 
@@ -270,9 +281,9 @@
 - `title`
 - `icon_url`
 
-### 3.4 博客人工标注台
+### 3.4 管理员博客人工标注台
 
-#### `GET /api/blog-labeling/candidates`
+#### `GET /api/admin/blog-labeling/candidates`
 
 用途：返回博客人工标注台使用的候选列表。该接口固定只返回 `crawl_status == FINISHED` 的 blog，并把当前人工标签、多标签筛选元数据一起合并到响应里。
 
@@ -365,7 +376,7 @@
 }
 ```
 
-#### `GET /api/blog-labeling/tags`
+#### `GET /api/admin/blog-labeling/tags`
 
 用途：返回当前所有可用标签类型定义，供前端渲染和复用。
 
@@ -374,7 +385,7 @@
 - 返回数组，每项包含 `id`、`name`、`slug`、`created_at`、`updated_at`
 - 标签按 `name` 升序返回
 
-#### `POST /api/blog-labeling/tags`
+#### `POST /api/admin/blog-labeling/tags`
 
 用途：创建一个新的标签类型；前端可以直接创建 `blog`、`unknown`、`official`、`government` 等业务标签。
 
@@ -404,7 +415,7 @@
 }
 ```
 
-#### `PUT /api/blog-labeling/labels/{blog_id}`
+#### `PUT /api/admin/blog-labeling/labels/{blog_id}`
 
 用途：替换单个已完成抓取 blog 的整组人工标签。
 
@@ -702,9 +713,9 @@
 - 当前首版未引入账号系统，因此状态查询依赖 `request_id + request_token`
 - 若 `request_token` 不匹配，返回 `404`
 
-### 3.5 爬取执行接口
+### 3.5 管理员爬取执行接口
 
-#### `POST /api/crawl/bootstrap`
+#### `POST /api/admin/crawl/bootstrap`
 
 用途：从 `seed.csv` 导入种子博客。
 
@@ -717,7 +728,7 @@
 - `seed_path`: 实际导入的种子文件路径
 - `imported`: 新导入的 blog 数量
 
-#### `POST /api/crawl/run`
+#### `POST /api/admin/crawl/run`
 
 用途：执行一次同步爬取批次。
 
@@ -764,7 +775,7 @@
 - backend 会先读取 crawler runtime；若扫描前 crawler 正在运行，则先停爬并等待 `idle`
 - 扫描期间 backend 会打开 `maintenance_in_progress` 维护锁
 - `POST` 请求现在只负责创建一个 `RUNNING` scan run 并启动后台任务，因此前端会立刻收到可轮询的 run 摘要
-- 维护窗口内新的 `POST /api/runtime/start` 与 `POST /api/runtime/run-batch` 会返回 `409 maintenance_in_progress`
+- 维护窗口内新的 `POST /api/admin/runtime/start` 与 `POST /api/admin/runtime/run-batch` 会返回 `409 maintenance_in_progress`
 - persistence 负责重算 `identity_key`、选择 survivor，并直接删除被合并 blog 相关的 edge 与标签关联；`ingestion_request` 关联会保持不悬挂，并把 run summary 与 removed items 落库
 - 当前 survivor 规则为：同一 `identity_key` 分组内优先保留 `normalized_url` 最短的 blog；若长度相同，再按 `created_at`、`id` 打破平局
 - 扫描成功后 backend 会尝试调用 search reindex
@@ -809,7 +820,7 @@
 - `reason_codes`
 - `survivor_selection_basis`
 
-#### `POST /api/database/reset`
+#### `POST /api/admin/database/reset`
 
 用途：重置数据库中的 crawler 相关数据，便于测试和开发时快速回到初始状态。
 
@@ -839,9 +850,9 @@
 }
 ```
 
-### 3.7 运行时控制接口
+### 3.7 管理员运行时控制接口
 
-#### `GET /api/runtime/status`
+#### `GET /api/admin/runtime/status`
 
 用途：查看 crawler 运行时完整快照。
 
@@ -851,11 +862,11 @@
 
 - `maintenance_in_progress`: backend 当前是否处于管理员维护窗口；为 `true` 时新的 runtime 启动与批处理请求会被拒绝
 
-#### `GET /api/runtime/current`
+#### `GET /api/admin/runtime/current`
 
 用途：查看当前正在执行的 blog 简要信息。
 
-相比 `/api/runtime/status`，它仍聚焦“当前任务”，但现在会保留 worker 视角的摘要，方便 UI 直接渲染当前活跃 worker 列表。
+相比 `/api/admin/runtime/status`，它仍聚焦“当前任务”，但现在会保留 worker 视角的摘要，方便 UI 直接渲染当前活跃 worker 列表。
 
 返回字段：
 
@@ -875,7 +886,7 @@
 - `last_result`
 - `workers`
 
-#### `POST /api/runtime/start`
+#### `POST /api/admin/runtime/start`
 
 用途：启动后台持续运行的 crawler 循环。
 
@@ -885,7 +896,7 @@
 - 成功启动后会创建新的 `active_run_id`
 - 若 backend 当前处于 blog dedup 维护窗口，返回 `409 maintenance_in_progress`
 
-#### `POST /api/runtime/stop`
+#### `POST /api/admin/runtime/stop`
 
 用途：请求后台 crawler 在安全点停止。
 
@@ -894,7 +905,7 @@
 - 若当前已是 `idle`，直接返回当前快照
 - 否则将状态切到 `stopping`
 
-#### `POST /api/runtime/run-batch`
+#### `POST /api/admin/runtime/run-batch`
 
 用途：在运行器空闲时同步执行一批 crawl 任务。
 
@@ -1620,7 +1631,7 @@
 
 #### 种子导入
 
-- 前端/调用方 -> `POST /api/crawl/bootstrap`
+- 管理员前端/调用方 -> `POST /api/admin/crawl/bootstrap`
 - `backend` -> `crawler /internal/crawl/bootstrap`
 - `crawler` 读取 `seed.csv`
 - `crawler` -> `persistence-api /internal/blogs/upsert`
@@ -1628,7 +1639,7 @@
 
 #### 单次 crawl 运行
 
-- 前端/调用方 -> `POST /api/crawl/run`
+- 管理员前端/调用方 -> `POST /api/admin/crawl/run`
 - `backend` -> `crawler /internal/crawl/run`
 - `crawler` -> `persistence-api /internal/queue/next`
 - `crawler` 抓取与解析页面
@@ -1640,7 +1651,7 @@
 
 #### 运行时 batch
 
-- 前端/调用方 -> `POST /api/runtime/run-batch`
+- 管理员前端/调用方 -> `POST /api/admin/runtime/run-batch`
 - `backend` -> `crawler /internal/runtime/run-batch`
 - batch 完成后 `backend` 尝试触发 search reindex
 
@@ -1651,7 +1662,7 @@
 - 对外协议以 `backend /api/*` 为准，前端不要直接依赖内部服务接口
 - 内部服务接口已经比较清晰，但目前没有统一版本号，也没有显式 OpenAPI schema 文档归档
 - `/api/logs` 当前未向上暴露 `limit` 参数，如果后续日志量增加，建议补上
-- `/api/crawl/run` 使用 query 参数 `max_nodes`，而 `/api/runtime/run-batch` 使用 JSON body `max_nodes`，风格不完全一致，后续可统一
+- `/api/admin/crawl/run` 使用 query 参数 `max_nodes`，而 `/api/admin/runtime/run-batch` 使用 JSON body `max_nodes`，风格不完全一致，后续可统一
 - `search` 当前是轻量缓存式实现，属于可重建索引，不是强一致检索服务
 - `services/*` 只是兼容入口，后续文档与新开发应优先引用顶层目录 `backend/`、`crawler/`、`search/`、`persistence_api/`
 

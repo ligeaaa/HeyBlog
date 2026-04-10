@@ -88,7 +88,7 @@ export function RuntimeProgressPage() {
           <strong className="stat-copy-small">{data?.active_run_id ?? "—"}</strong>
         </section>
       </div>
-      <Surface title="Worker 列表" note="来自 /api/runtime/status">
+      <Surface title="Worker 列表" note="来自 /api/admin/runtime/status">
         {runtime.isLoading ? <p>正在读取 crawler worker 进度…</p> : null}
         {runtime.error ? <p className="error-copy">读取失败：{runtime.error.message}</p> : null}
         {!runtime.isLoading && !workers.length ? <p>当前没有活动 worker。</p> : null}

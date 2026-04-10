@@ -93,6 +93,8 @@ class Settings:
     friend_link_tld_blocklist: tuple[str, ...] = ()
     friend_link_exact_url_blocklist: tuple[str, ...] = ()
     friend_link_prefix_blocklist: tuple[str, ...] = ()
+    admin_token: str | None = None
+    admin_dev_bypass: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -176,4 +178,7 @@ class Settings:
             friend_link_tld_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST"),
             friend_link_exact_url_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST"),
             friend_link_prefix_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST"),
+            admin_token=os.getenv("HEYBLOG_ADMIN_TOKEN"),
+            admin_dev_bypass=os.getenv("HEYBLOG_ADMIN_DEV_BYPASS", "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )

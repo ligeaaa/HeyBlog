@@ -39,6 +39,7 @@
 ### 2.1 职责
 
 - 托管 `frontend/dist` 构建产物
+- 提供 public `/` 与 protected `/admin` 两类浏览器入口
 - 把浏览器的 `/api/*` 请求代理到 `backend`
 - 提供浏览器入口和健康检查
 

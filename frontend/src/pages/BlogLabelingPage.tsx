@@ -229,7 +229,7 @@ export function BlogLabelingPage() {
         </div>
       </Surface>
 
-      <Surface title="标注控制台" note={`来自 /api/blog-labeling/candidates · 每页 ${DEFAULT_PAGE_SIZE} 条`}>
+      <Surface title="标注控制台" note={`来自 /api/admin/blog-labeling/candidates · 每页 ${DEFAULT_PAGE_SIZE} 条`}>
         <div className="catalog-controls">
           <div className="search-form">
             <label className="search-field">

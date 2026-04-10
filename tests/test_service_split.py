@@ -58,6 +58,12 @@ class StubCrawler:
         return {"accepted": True, "mode": "batch", "result": {"processed": max_nodes}}
 
 
+
+
+def admin_headers(token: str = "secret-token") -> dict[str, str]:
+    return {"authorization": f"Bearer {token}"}
+
+
 class StubSearch:
     def __init__(self) -> None:
         self.reindexed = False
@@ -753,7 +759,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
         },
     )()
     search = StubSearch()
-    app = create_backend_app(BackendState(persistence=persistence, crawler=StubCrawler(), search=search))
+    app = create_backend_app(BackendState(persistence=persistence, crawler=StubCrawler(), search=search, admin_token="secret-token"))
     client = TestClient(app)
 
     health = client.get("/internal/health")
@@ -782,18 +788,18 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert catalog.json()["filters"]["status"] == "FINISHED"
     assert catalog.json()["sort"] == "connections"
 
-    labeling = client.get("/api/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true")
+    labeling = client.get("/api/admin/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true", headers=admin_headers())
     assert labeling.status_code == 200
     assert labeling.json()["page"] == 2
     assert labeling.json()["filters"]["label"] == "official"
     assert labeling.json()["filters"]["labeled"] == "true"
     assert labeling.json()["available_tags"][0]["slug"] == "blog"
 
-    tag_create = client.post("/api/blog-labeling/tags", json={"name": "government"})
+    tag_create = client.post("/api/admin/blog-labeling/tags", json={"name": "government"}, headers=admin_headers())
     assert tag_create.status_code == 200
     assert tag_create.json()["slug"] == "government"
 
-    label_update = client.put("/api/blog-labeling/labels/3", json={"tag_ids": [10, 11]})
+    label_update = client.put("/api/admin/blog-labeling/labels/3", json={"tag_ids": [10, 11]}, headers=admin_headers())
     assert label_update.status_code == 200
     assert label_update.json()["blog_id"] == 3
     assert label_update.json()["label_slugs"] == ["tag-10", "tag-11"]
@@ -811,18 +817,18 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert latest_snapshot.status_code == 200
     assert latest_snapshot.json()["version"] == "v1"
 
-    crawl = client.post("/api/crawl/run?max_nodes=2")
+    crawl = client.post("/api/admin/crawl/run?max_nodes=2", headers=admin_headers())
     assert crawl.status_code == 200
     assert crawl.json()["processed"] == 2
     assert search.reindexed is True
 
-    runtime = client.get("/api/runtime/status")
+    runtime = client.get("/api/admin/runtime/status", headers=admin_headers())
     assert runtime.status_code == 200
     assert runtime.json()["runner_status"] == "idle"
     assert runtime.json()["worker_count"] == 3
     assert runtime.json()["workers"] == []
 
-    batch = client.post("/api/runtime/run-batch", json={"max_nodes": 3})
+    batch = client.post("/api/admin/runtime/run-batch", json={"max_nodes": 3}, headers=admin_headers())
     assert batch.status_code == 200
     assert batch.json()["accepted"] is True
 
@@ -837,7 +843,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert ingestion_status.status_code == 200
     assert ingestion_status.json()["status"] == "QUEUED"
 
-    reset = client.post("/api/database/reset")
+    reset = client.post("/api/admin/database/reset", headers=admin_headers())
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
     assert reset.json()["ingestion_requests_deleted"] == 1
@@ -922,19 +928,19 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
             return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
 
     app = create_backend_app(
-        BackendState(persistence=LabelingValidationStub(), crawler=StubCrawler(), search=StubSearch())
+        BackendState(persistence=LabelingValidationStub(), crawler=StubCrawler(), search=StubSearch(), admin_token="secret-token")
     )
     client = TestClient(app)
 
-    list_response = client.get("/api/blog-labeling/candidates?label=maybe")
+    list_response = client.get("/api/admin/blog-labeling/candidates?label=maybe", headers=admin_headers())
     assert list_response.status_code == 422
     assert list_response.json()["detail"] == "Unsupported blog label name"
 
-    post_response = client.post("/api/blog-labeling/tags", json={"name": "   "})
+    post_response = client.post("/api/admin/blog-labeling/tags", json={"name": "   "}, headers=admin_headers())
     assert post_response.status_code == 422
     assert post_response.json()["detail"] == "Unsupported blog label name"
 
-    put_response = client.put("/api/blog-labeling/labels/1", json={"tag_ids": [7]})
+    put_response = client.put("/api/admin/blog-labeling/labels/1", json={"tag_ids": [7]}, headers=admin_headers())
     assert put_response.status_code == 409
     assert put_response.json()["detail"] == "blog_labeling_requires_finished_blog"
 
@@ -1105,14 +1111,55 @@ def test_backend_database_reset_requires_idle_runtime() -> None:
         },
     )()
     app = create_backend_app(
-        BackendState(persistence=persistence, crawler=BusyCrawler(), search=StubSearch())
+        BackendState(
+            persistence=persistence,
+            crawler=BusyCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
     )
     client = TestClient(app)
 
-    reset = client.post("/api/database/reset")
+    reset = client.post("/api/admin/database/reset", headers=admin_headers())
 
     assert reset.status_code == 409
     assert reset.json()["detail"] == "crawler_busy"
+
+
+def test_backend_admin_routes_require_valid_token() -> None:
+    app = create_backend_app(
+        BackendState(
+            persistence=type("PersistenceStub", (), {"stats": lambda self: {}})(),
+            crawler=StubCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    missing = client.get("/api/admin/runtime/status")
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "admin_auth_required"
+
+    invalid = client.get("/api/admin/runtime/status", headers=admin_headers("wrong-token"))
+    assert invalid.status_code == 403
+    assert invalid.json()["detail"] == "admin_auth_invalid"
+
+
+def test_backend_admin_routes_fail_when_auth_not_configured() -> None:
+    app = create_backend_app(
+        BackendState(
+            persistence=type("PersistenceStub", (), {"stats": lambda self: {}})(),
+            crawler=StubCrawler(),
+            search=StubSearch(),
+        )
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/admin/runtime/status", headers=admin_headers())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "admin_auth_not_configured"
 
 
 def test_persistence_service_exposes_blog_dedup_scan_endpoints(tmp_path: Path) -> None:
@@ -1303,17 +1350,17 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
     persistence = ScanPersistenceStub()
     crawler = ToggleCrawler()
     search = StubSearch()
-    app = create_backend_app(BackendState(persistence=persistence, crawler=crawler, search=search))
+    app = create_backend_app(BackendState(persistence=persistence, crawler=crawler, search=search, admin_token="secret-token"))
     client = TestClient(app)
 
-    response = client.post("/api/admin/blog-dedup-scans")
+    response = client.post("/api/admin/blog-dedup-scans", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "RUNNING"
     assert response.json()["total_count"] == 3
     assert crawler.stop_calls == 1
     for _ in range(20):
-        latest = client.get("/api/admin/blog-dedup-scans/latest")
+        latest = client.get("/api/admin/blog-dedup-scans/latest", headers=admin_headers())
         assert latest.status_code == 200
         if latest.json()["status"] == "SUCCEEDED":
             break
@@ -1322,7 +1369,7 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
     assert latest.json()["crawler_restart_succeeded"] is True
     assert latest.json()["search_reindexed"] is True
     assert crawler.start_calls == 1
-    items = client.get("/api/admin/blog-dedup-scans/7/items")
+    items = client.get("/api/admin/blog-dedup-scans/7/items", headers=admin_headers())
     assert items.status_code == 200
     assert items.json()[0]["reason_code"] == "blog_alias_collapsed"
 
@@ -1381,8 +1428,8 @@ def test_frontend_service_health_checks_backend(tmp_path: Path, monkeypatch) -> 
     assert health.json()["status"] == "ok"
 
 
-def test_frontend_root_redirects_to_stats(tmp_path: Path) -> None:
-    """Frontend root should redirect browsers to the stats page."""
+def test_frontend_root_serves_spa_entry(tmp_path: Path) -> None:
+    """Frontend root should serve the SPA entry instead of redirecting."""
     settings = Settings(
         db_path=tmp_path / "heyblog.sqlite",
         seed_path=tmp_path / "seed.csv",
@@ -1394,8 +1441,8 @@ def test_frontend_root_redirects_to_stats(tmp_path: Path) -> None:
 
     response = client.get("/", follow_redirects=False)
 
-    assert response.status_code == 307
-    assert response.headers["location"] == "/stats"
+    assert response.status_code == 200
+    assert '<div id="root"></div>' in response.text
 
 
 def test_frontend_service_serves_built_app_when_dist_exists(tmp_path: Path, monkeypatch) -> None:
@@ -1471,15 +1518,18 @@ def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) 
     app = create_frontend_app(settings)
     client = TestClient(app)
 
-    response = client.put("/api/blog-labeling/labels/1", json={"tag_ids": [10, 11]})
+    response = client.put("/api/admin/blog-labeling/labels/1", json={"tag_ids": [10, 11]}, headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     assert captured == {
         "timeout": 60.0,
         "method": "PUT",
-        "url": "http://backend:8000/api/blog-labeling/labels/1",
+        "url": "http://backend:8000/api/admin/blog-labeling/labels/1",
         "params": {},
         "content": b'{"tag_ids":[10,11]}',
-        "headers": {"content-type": "application/json"},
+        "headers": {
+            "content-type": "application/json",
+            "authorization": "Bearer secret-token",
+        },
     }

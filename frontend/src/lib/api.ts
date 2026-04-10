@@ -358,8 +358,19 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+type RequestOptions = RequestInit & {
+  authToken?: string | null;
+};
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.authToken) {
+    headers.set("authorization", `Bearer ${init.authToken}`);
+  }
+  const response = await fetch(path, {
+    ...init,
+    headers,
+  });
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
     try {
@@ -387,7 +398,7 @@ function withQuery(path: string, params: Record<string, string | number | boolea
   return query ? `${path}?${query}` : path;
 }
 
-export const api = {
+export const publicApi = {
   blogs: () => request<BlogRecord[]>("/api/blogs"),
   blogCatalog: (params: {
     page: number;
@@ -415,39 +426,6 @@ export const api = {
         min_connections: params.minConnections,
       }),
     ),
-  blogLabelingCandidates: (params: {
-    page: number;
-    pageSize: number;
-    q?: string | null;
-    label?: string | null;
-    labeled?: boolean | null;
-    sort?: string;
-  }) =>
-    request<BlogLabelingPagePayload>(
-      withQuery("/api/blog-labeling/candidates", {
-        page: params.page,
-        page_size: params.pageSize,
-        q: params.q,
-        label: params.label,
-        labeled: params.labeled,
-        sort: params.sort,
-      }),
-    ),
-  blogLabelTags: () => request<BlogLabelTagRecord[]>("/api/blog-labeling/tags"),
-  createBlogLabelTag: (params: { name: string }) =>
-    request<CreateBlogLabelTagPayload>("/api/blog-labeling/tags", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: params.name }),
-    }),
-  replaceBlogLinkLabels: (params: { blogId: number; tagIds: number[] }) =>
-    request<ReplaceBlogLinkLabelsPayload>(`/api/blog-labeling/labels/${params.blogId}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        tag_ids: params.tagIds,
-      }),
-    }),
   blog: (blogId: number | string) => request<BlogDetailPayload>(`/api/blogs/${blogId}`),
   edges: () => request<EdgeRecord[]>("/api/edges"),
   status: () => request<StatusPayload>("/api/status"),
@@ -501,24 +479,81 @@ export const api = {
         request_token: requestToken,
       }),
     ),
-  runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),
-  runtimeCurrent: () => request<RuntimeStatus>("/api/runtime/current"),
-  startCrawler: () => request<RuntimeStatus>("/api/runtime/start", { method: "POST" }),
-  stopCrawler: () => request<RuntimeStatus>("/api/runtime/stop", { method: "POST" }),
-  runBatch: (maxNodes: number) =>
-    request<Record<string, unknown>>("/api/runtime/run-batch", {
+};
+
+export const adminApi = {
+  blogLabelingCandidates: (authToken: string | null, params: {
+    page: number;
+    pageSize: number;
+    q?: string | null;
+    label?: string | null;
+    labeled?: boolean | null;
+    sort?: string;
+  }) =>
+    request<BlogLabelingPagePayload>(
+      withQuery("/api/admin/blog-labeling/candidates", {
+        page: params.page,
+        page_size: params.pageSize,
+        q: params.q,
+        label: params.label,
+        labeled: params.labeled,
+        sort: params.sort,
+      }),
+      { authToken },
+    ),
+  blogLabelTags: (authToken: string | null) =>
+    request<BlogLabelTagRecord[]>("/api/admin/blog-labeling/tags", { authToken }),
+  createBlogLabelTag: (authToken: string | null, params: { name: string }) =>
+    request<CreateBlogLabelTagPayload>("/api/admin/blog-labeling/tags", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: params.name }),
+      authToken,
+    }),
+  replaceBlogLinkLabels: (authToken: string | null, params: { blogId: number; tagIds: number[] }) =>
+    request<ReplaceBlogLinkLabelsPayload>(`/api/admin/blog-labeling/labels/${params.blogId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tag_ids: params.tagIds,
+      }),
+      authToken,
+    }),
+  runtimeStatus: (authToken: string | null) =>
+    request<RuntimeStatus>("/api/admin/runtime/status", { authToken }),
+  runtimeCurrent: (authToken: string | null) =>
+    request<RuntimeStatus>("/api/admin/runtime/current", { authToken }),
+  startCrawler: (authToken: string | null) =>
+    request<RuntimeStatus>("/api/admin/runtime/start", { method: "POST", authToken }),
+  stopCrawler: (authToken: string | null) =>
+    request<RuntimeStatus>("/api/admin/runtime/stop", { method: "POST", authToken }),
+  runBatch: (authToken: string | null, maxNodes: number) =>
+    request<Record<string, unknown>>("/api/admin/runtime/run-batch", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ max_nodes: maxNodes }),
+      authToken,
     }),
-  bootstrap: () => request<Record<string, unknown>>("/api/crawl/bootstrap", { method: "POST" }),
-  resetDatabase: () => request<ResetDatabasePayload>("/api/database/reset", { method: "POST" }),
-  runBlogDedupScan: () =>
-    request<BlogDedupScanRunPayload>("/api/admin/blog-dedup-scans", { method: "POST" }),
-  latestBlogDedupScanRun: () =>
-    request<BlogDedupScanRunPayload>("/api/admin/blog-dedup-scans/latest"),
-  blogDedupScanRun: (runId: number) =>
-    request<BlogDedupScanRunPayload>(`/api/admin/blog-dedup-scans/${runId}`),
-  blogDedupScanRunItems: (runId: number) =>
-    request<BlogDedupScanRunItemPayload[]>(`/api/admin/blog-dedup-scans/${runId}/items`),
+  bootstrap: (authToken: string | null) =>
+    request<Record<string, unknown>>("/api/admin/crawl/bootstrap", { method: "POST", authToken }),
+  runCrawl: (authToken: string | null, maxNodes?: number | null) =>
+    request<Record<string, unknown>>(
+      withQuery("/api/admin/crawl/run", { max_nodes: maxNodes }),
+      { method: "POST", authToken },
+    ),
+  resetDatabase: (authToken: string | null) =>
+    request<ResetDatabasePayload>("/api/admin/database/reset", { method: "POST", authToken }),
+  runBlogDedupScan: (authToken: string | null) =>
+    request<BlogDedupScanRunPayload>("/api/admin/blog-dedup-scans", { method: "POST", authToken }),
+  latestBlogDedupScanRun: (authToken: string | null) =>
+    request<BlogDedupScanRunPayload>("/api/admin/blog-dedup-scans/latest", { authToken }),
+  blogDedupScanRun: (authToken: string | null, runId: number) =>
+    request<BlogDedupScanRunPayload>(`/api/admin/blog-dedup-scans/${runId}`, { authToken }),
+  blogDedupScanRunItems: (authToken: string | null, runId: number) =>
+    request<BlogDedupScanRunItemPayload[]>(`/api/admin/blog-dedup-scans/${runId}/items`, { authToken }),
+};
+
+export const api = {
+  ...publicApi,
+  ...adminApi,
 };
