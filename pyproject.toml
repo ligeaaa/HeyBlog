@@ -23,8 +23,8 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "trainer/tests"]
 pythonpath = ["."]
 
 [tool.setuptools.packages.find]
-include = ["services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*"]
+include = ["services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*", "trainer*"]

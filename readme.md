@@ -15,6 +15,7 @@ The real implementation lives in the top-level service packages:
 - `search/`
 - `persistence_api/`
 - `shared/`
+- `trainer/` for offline training / evaluation workflows
 
 `services/` is only a compatibility shim layer for startup entrypoints. New business
 logic should stay in the top-level service packages.
@@ -118,6 +119,20 @@ python -m uvicorn frontend.server:app --reload --port 3000
 Current caveat: `frontend/src/lib/api.ts` uses same-origin `/api/*`, but
 `frontend/vite.config.ts` does not currently define a dev proxy. If you run
 `cd frontend && npm run dev`, you will need your own `/api` reverse proxy or mocked API.
+
+### 4. Offline training baseline path
+
+Use this when you want to run the `url + title` offline blog-classification baselines
+against the exported labeling CSV:
+
+```bash
+python -m trainer.cli full-run --source-csv data/blog-label-training-2026-04-11.csv
+```
+
+Outputs are written under:
+
+- `data/trainer/datasets/`
+- `data/trainer/runs/`
 
 ## Suggested Flow
 
