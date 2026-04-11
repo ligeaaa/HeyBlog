@@ -131,6 +131,14 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert catalog.json()["page_size"] == 200
     assert catalog.json()["filters"]["status"] == "FINISHED"
 
+    queue_catalog = client.get(
+        "/internal/blogs/catalog",
+        params={"statuses": "WAITING,PROCESSING", "sort": "id_asc"},
+    )
+    assert queue_catalog.status_code == 200
+    assert queue_catalog.json()["filters"]["statuses"] == ["WAITING", "PROCESSING"]
+    assert queue_catalog.json()["sort"] == "id_asc"
+
     invalid_catalog = client.get("/internal/blogs/catalog?status=invalid")
     assert invalid_catalog.status_code == 422
 
@@ -213,6 +221,18 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert request_status.status_code == 200
     assert request_status.json()["email"] == "owner@example.com"
 
+    priority_requests = client.get("/internal/ingestion-requests")
+    assert priority_requests.status_code == 200
+    assert priority_requests.json()[0]["request_id"] == 1
+    assert "email" not in priority_requests.json()[0]
+    assert "request_token" not in priority_requests.json()[0]
+    assert "email" not in priority_requests.json()[0]["blog"]
+
+    lookup = client.get("/internal/blogs/lookup", params={"url": "https://queued.example.com/"})
+    assert lookup.status_code == 200
+    assert lookup.json()["match_reason"] == "identity_key"
+    assert lookup.json()["items"][0]["id"] == request.json()["seed_blog_id"]
+
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
@@ -289,6 +309,15 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     assert put_label.status_code == 200
     assert put_label.json()["label_slugs"] == ["blog", "official"]
 
+    export_csv = client.get("/internal/blog-labeling/export")
+    assert export_csv.status_code == 200
+    assert export_csv.headers["content-type"].startswith("text/csv")
+    assert export_csv.text.splitlines() == [
+        "url,title,label",
+        "https://alpha.example/,Alpha,blog",
+        "https://alpha.example/,Alpha,official",
+    ]
+
     labeled = client.get(
         "/internal/blog-labeling/candidates",
         params={"label": "official", "labeled": "true", "sort": "recently_labeled"},
@@ -354,6 +383,33 @@ def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
     assert stub.post_calls == []
 
 
+def test_persistence_http_client_can_fetch_blog_label_training_csv() -> None:
+    """The split-service HTTP client should support plain-text CSV exports."""
+
+    class StubResponse:
+        text = "url,title,label\nhttps://alpha.example/,Alpha,blog\n"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.get_calls: list[tuple[str, dict[str, object] | None]] = []
+
+        def get(self, path: str, params: dict[str, object] | None = None) -> StubResponse:
+            self.get_calls.append((path, params))
+            return StubResponse()
+
+    client = PersistenceHttpClient("http://persistence.internal")
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    response = client.export_blog_label_training_csv()
+
+    assert response == "url,title,label\nhttps://alpha.example/,Alpha,blog\n"
+    assert stub.get_calls == [("/internal/blog-labeling/export", None)]
+
+
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
     """Environment loading should allow the split runtime to point at Postgres."""
     monkeypatch.setenv("HEYBLOG_DB_DSN", "postgresql://heyblog:heyblog@persistence-db:5432/heyblog")
@@ -391,7 +447,7 @@ def test_backend_service_preserves_public_api_shape() -> None:
                     "icon_url": "https://blog.example.com/favicon.ico",
                 }
             ],
-            "list_blogs_catalog": lambda self, **kwargs: {
+                "list_blogs_catalog": lambda self, **kwargs: {
                 "items": [
                     {
                         "id": 3,
@@ -412,16 +468,17 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "total_pages": 1,
                 "has_next": False,
                 "has_prev": False,
-                "filters": {
-                    "q": kwargs.get("q"),
-                    "site": kwargs.get("site"),
-                    "url": kwargs.get("url"),
-                    "status": kwargs.get("status"),
-                    "sort": kwargs.get("sort", "id_desc"),
-                    "has_title": kwargs.get("has_title"),
-                    "has_icon": kwargs.get("has_icon"),
-                    "min_connections": kwargs.get("min_connections", 0),
-                },
+                    "filters": {
+                        "q": kwargs.get("q"),
+                        "site": kwargs.get("site"),
+                        "url": kwargs.get("url"),
+                        "status": kwargs.get("status"),
+                        "statuses": kwargs.get("statuses"),
+                        "sort": kwargs.get("sort", "id_desc"),
+                        "has_title": kwargs.get("has_title"),
+                        "has_icon": kwargs.get("has_icon"),
+                        "min_connections": kwargs.get("min_connections", 0),
+                    },
                 "sort": kwargs.get("sort", "id_desc"),
             },
             "list_blog_labeling_candidates": lambda self, **kwargs: {
@@ -503,6 +560,10 @@ def test_backend_service_preserves_public_api_shape() -> None:
                     "updated_at": "2026-04-05T00:00:00Z",
                 }
             ],
+            "export_blog_label_training_csv": lambda self: (
+                "url,title,label\n"
+                "https://catalog.example.com,Catalog Example,official\n"
+            ),
             "create_blog_label_tag": lambda self, name: {
                 "id": 12,
                 "name": name,
@@ -747,6 +808,67 @@ def test_backend_service_preserves_public_api_shape() -> None:
                 "matched_blog": None,
                 "blog": None,
             },
+            "list_priority_ingestion_requests": lambda self: [
+                {
+                    "request_id": 9,
+                    "requested_url": "https://queued.example/",
+                    "normalized_url": "https://queued.example/",
+                    "status": "QUEUED",
+                    "seed_blog_id": 3,
+                    "matched_blog_id": None,
+                    "blog_id": 3,
+                    "error_message": None,
+                    "created_at": "2026-04-05T00:00:00Z",
+                    "updated_at": "2026-04-05T00:00:00Z",
+                    "blog": {
+                        "id": 3,
+                        "url": "https://queued.example/",
+                        "normalized_url": "https://queued.example/",
+                        "domain": "queued.example",
+                        "title": "Queued Example",
+                        "icon_url": None,
+                        "status_code": None,
+                        "crawl_status": "WAITING",
+                        "friend_links_count": 0,
+                        "last_crawled_at": None,
+                        "created_at": "2026-04-05T00:00:00Z",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                        "incoming_count": 0,
+                        "outgoing_count": 0,
+                        "connection_count": 0,
+                        "activity_at": None,
+                        "identity_complete": True,
+                    },
+                }
+            ],
+            "lookup_blog_candidates": lambda self, url: {
+                "query_url": url,
+                "normalized_query_url": "https://queued.example/",
+                "items": [
+                    {
+                        "id": 3,
+                        "url": "https://queued.example/",
+                        "normalized_url": "https://queued.example/",
+                        "domain": "queued.example",
+                        "email": None,
+                        "title": "Queued Example",
+                        "icon_url": None,
+                        "status_code": None,
+                        "crawl_status": "WAITING",
+                        "friend_links_count": 0,
+                        "last_crawled_at": None,
+                        "created_at": "2026-04-05T00:00:00Z",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                        "incoming_count": 0,
+                        "outgoing_count": 0,
+                        "connection_count": 0,
+                        "activity_at": None,
+                        "identity_complete": True,
+                    }
+                ],
+                "total_matches": 1,
+                "match_reason": "identity_key",
+            },
             "reset": lambda self: {
                 "ok": True,
                 "blogs_deleted": 3,
@@ -788,12 +910,22 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert catalog.json()["filters"]["status"] == "FINISHED"
     assert catalog.json()["sort"] == "connections"
 
+    queue_catalog = client.get("/api/blogs/catalog?statuses=WAITING,PROCESSING&sort=id_asc")
+    assert queue_catalog.status_code == 200
+    assert queue_catalog.json()["filters"]["statuses"] == "WAITING,PROCESSING"
+    assert queue_catalog.json()["sort"] == "id_asc"
+
     labeling = client.get("/api/admin/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true", headers=admin_headers())
     assert labeling.status_code == 200
     assert labeling.json()["page"] == 2
     assert labeling.json()["filters"]["label"] == "official"
     assert labeling.json()["filters"]["labeled"] == "true"
     assert labeling.json()["available_tags"][0]["slug"] == "blog"
+
+    labeling_export = client.get("/api/admin/blog-labeling/export", headers=admin_headers())
+    assert labeling_export.status_code == 200
+    assert labeling_export.headers["content-type"].startswith("text/csv")
+    assert labeling_export.text == "url,title,label\nhttps://catalog.example.com,Catalog Example,official\n"
 
     tag_create = client.post("/api/admin/blog-labeling/tags", json={"name": "government"}, headers=admin_headers())
     assert tag_create.status_code == 200
@@ -842,6 +974,18 @@ def test_backend_service_preserves_public_api_shape() -> None:
     ingestion_status = client.get("/api/ingestion-requests/9?request_token=token-123")
     assert ingestion_status.status_code == 200
     assert ingestion_status.json()["status"] == "QUEUED"
+
+    priority_ingestion = client.get("/api/ingestion-requests")
+    assert priority_ingestion.status_code == 200
+    assert priority_ingestion.json()[0]["request_id"] == 9
+    assert "email" not in priority_ingestion.json()[0]
+    assert "request_token" not in priority_ingestion.json()[0]
+    assert "email" not in priority_ingestion.json()[0]["blog"]
+
+    lookup = client.get("/api/blogs/lookup?url=https://queued.example/")
+    assert lookup.status_code == 200
+    assert lookup.json()["match_reason"] == "identity_key"
+    assert lookup.json()["items"][0]["id"] == 3
 
     reset = client.post("/api/admin/database/reset", headers=admin_headers())
     assert reset.status_code == 200
@@ -897,6 +1041,11 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
             )
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
+        def export_blog_label_training_csv(self) -> str:
+            request = httpx.Request("GET", "http://persistence/internal/blog-labeling/export")
+            response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
         def get_blog(self, blog_id: int) -> None:
             return None
 
@@ -943,6 +1092,10 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
     put_response = client.put("/api/admin/blog-labeling/labels/1", json={"tag_ids": [7]}, headers=admin_headers())
     assert put_response.status_code == 409
     assert put_response.json()["detail"] == "blog_labeling_requires_finished_blog"
+
+    export_response = client.get("/api/admin/blog-labeling/export", headers=admin_headers())
+    assert export_response.status_code == 422
+    assert export_response.json()["detail"] == "Unsupported blog label name"
 
 
 def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
@@ -1007,6 +1160,86 @@ def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
     response = client.get("/api/blogs/catalog?status=bad")
     assert response.status_code == 422
     assert response.json()["detail"] == "Unsupported crawl status: BAD"
+
+    response = client.get("/api/blogs/catalog?statuses=WAITING,BAD")
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unsupported crawl status: BAD"
+
+
+def test_backend_lookup_and_priority_list_surface_upstream_validation_errors() -> None:
+    """Public lookup and priority list endpoints should preserve upstream failures."""
+
+    class LookupValidationStub:
+        def stats(self) -> dict[str, object]:
+            return {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "average_friend_links": 0.0,
+            }
+
+        def list_blogs(self) -> list[dict[str, object]]:
+            return []
+
+        def list_blogs_catalog(self, **_: object) -> dict[str, object]:
+            return {"items": [], "page": 1, "page_size": 50, "total_items": 0, "total_pages": 0, "has_next": False, "has_prev": False, "filters": {}, "sort": "id_desc"}
+
+        def lookup_blog_candidates(self, *, url: str) -> dict[str, object]:
+            request = httpx.Request("GET", "http://persistence/internal/blogs/lookup")
+            response = httpx.Response(422, request=request, json={"detail": "Unsupported homepage URL"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def list_priority_ingestion_requests(self) -> list[dict[str, object]]:
+            request = httpx.Request("GET", "http://persistence/internal/ingestion-requests")
+            response = httpx.Response(503, request=request, json={"detail": "upstream_unavailable"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
+        def get_blog(self, blog_id: int) -> None:
+            return None
+
+        def get_blog_detail(self, blog_id: int) -> None:
+            return None
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return []
+
+        def graph(self) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+        def graph_view(self, **_: object) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def graph_neighbors(self, blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, object]:
+            return {"nodes": [], "edges": [], "meta": {}}
+
+        def latest_graph_snapshot(self) -> dict[str, object]:
+            return {"version": "v1"}
+
+        def graph_snapshot(self, version: str) -> dict[str, object]:
+            return {"version": version, "nodes": [], "edges": [], "meta": {}}
+
+        def list_logs(self) -> list[dict[str, object]]:
+            return []
+
+        def reset(self) -> dict[str, object]:
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+
+    app = create_backend_app(
+        BackendState(persistence=LookupValidationStub(), crawler=StubCrawler(), search=StubSearch())
+    )
+    client = TestClient(app)
+
+    lookup = client.get("/api/blogs/lookup?url=notaurl")
+    assert lookup.status_code == 422
+    assert lookup.json()["detail"] == "Unsupported homepage URL"
+
+    priority = client.get("/api/ingestion-requests")
+    assert priority.status_code == 503
+    assert priority.json()["detail"] == "upstream_unavailable"
 
 
 def test_backend_graph_neighbors_surfaces_upstream_not_found() -> None:

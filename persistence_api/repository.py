@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC, datetime
+from io import StringIO
 import json
 from math import ceil
 from pathlib import Path
@@ -48,8 +50,9 @@ BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
 BLOG_CATALOG_MAX_PAGE_SIZE = 200
 BLOG_CATALOG_DEFAULT_SORT = "id_desc"
 BLOG_CATALOG_ALLOWED_SORTS = frozenset(
-    {"id_desc", "recent_activity", "connections", "recently_discovered"}
+    {"id_asc", "id_desc", "recent_activity", "connections", "recently_discovered"}
 )
+INGESTION_PRIORITY_LIST_LIMIT = 20
 BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
 BLOG_LABELING_MAX_PAGE_SIZE = 200
 BLOG_LABELING_DEFAULT_SORT = "id_desc"
@@ -211,6 +214,7 @@ def normalize_blog_catalog_query(
     site: str | None = None,
     url: str | None = None,
     status: str | None = None,
+    statuses: str | None = None,
     q: str | None = None,
     sort: str = BLOG_CATALOG_DEFAULT_SORT,
     has_title: bool | str | None = None,
@@ -218,11 +222,28 @@ def normalize_blog_catalog_query(
     min_connections: int | str | None = None,
 ) -> dict[str, Any]:
     """Normalize catalog query params into one shared spec."""
+    normalized_statuses: list[str] | None = None
+    if statuses is not None:
+        normalized_statuses = []
+        for chunk in statuses.split(","):
+            normalized_chunk = _normalize_catalog_text(chunk)
+            if normalized_chunk is None:
+                continue
+            normalized_chunk = normalized_chunk.upper()
+            if normalized_chunk not in BLOG_CATALOG_ALLOWED_STATUSES:
+                raise ValueError(f"Unsupported crawl status: {normalized_chunk}")
+            if normalized_chunk not in normalized_statuses:
+                normalized_statuses.append(normalized_chunk)
+        if not normalized_statuses:
+            normalized_statuses = None
+
     normalized_status = _normalize_catalog_text(status)
-    if normalized_status is not None:
+    if normalized_status is not None and normalized_statuses is None:
         normalized_status = normalized_status.upper()
         if normalized_status not in BLOG_CATALOG_ALLOWED_STATUSES:
             raise ValueError(f"Unsupported crawl status: {normalized_status}")
+    elif normalized_statuses is not None:
+        normalized_status = None
 
     normalized_sort = _normalize_catalog_text(sort) or BLOG_CATALOG_DEFAULT_SORT
     if normalized_sort not in BLOG_CATALOG_ALLOWED_SORTS:
@@ -234,6 +255,7 @@ def normalize_blog_catalog_query(
         "site": _normalize_catalog_text(site),
         "url": _normalize_catalog_text(url),
         "status": normalized_status,
+        "statuses": normalized_statuses,
         "q": _normalize_catalog_text(q),
         "sort": normalized_sort,
         "has_title": _normalize_catalog_bool(has_title),
@@ -376,6 +398,20 @@ def _neighbor_payload(model: BlogModel | None) -> dict[str, Any] | None:
     }
 
 
+def _public_blog_summary_payload(model: BlogModel | None) -> dict[str, Any] | None:
+    if model is None:
+        return None
+    return {
+        "id": int(model.id),
+        "url": model.url,
+        "normalized_url": model.normalized_url,
+        "domain": model.domain,
+        "title": _resolved_blog_title(model),
+        "icon_url": _resolved_blog_icon_url(model),
+        "crawl_status": model.crawl_status.value,
+    }
+
+
 def _ingestion_request_payload(
     model: IngestionRequestModel,
     *,
@@ -410,6 +446,47 @@ def _ingestion_request_payload(
         "seed_blog": _blog_payload(seed_blog) if seed_blog is not None else None,
         "matched_blog": _blog_payload(matched_blog) if matched_blog is not None else None,
         "blog": _blog_payload(resolved_blog) if resolved_blog is not None else None,
+    }
+
+
+def _priority_ingestion_request_payload(
+    model: IngestionRequestModel,
+    *,
+    seed_blog: BlogModel | None = None,
+    matched_blog: BlogModel | None = None,
+) -> dict[str, Any]:
+    resolved_blog = matched_blog or seed_blog
+    payload = _ingestion_request_payload(model, seed_blog=seed_blog, matched_blog=matched_blog)
+    for key in (
+        "id",
+        "email",
+        "identity_key",
+        "identity_reason_codes",
+        "identity_ruleset_version",
+        "priority",
+        "request_token",
+        "expires_at",
+        "seed_blog",
+        "matched_blog",
+    ):
+        payload.pop(key, None)
+    payload["blog"] = _public_blog_summary_payload(resolved_blog)
+    return payload
+
+
+def _blog_lookup_payload(
+    *,
+    query_url: str,
+    normalized_query_url: str,
+    items: list[dict[str, Any]],
+    match_reason: str | None,
+) -> dict[str, Any]:
+    return {
+        "query_url": query_url,
+        "normalized_query_url": normalized_query_url,
+        "items": items,
+        "total_matches": len(items),
+        "match_reason": match_reason,
     }
 
 
@@ -536,6 +613,10 @@ class RepositoryProtocol(Protocol):
         request_token: str,
     ) -> dict[str, Any] | None: ...
 
+    def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]: ...
+
+    def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]: ...
+
     def mark_ingestion_request_crawling(self, *, blog_id: int) -> None: ...
 
     def mark_blog_result(
@@ -569,6 +650,7 @@ class RepositoryProtocol(Protocol):
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
         sort: str = BLOG_CATALOG_DEFAULT_SORT,
         has_title: bool | str | None = None,
@@ -592,6 +674,8 @@ class RepositoryProtocol(Protocol):
     def create_blog_label_tag(self, *, name: str) -> dict[str, Any]: ...
 
     def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]: ...
+
+    def export_blog_label_training_csv(self) -> str: ...
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None: ...
 
@@ -1133,6 +1217,77 @@ class SQLAlchemyRepository:
                 return None
             return self._ingestion_request_row_payload(session, request)
 
+    def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]:
+        resolved_limit = max(1, min(int(limit), INGESTION_PRIORITY_LIST_LIMIT))
+        active_sort = case(
+            (IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)), 0),
+            else_=1,
+        )
+        with session_scope(self.session_factory) as session:
+            requests = session.scalars(
+                select(IngestionRequestModel)
+                .where(IngestionRequestModel.priority >= 100)
+                .order_by(active_sort.asc(), IngestionRequestModel.created_at.desc(), IngestionRequestModel.id.desc())
+                .limit(resolved_limit)
+            ).all()
+            payload: list[dict[str, Any]] = []
+            for request in requests:
+                seed_blog = session.get(BlogModel, request.seed_blog_id) if request.seed_blog_id is not None else None
+                matched_blog = (
+                    session.get(BlogModel, request.matched_blog_id) if request.matched_blog_id is not None else None
+                )
+                payload.append(
+                    _priority_ingestion_request_payload(
+                        request,
+                        seed_blog=seed_blog,
+                        matched_blog=matched_blog,
+                    )
+                )
+            return payload
+
+    def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
+        normalized = normalize_url(url)
+        identity = resolve_blog_identity(url)
+        parsed = urlparse(identity.canonical_url if identity.is_homepage else normalized.normalized_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Unsupported homepage URL")
+        query_url = url.strip()
+        normalized_query_url = identity.canonical_url if identity.is_homepage else normalized.normalized_url
+        identity_key = identity.identity_key
+        with session_scope(self.session_factory) as session:
+            identity_matches = session.scalars(
+                select(BlogModel)
+                .where(BlogModel.identity_key == identity_key)
+                .order_by(BlogModel.id.asc())
+            ).all()
+            if identity_matches:
+                return _blog_lookup_payload(
+                    query_url=query_url,
+                    normalized_query_url=normalized_query_url,
+                    items=[_blog_payload(item) for item in identity_matches],
+                    match_reason="identity_key",
+                )
+
+            normalized_matches = session.scalars(
+                select(BlogModel)
+                .where(BlogModel.normalized_url == normalized_query_url)
+                .order_by(BlogModel.id.asc())
+            ).all()
+            if normalized_matches:
+                return _blog_lookup_payload(
+                    query_url=query_url,
+                    normalized_query_url=normalized_query_url,
+                    items=[_blog_payload(item) for item in normalized_matches],
+                    match_reason="normalized_url",
+                )
+
+            return _blog_lookup_payload(
+                query_url=query_url,
+                normalized_query_url=normalized_query_url,
+                items=[],
+                match_reason=None,
+            )
+
     def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
         with session_scope(self.session_factory) as session:
             request = session.scalar(
@@ -1279,6 +1434,7 @@ class SQLAlchemyRepository:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
         sort: str = BLOG_CATALOG_DEFAULT_SORT,
         has_title: bool | str | None = None,
@@ -1291,6 +1447,7 @@ class SQLAlchemyRepository:
             site=site,
             url=url,
             status=status,
+            statuses=statuses,
             q=q,
             sort=sort,
             has_title=has_title,
@@ -1309,7 +1466,11 @@ class SQLAlchemyRepository:
                 statement = statement.where(
                     or_(BlogModel.url.ilike(pattern), BlogModel.normalized_url.ilike(pattern))
                 )
-            if query["status"] is not None:
+            if query["statuses"] is not None:
+                statement = statement.where(
+                    func.upper(cast(BlogModel.crawl_status, String)).in_(tuple(query["statuses"]))
+                )
+            elif query["status"] is not None:
                 statement = statement.where(
                     func.upper(cast(BlogModel.crawl_status, String)) == query["status"]
                 )
@@ -1345,6 +1506,8 @@ class SQLAlchemyRepository:
                 )
             elif query["sort"] == "recently_discovered":
                 statement = statement.order_by(BlogModel.created_at.desc(), BlogModel.id.desc())
+            elif query["sort"] == "id_asc":
+                statement = statement.order_by(BlogModel.id.asc())
             else:
                 statement = statement.order_by(BlogModel.id.desc())
 
@@ -1363,6 +1526,7 @@ class SQLAlchemyRepository:
                     "site": query["site"],
                     "url": query["url"],
                     "status": query["status"],
+                    "statuses": query["statuses"],
                     "sort": query["sort"],
                     "has_title": query["has_title"],
                     "has_icon": query["has_icon"],
@@ -1477,6 +1641,27 @@ class SQLAlchemyRepository:
         with session_scope(self.session_factory) as session:
             rows = session.scalars(select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc())).all()
             return [_blog_label_tag_payload(row) for row in rows]
+
+    def export_blog_label_training_csv(self) -> str:
+        with session_scope(self.session_factory) as session:
+            rows = session.execute(
+                select(
+                    BlogModel.url,
+                    BlogModel.title,
+                    BlogLabelTagModel.name.label("label_name"),
+                )
+                .join(BlogLabelAssignmentModel, BlogLabelAssignmentModel.blog_id == BlogModel.id)
+                .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
+                .where(BlogModel.crawl_status == CrawlStatus.FINISHED)
+                .order_by(BlogModel.id.asc(), BlogLabelTagModel.name.asc())
+            ).all()
+
+        output = StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(["url", "title", "label"])
+        for row in rows:
+            writer.writerow([str(row.url), row.title or "", str(row.label_name)])
+        return output.getvalue()
 
     def create_blog_label_tag(self, *, name: str) -> dict[str, Any]:
         normalized_name = _normalize_catalog_text(name)

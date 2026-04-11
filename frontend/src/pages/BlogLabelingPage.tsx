@@ -7,6 +7,7 @@ import { BlogLabelTagRecord, BlogLabelingCandidateRecord } from "../lib/api";
 import {
   useBlogLabelingCandidates,
   useCreateBlogLabelTag,
+  useExportBlogLabelTrainingCsv,
   useReplaceBlogLinkLabels,
 } from "../lib/hooks";
 
@@ -85,6 +86,18 @@ function nextTagIds(
   return Array.from(current).sort((left, right) => left - right);
 }
 
+function downloadCsvFile(fileName: string, content: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(objectUrl);
+}
+
 export function BlogLabelingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const committedPage = normalizePage(searchParams.get("page"));
@@ -112,6 +125,7 @@ export function BlogLabelingPage() {
   });
   const replaceLabels = useReplaceBlogLinkLabels();
   const createTag = useCreateBlogLabelTag();
+  const exportTrainingCsv = useExportBlogLabelTrainingCsv();
 
   useEffect(() => {
     setDraftFilters(committedFilters);
@@ -165,6 +179,11 @@ export function BlogLabelingPage() {
     }
     await createTag.mutateAsync({ name: normalized });
     setNewTagName("");
+  };
+
+  const handleExportTrainingCsv = async () => {
+    const csvContent = await exportTrainingCsv.mutateAsync();
+    downloadCsvFile(`blog-label-training-${new Date().toISOString().slice(0, 10)}.csv`, csvContent);
   };
 
   const clearFilters = () => {
@@ -294,12 +313,21 @@ export function BlogLabelingPage() {
             <button className="secondary-button" onClick={clearFilters} type="button">
               清空筛选
             </button>
+            <button
+              className="primary-button"
+              disabled={exportTrainingCsv.isPending}
+              onClick={() => void handleExportTrainingCsv()}
+              type="button"
+            >
+              {exportTrainingCsv.isPending ? "导出中…" : "导出训练 CSV"}
+            </button>
           </div>
         </div>
 
         {candidates.isLoading ? <p>正在加载待标注候选…</p> : null}
         {candidates.error ? <p className="error-copy">加载失败：{candidates.error.message}</p> : null}
         {replaceLabels.error ? <p className="error-copy">写入失败：{replaceLabels.error.message}</p> : null}
+        {exportTrainingCsv.error ? <p className="error-copy">导出失败：{exportTrainingCsv.error.message}</p> : null}
         {!candidates.isLoading && !candidates.error ? (
           <div className="catalog-summary">
             <p className="meta-copy">

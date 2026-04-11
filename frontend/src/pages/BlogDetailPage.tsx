@@ -133,11 +133,8 @@ export function BlogDetailPage() {
           description={`系统中没有找到 ID 为 ${blogId} 的博客记录。`}
           actions={
             <div className="page-actions">
-              <Link className="secondary-button button-link" to="/search">
-                去搜索
-              </Link>
               <Link className="secondary-button button-link" to="/blogs">
-                返回发现页
+                返回统一发现页
               </Link>
             </div>
           }
@@ -179,12 +176,12 @@ export function BlogDetailPage() {
           <div className="page-actions">
             <Link
               className="secondary-button button-link"
-              to={`/search?q=${encodeURIComponent(blog.title || blog.domain)}`}
+              to={`/blogs?q=${encodeURIComponent(blog.title || blog.domain)}&kind=relations&limit=10`}
             >
-              去搜索
+              搜索关系线索
             </Link>
             <Link className="secondary-button button-link" to="/blogs">
-              返回发现页
+              返回统一发现页
             </Link>
           </div>
         }

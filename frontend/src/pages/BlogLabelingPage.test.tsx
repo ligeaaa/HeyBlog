@@ -6,17 +6,20 @@ import { BlogLabelingPage } from "./BlogLabelingPage";
 import {
   useBlogLabelingCandidates,
   useCreateBlogLabelTag,
+  useExportBlogLabelTrainingCsv,
   useReplaceBlogLinkLabels,
 } from "../lib/hooks";
 
 vi.mock("../lib/hooks", () => ({
   useBlogLabelingCandidates: vi.fn(),
   useCreateBlogLabelTag: vi.fn(),
+  useExportBlogLabelTrainingCsv: vi.fn(),
   useReplaceBlogLinkLabels: vi.fn(),
 }));
 
 const mockedUseBlogLabelingCandidates = vi.mocked(useBlogLabelingCandidates);
 const mockedUseCreateBlogLabelTag = vi.mocked(useCreateBlogLabelTag);
+const mockedUseExportBlogLabelTrainingCsv = vi.mocked(useExportBlogLabelTrainingCsv);
 const mockedUseReplaceBlogLinkLabels = vi.mocked(useReplaceBlogLinkLabels);
 
 function buildCandidatesData(
@@ -126,6 +129,11 @@ beforeEach(() => {
     isPending: false,
     error: null,
   } as unknown as ReturnType<typeof useCreateBlogLabelTag>);
+  mockedUseExportBlogLabelTrainingCsv.mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue("url,title,label\nhttps://alpha.example/,Alpha Blog,blog\n"),
+    isPending: false,
+    error: null,
+  } as unknown as ReturnType<typeof useExportBlogLabelTrainingCsv>);
   mockedUseReplaceBlogLinkLabels.mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
@@ -213,4 +221,53 @@ test("replaces a blog's tag set when toggling one label", async () => {
   await waitFor(() => {
     expect(mutate).toHaveBeenCalledWith({ blogId: 1, tagIds: [10] });
   });
+});
+
+test("exports the labeled dataset as training csv", async () => {
+  const mutateAsync = vi.fn().mockResolvedValue("url,title,label\nhttps://alpha.example/,Alpha Blog,blog\n");
+  mockedUseExportBlogLabelTrainingCsv.mockReturnValue({
+    mutateAsync,
+    isPending: false,
+    error: null,
+  } as unknown as ReturnType<typeof useExportBlogLabelTrainingCsv>);
+  const user = userEvent.setup();
+  const createObjectUrl = vi.fn(() => "blob:training-csv");
+  const revokeObjectUrl = vi.fn();
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    writable: true,
+    value: createObjectUrl,
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: revokeObjectUrl,
+  });
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+  try {
+    renderBlogLabelingPage();
+    await user.click(screen.getByRole("button", { name: "导出训练 CSV" }));
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(1);
+  } finally {
+    clickSpy.mockRestore();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: originalCreateObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: originalRevokeObjectURL,
+    });
+  }
 });

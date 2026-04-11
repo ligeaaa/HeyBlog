@@ -3,20 +3,23 @@ import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { SiteIdentity } from "../components/SiteIdentity";
 import { Surface } from "../components/Surface";
-import { BLOG_CRAWL_STATUS_OPTIONS, useBlogCatalog } from "../lib/hooks";
+import {
+  BLOG_CRAWL_STATUS_OPTIONS,
+  useBlogCatalog,
+  useBlogLookup,
+  useCreateIngestionRequest,
+  useIngestionRequestStatus,
+  usePriorityIngestionRequests,
+  useSearch,
+} from "../lib/hooks";
 
 const DEFAULT_PAGE_SIZE = 50;
-const FILTER_DEBOUNCE_MS = 300;
+const DEFAULT_QUEUE_SORT = "id_asc";
+const DEFAULT_QUEUE_STATUSES = ["WAITING", "PROCESSING"] as const;
+const DEFAULT_RELATION_LIMIT = 10;
 
-type CatalogFilters = {
-  q: string;
-  site: string;
-  url: string;
-  status: string;
-  sort: string;
-  hasTitle: boolean;
-  hasIcon: boolean;
-  minConnections: string;
+type Props = {
+  routeMode?: "canonical" | "search-alias";
 };
 
 function normalizePage(value: string | null) {
@@ -24,361 +27,318 @@ function normalizePage(value: string | null) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function readFilter(searchParams: URLSearchParams, key: keyof Pick<CatalogFilters, "q" | "site" | "url" | "status" | "sort" | "minConnections">) {
-  return searchParams.get(key)?.trim() ?? "";
+function normalizeQueueSort(value: string | null) {
+  const normalized = value?.trim() ?? "";
+  return ["id_asc", "id_desc", "recent_activity", "connections", "recently_discovered"].includes(normalized)
+    ? normalized
+    : DEFAULT_QUEUE_SORT;
 }
 
-function readBooleanFilter(searchParams: URLSearchParams, key: "hasTitle" | "hasIcon") {
-  return searchParams.get(key) === "true";
+function normalizeQueueStatuses(value: string | null) {
+  const allowed = new Set<string>(BLOG_CRAWL_STATUS_OPTIONS);
+  const normalized = (value ?? "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase())
+    .filter((item, index, all) => item && allowed.has(item) && all.indexOf(item) === index);
+  return normalized.length ? normalized : [...DEFAULT_QUEUE_STATUSES];
 }
 
-function sameFilters(left: CatalogFilters, right: CatalogFilters) {
-  return (
-    left.q === right.q &&
-    left.site === right.site &&
-    left.url === right.url &&
-    left.status === right.status &&
-    left.sort === right.sort &&
-    left.hasTitle === right.hasTitle &&
-    left.hasIcon === right.hasIcon &&
-    left.minConnections === right.minConnections
-  );
+function normalizeRelationLimit(value: string | null) {
+  const parsed = Number.parseInt(value ?? String(DEFAULT_RELATION_LIMIT), 10) || DEFAULT_RELATION_LIMIT;
+  return Math.max(1, Math.min(parsed, 50));
 }
 
-function buildSearchParams(page: number, filters: CatalogFilters) {
+function sameStatuses(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function usesDefaultQueueState(statuses: string[], sort: string) {
+  return sameStatuses(statuses, [...DEFAULT_QUEUE_STATUSES]) && sort === DEFAULT_QUEUE_SORT;
+}
+
+function buildDiscoverySearchParams(options: {
+  page: number;
+  statuses: string[];
+  sort: string;
+  lookup: string;
+  relationQuery: string;
+  relationLimit: number;
+}) {
   const next = new URLSearchParams();
-  if (page > 1) {
-    next.set("page", String(page));
+  if (options.page > 1) {
+    next.set("page", String(options.page));
   }
-  if (filters.q) {
-    next.set("q", filters.q);
+  if (!usesDefaultQueueState(options.statuses, options.sort)) {
+    next.set("statuses", options.statuses.join(","));
+    next.set("sort", options.sort);
   }
-  if (filters.site) {
-    next.set("site", filters.site);
+  if (options.lookup) {
+    next.set("lookup", options.lookup);
   }
-  if (filters.url) {
-    next.set("url", filters.url);
-  }
-  if (filters.status) {
-    next.set("status", filters.status);
-  }
-  if (filters.sort && filters.sort !== "id_desc") {
-    next.set("sort", filters.sort);
-  }
-  if (filters.hasTitle) {
-    next.set("hasTitle", "true");
-  }
-  if (filters.hasIcon) {
-    next.set("hasIcon", "true");
-  }
-  if (filters.minConnections) {
-    next.set("minConnections", filters.minConnections);
+  if (options.relationQuery) {
+    next.set("q", options.relationQuery);
+    next.set("kind", "relations");
+    if (options.relationLimit !== DEFAULT_RELATION_LIMIT) {
+      next.set("limit", String(options.relationLimit));
+    }
   }
   return next;
 }
 
-function formatRelativeActivity(value: string | null) {
+function formatDate(value: string | null) {
   if (!value) {
-    return "暂无活跃信号";
+    return "暂无";
   }
   return new Date(value).toLocaleString();
 }
 
-function formatConnectionHint(connectionCount: number, friendLinksCount: number) {
-  if (connectionCount > 0) {
-    return `关系线索 ${connectionCount}`;
+function getQueueStatusHint(status: string) {
+  if (status === "PROCESSING") {
+    return "正在抓取，信息可能继续刷新。";
   }
-  return `友链记录 ${friendLinksCount}`;
+  return "等待领取，进入队列后会按顺序抓取。";
 }
 
-function getStatusHint(status: string) {
-  switch (status) {
-    case "FINISHED":
-      return "已完成抓取，可优先查看";
-    case "PROCESSING":
-      return "正在抓取，信息可能继续更新";
-    case "FAILED":
-      return "抓取失败，资料可能不完整";
-    default:
-      return "等待抓取，先看已有基础资料";
-  }
+function isTerminalIngestionStatus(status: string | null | undefined) {
+  return status === "COMPLETED" || status === "FAILED" || status === "DEDUPED_EXISTING";
 }
 
-export function BlogsPage() {
+export function BlogsPage({ routeMode = "canonical" }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const committedPage = normalizePage(searchParams.get("page"));
-  const committedFilters = {
-    q: readFilter(searchParams, "q"),
-    site: readFilter(searchParams, "site"),
-    url: readFilter(searchParams, "url"),
-    status: readFilter(searchParams, "status"),
-    sort: readFilter(searchParams, "sort") || "id_desc",
-    hasTitle: readBooleanFilter(searchParams, "hasTitle"),
-    hasIcon: readBooleanFilter(searchParams, "hasIcon"),
-    minConnections: readFilter(searchParams, "minConnections"),
-  };
-  const [draftFilters, setDraftFilters] = useState<CatalogFilters>(committedFilters);
-  const [pageInput, setPageInput] = useState(String(committedPage));
-  const catalog = useBlogCatalog({
+  const committedStatuses = normalizeQueueStatuses(searchParams.get("statuses"));
+  const committedSort = normalizeQueueSort(searchParams.get("sort"));
+  const relationQuery = searchParams.get("kind") === "relations" ? searchParams.get("q")?.trim() ?? "" : "";
+  const relationLimit = normalizeRelationLimit(searchParams.get("limit"));
+  const committedLookup =
+    searchParams.get("lookup")?.trim() ??
+    (routeMode === "search-alias" && searchParams.get("kind") !== "relations"
+      ? searchParams.get("q")?.trim() ?? ""
+      : "");
+
+  const [lookupInput, setLookupInput] = useState(committedLookup);
+  const [relationInput, setRelationInput] = useState(relationQuery);
+  const [relationLimitInput, setRelationLimitInput] = useState(String(relationLimit));
+  const [email, setEmail] = useState("");
+  const [activeRequest, setActiveRequest] = useState<{ requestId: number; requestToken: string } | null>(null);
+  const [showRelationPanel, setShowRelationPanel] = useState(relationQuery.length > 0);
+
+  const queueCatalog = useBlogCatalog({
     page: committedPage,
     pageSize: DEFAULT_PAGE_SIZE,
-    q: committedFilters.q || null,
-    site: committedFilters.site || null,
-    url: committedFilters.url || null,
-    status: committedFilters.status || null,
-    sort: committedFilters.sort,
-    hasTitle: committedFilters.hasTitle ? true : null,
-    hasIcon: committedFilters.hasIcon ? true : null,
-    minConnections: committedFilters.minConnections
-      ? Number.parseInt(committedFilters.minConnections, 10) || 0
-      : null,
+    statuses: committedStatuses,
+    sort: committedSort,
+  });
+  const priorityRequests = usePriorityIngestionRequests();
+  const lookup = useBlogLookup(committedLookup, { enabled: committedLookup.length > 0 });
+  const relationSearch = useSearch(relationQuery, {
+    enabled: relationQuery.length > 0,
+    kind: "relations",
+    limit: relationLimit,
+  });
+  const createIngestionRequest = useCreateIngestionRequest();
+  const ingestionRequest = useIngestionRequestStatus(activeRequest?.requestId ?? null, activeRequest?.requestToken ?? null, {
+    enabled: activeRequest != null,
+    refetchInterval: activeRequest == null ? false : 2500,
   });
 
   useEffect(() => {
-    setDraftFilters(committedFilters);
-    setPageInput(String(committedPage));
-  }, [
-    committedFilters.q,
-    committedFilters.site,
-    committedFilters.url,
-    committedFilters.status,
-    committedFilters.sort,
-    committedFilters.hasTitle,
-    committedFilters.hasIcon,
-    committedFilters.minConnections,
-    committedPage,
-  ]);
+    setLookupInput(committedLookup);
+    setRelationInput(relationQuery);
+    setRelationLimitInput(String(relationLimit));
+    if (relationQuery) {
+      setShowRelationPanel(true);
+    }
+  }, [committedLookup, relationLimit, relationQuery]);
 
   useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      if (sameFilters(draftFilters, committedFilters)) {
-        return;
-      }
-      setSearchParams(buildSearchParams(1, draftFilters), { replace: true });
-    }, FILTER_DEBOUNCE_MS);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [committedFilters, draftFilters, setSearchParams]);
-
-  useEffect(() => {
-    if (!catalog.data || catalog.data.page === committedPage) {
+    if (!queueCatalog.data || queueCatalog.data.page === committedPage) {
       return;
     }
-    setSearchParams(buildSearchParams(catalog.data.page, committedFilters), { replace: true });
-  }, [catalog.data, committedFilters, committedPage, setSearchParams]);
+    setSearchParams(
+      buildDiscoverySearchParams({
+        page: queueCatalog.data.page,
+        statuses: committedStatuses,
+        sort: committedSort,
+        lookup: committedLookup,
+        relationQuery,
+        relationLimit,
+      }),
+      { replace: true },
+    );
+  }, [
+    committedLookup,
+    committedPage,
+    committedSort,
+    committedStatuses,
+    queueCatalog.data,
+    relationLimit,
+    relationQuery,
+    setSearchParams,
+  ]);
 
-  const hasRows = (catalog.data?.items.length ?? 0) > 0;
-  const currentPage = catalog.data?.page ?? committedPage;
-  const totalPages = catalog.data?.total_pages ?? 0;
-  const totalItems = catalog.data?.total_items ?? 0;
-  const pageSize = catalog.data?.page_size ?? DEFAULT_PAGE_SIZE;
-  const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const pageEnd = totalItems === 0 ? 0 : pageStart + (catalog.data?.items.length ?? 0) - 1;
+  const queueCurrentPage = queueCatalog.data?.page ?? committedPage;
+  const queueTotalPages = queueCatalog.data?.total_pages ?? 0;
+  const queueTotalItems = queueCatalog.data?.total_items ?? 0;
+  const queueItems = queueCatalog.data?.items ?? [];
+  const queuePageSize = queueCatalog.data?.page_size ?? DEFAULT_PAGE_SIZE;
+  const pageStart = queueTotalItems === 0 ? 0 : (queueCurrentPage - 1) * queuePageSize + 1;
+  const pageEnd = queueTotalItems === 0 ? 0 : pageStart + queueItems.length - 1;
+  const createdRequest = createIngestionRequest.data;
+  const activeRequestStatus = ingestionRequest.data;
+  const createdActiveRequest =
+    createdRequest && "request_id" in createdRequest && createdRequest.request_id != null ? createdRequest : null;
+  const visibleIngestionStatus = activeRequestStatus ?? createdActiveRequest;
+  const dedupedBlog = createdRequest && createdRequest.status === "DEDUPED_EXISTING" ? createdRequest.blog : null;
 
-  const setFilter = <K extends keyof CatalogFilters>(key: K, value: CatalogFilters[K]) => {
-    setDraftFilters((current) => ({ ...current, [key]: value }));
+  const updateRoute = (overrides: Partial<{
+    page: number;
+    statuses: string[];
+    sort: string;
+    lookup: string;
+    relationQuery: string;
+    relationLimit: number;
+  }>) => {
+    setSearchParams(
+      buildDiscoverySearchParams({
+        page: overrides.page ?? committedPage,
+        statuses: overrides.statuses ?? committedStatuses,
+        sort: overrides.sort ?? committedSort,
+        lookup: overrides.lookup ?? committedLookup,
+        relationQuery: overrides.relationQuery ?? relationQuery,
+        relationLimit: overrides.relationLimit ?? relationLimit,
+      }),
+    );
   };
 
-  const changePage = (nextPage: number) => {
-    const boundedPage = Math.max(1, totalPages > 0 ? Math.min(nextPage, totalPages) : nextPage);
-    setSearchParams(buildSearchParams(boundedPage, committedFilters));
+  const changeQueuePage = (nextPage: number) => {
+    const boundedPage = Math.max(1, queueTotalPages > 0 ? Math.min(nextPage, queueTotalPages) : nextPage);
+    updateRoute({ page: boundedPage });
   };
 
-  const handlePageSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleLookupSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    changePage(normalizePage(pageInput));
+    updateRoute({ page: 1, lookup: lookupInput.trim() });
   };
 
-  const clearFilters = () => {
-    const nextFilters = {
-      q: "",
-      site: "",
-      url: "",
-      status: "",
-      sort: "id_desc",
-      hasTitle: false,
-      hasIcon: false,
-      minConnections: "",
-    };
-    setDraftFilters(nextFilters);
-    setSearchParams(new URLSearchParams());
+  const clearLookup = () => {
+    setLookupInput("");
+    setEmail("");
+    setActiveRequest(null);
+    updateRoute({ page: 1, lookup: "" });
   };
+
+  const handleRelationSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextQuery = relationInput.trim();
+    if (!nextQuery) {
+      updateRoute({ relationQuery: "", relationLimit: DEFAULT_RELATION_LIMIT });
+      return;
+    }
+    updateRoute({
+      relationQuery: nextQuery,
+      relationLimit: normalizeRelationLimit(relationLimitInput),
+    });
+    setShowRelationPanel(true);
+  };
+
+  const clearRelationSearch = () => {
+    setRelationInput("");
+    setRelationLimitInput(String(DEFAULT_RELATION_LIMIT));
+    updateRoute({ relationQuery: "", relationLimit: DEFAULT_RELATION_LIMIT });
+  };
+
+  const handleIngestionSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const response = await createIngestionRequest.mutateAsync({
+      homepageUrl: committedLookup,
+      email: email.trim(),
+    });
+    if (response.request_id != null && response.request_token != null) {
+      setActiveRequest({
+        requestId: response.request_id,
+        requestToken: response.request_token,
+      });
+      return;
+    }
+    setActiveRequest(null);
+  };
+
+  const lookupStateLabel =
+    committedLookup.length === 0
+      ? "等待查库"
+      : lookup.isLoading
+        ? "查库中"
+        : lookup.data?.total_matches
+          ? "已命中"
+          : "未命中";
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Discover"
         title="发现博客"
-        description="把当前抓到的博客整理成可浏览、可判断、可继续点进去的发现入口。先用身份、活跃度和关系线索帮你快速决定值不值得看。"
+        description="统一查看当前系统队列、用户优先录入清单、博客 URL 是否已收录，以及兼容旧 /search 的关系线索入口。"
       />
+
+      {routeMode === "search-alias" ? (
+        <Surface title="兼容入口" note="旧 /search 链接现在会落到同一统一页面。">
+          <p className="meta-copy">
+            当前仍保留 `/search` 兼容路由，但主入口已经收敛到 `/blogs`。非 relations 查询会按“博客是否已收录”查库语义处理。
+          </p>
+        </Surface>
+      ) : null}
 
       <div className="stats-grid">
         <div className="stat-card">
-          <span>当前结果</span>
-          <strong>{totalItems}</strong>
+          <span>当前博客状态</span>
+          <strong>{queueTotalItems}</strong>
         </div>
         <div className="stat-card">
-          <span>排序方式</span>
-          <strong>{draftFilters.sort === "id_desc" ? "最近收录" : draftFilters.sort}</strong>
+          <span>优先处理清单</span>
+          <strong>{priorityRequests.data?.length ?? 0}</strong>
         </div>
         <div className="stat-card">
-          <span>入口提示</span>
-          <strong>{draftFilters.hasTitle || draftFilters.hasIcon ? "优先完整资料" : "先广泛探索"}</strong>
+          <span>查库状态</span>
+          <strong>{lookupStateLabel}</strong>
         </div>
       </div>
 
-      <Surface title="发现控制台" note={`来自 /api/blogs/catalog · 每页 ${DEFAULT_PAGE_SIZE} 条`}>
-        <div className="catalog-controls">
-          <div className="catalog-summary">
-            <p className="meta-copy">
-              用站点身份、抓取状态和关系密度快速缩小范围；筛选仍由 URL 参数驱动，可直接分享当前视图。
-            </p>
-          </div>
-          <div className="search-form">
-            <label className="search-field">
-              <span>通用搜索</span>
-              <input
-                aria-label="通用搜索"
-                name="q"
-                type="search"
-                value={draftFilters.q}
-                onChange={(event) => setFilter("q", event.target.value)}
-                placeholder="匹配标题、域名或 URL"
-              />
-            </label>
-            <label className="search-field">
-              <span>站点</span>
-              <input
-                aria-label="站点"
-                name="site"
-                type="search"
-                value={draftFilters.site}
-                onChange={(event) => setFilter("site", event.target.value)}
-                placeholder="匹配 title / domain"
-              />
-            </label>
-            <label className="search-field">
-              <span>URL</span>
-              <input
-                aria-label="URL"
-                name="url"
-                type="search"
-                value={draftFilters.url}
-                onChange={(event) => setFilter("url", event.target.value)}
-                placeholder="匹配 url / normalized_url"
-              />
-            </label>
-            <label className="search-field">
-              <span>状态</span>
-              <select
-                aria-label="状态"
-                name="status"
-                value={draftFilters.status}
-                onChange={(event) => setFilter("status", event.target.value)}
-              >
-                <option value="">全部状态</option>
-                {BLOG_CRAWL_STATUS_OPTIONS.map((status) => (
-                  <option key={status} value={status}>
-                    {status}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="search-field">
-              <span>排序</span>
-              <select
-                aria-label="排序"
-                name="sort"
-                value={draftFilters.sort}
-                onChange={(event) => setFilter("sort", event.target.value)}
-              >
-                <option value="id_desc">最近收录</option>
-                <option value="recent_activity">最近活跃</option>
-                <option value="connections">连接更丰富</option>
-                <option value="recently_discovered">最近发现</option>
-              </select>
-            </label>
-            <label className="search-field">
-              <span>最少关系线索</span>
-              <input
-                aria-label="最少关系线索"
-                inputMode="numeric"
-                min={0}
-                name="minConnections"
-                type="number"
-                value={draftFilters.minConnections}
-                onChange={(event) => setFilter("minConnections", event.target.value)}
-                placeholder="0"
-              />
-            </label>
-          </div>
-          <div className="catalog-checkbox-row">
-            <label className="toggle-pill">
-              <input
-                aria-label="仅显示有标题"
-                checked={draftFilters.hasTitle}
-                type="checkbox"
-                onChange={(event) => setFilter("hasTitle", event.target.checked)}
-              />
-              <span>仅显示有标题</span>
-            </label>
-            <label className="toggle-pill">
-              <input
-                aria-label="仅显示有图标"
-                checked={draftFilters.hasIcon}
-                type="checkbox"
-                onChange={(event) => setFilter("hasIcon", event.target.checked)}
-              />
-              <span>仅显示有图标</span>
-            </label>
-            <button
-              className="secondary-button"
-              disabled={catalog.isFetching}
-              onClick={() => void catalog.refetch()}
-              type="button"
-            >
-              手动刷新
-            </button>
-            <button className="secondary-button" onClick={clearFilters} type="button">
-              清空筛选
-            </button>
-          </div>
-        </div>
+      <Surface title="当前博客状态" note={`来自 /api/blogs/catalog · ${committedStatuses.join(" + ")} · ${committedSort}`}>
+        <p className="meta-copy">
+          这里固定聚焦系统当前正在处理或等待处理的博客首页，默认按 `id ASC` 展示，便于直接观察系统队列。
+        </p>
 
-        {catalog.isLoading ? <p>正在加载当前页…</p> : null}
-        {catalog.error ? <p className="error-copy">加载失败：{catalog.error.message}</p> : null}
-        {catalog.isFetching && !catalog.isLoading ? (
-          <p className="meta-copy">正在更新当前页结果…</p>
+        {queueCatalog.isLoading ? <p>正在加载当前博客状态…</p> : null}
+        {queueCatalog.error ? <p className="error-copy">加载失败：{queueCatalog.error.message}</p> : null}
+        {queueCatalog.isFetching && !queueCatalog.isLoading ? <p className="meta-copy">正在刷新系统队列…</p> : null}
+
+        {!queueCatalog.isLoading && !queueCatalog.error ? (
+          <p className="meta-copy">
+            共 {queueTotalItems} 条，当前第 {queueCurrentPage} / {queueTotalPages || 1} 页
+            {queueTotalItems > 0 ? `，显示 ${pageStart}-${pageEnd} 条` : ""}
+          </p>
         ) : null}
 
-        {!catalog.isLoading && !catalog.error ? (
-          <div className="catalog-summary">
-            <p className="meta-copy">
-              共 {totalItems} 条，当前第 {currentPage} / {totalPages || 1} 页
-              {totalItems > 0 ? `，显示 ${pageStart}-${pageEnd} 条` : ""}
-            </p>
-          </div>
+        {!queueCatalog.isLoading && !queueCatalog.error && queueItems.length === 0 ? (
+          <p>当前没有处于 WAITING 或 PROCESSING 状态的博客。</p>
         ) : null}
 
-        {!catalog.isLoading && !catalog.error && !hasRows ? <p>当前筛选下没有匹配的 blog。</p> : null}
-
-        {hasRows ? (
+        {queueItems.length > 0 ? (
           <div className="blog-card-grid">
-            {catalog.data?.items.map((blog) => (
+            {queueItems.map((blog) => (
               <article key={blog.id} className="blog-card">
                 <div className="blog-card-head">
                   <Link className="card-link" to={`/blogs/${blog.id}`}>
                     <SiteIdentity title={blog.title} domain={blog.domain} iconUrl={blog.icon_url} />
                   </Link>
-                  <span className={`status-chip status-${blog.crawl_status.toLowerCase()}`}>
-                    {blog.crawl_status}
-                  </span>
+                  <span className={`status-chip status-${blog.crawl_status.toLowerCase()}`}>{blog.crawl_status}</span>
                 </div>
                 <p className="page-copy">{blog.url}</p>
                 <div className="blog-card-metrics">
-                  <span>活跃信号：{formatRelativeActivity(blog.activity_at)}</span>
-                  <span>{formatConnectionHint(blog.connection_count, blog.friend_links_count)}</span>
-                  <span>{getStatusHint(blog.crawl_status)}</span>
+                  <span>创建时间：{formatDate(blog.created_at)}</span>
+                  <span>最近活跃：{formatDate(blog.activity_at)}</span>
+                  <span>{getQueueStatusHint(blog.crawl_status)}</span>
                 </div>
                 <div className="blog-card-actions">
                   <Link className="button-link primary-button" to={`/blogs/${blog.id}`}>
@@ -386,7 +346,7 @@ export function BlogsPage() {
                   </Link>
                   <Link
                     className="button-link secondary-button"
-                    to={`/search?q=${encodeURIComponent(blog.title || blog.domain)}`}
+                    to={`/blogs?q=${encodeURIComponent(blog.title || blog.domain)}&kind=relations&limit=${DEFAULT_RELATION_LIMIT}`}
                   >
                     搜索相关线索
                   </Link>
@@ -396,44 +356,235 @@ export function BlogsPage() {
           </div>
         ) : null}
 
-        {!catalog.isLoading && !catalog.error ? (
+        {!queueCatalog.isLoading && !queueCatalog.error ? (
           <div className="pagination-row">
             <div className="page-actions">
               <button
                 className="secondary-button"
-                disabled={!catalog.data?.has_prev}
-                onClick={() => changePage(currentPage - 1)}
+                disabled={!queueCatalog.data?.has_prev}
+                onClick={() => changeQueuePage(queueCurrentPage - 1)}
                 type="button"
               >
                 上一页
               </button>
               <button
                 className="secondary-button"
-                disabled={!catalog.data?.has_next}
-                onClick={() => changePage(currentPage + 1)}
+                disabled={!queueCatalog.data?.has_next}
+                onClick={() => changeQueuePage(queueCurrentPage + 1)}
                 type="button"
               >
                 下一页
               </button>
+              <button
+                className="secondary-button"
+                disabled={queueCatalog.isFetching}
+                onClick={() => void queueCatalog.refetch()}
+                type="button"
+              >
+                手动刷新
+              </button>
             </div>
-            <form className="page-jump-form" onSubmit={handlePageSubmit}>
+          </div>
+        ) : null}
+      </Surface>
+
+      <Surface title="优先处理博客清单" note="来自 /api/ingestion-requests · active-first · 最多 20 条">
+        <p className="meta-copy">
+          这里展示最终用户自助提交后进入优先录入队列的请求状态，不暴露联系邮箱或 request token。
+        </p>
+
+        {priorityRequests.isLoading ? <p>正在加载优先处理清单…</p> : null}
+        {priorityRequests.error ? <p className="error-copy">加载失败：{priorityRequests.error.message}</p> : null}
+
+        {!priorityRequests.isLoading && !priorityRequests.error && (priorityRequests.data?.length ?? 0) === 0 ? (
+          <p>当前还没有公开可见的优先处理请求。</p>
+        ) : null}
+
+        {priorityRequests.data?.length ? (
+          <ul className="result-list">
+            {priorityRequests.data.map((request) => (
+              <li key={request.request_id} className="result-item">
+                <p className="result-title">请求状态：{request.status}</p>
+                <p className="page-copy">{request.requested_url}</p>
+                <p className="meta-copy">
+                  创建时间 {formatDate(request.created_at)}
+                  {request.blog ? ` · 博客状态 ${request.blog.crawl_status}` : ""}
+                </p>
+                {request.blog_id ? (
+                  <Link className="result-link" to={`/blogs/${request.blog_id}`}>
+                    {isTerminalIngestionStatus(request.status) ? "查看博客详情" : "查看当前博客状态"}
+                  </Link>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </Surface>
+
+      <Surface title="检查博客 URL 是否已收录" note="来自 /api/blogs/lookup · identity-first">
+        <form className="search-form" onSubmit={handleLookupSubmit}>
+          <label className="search-field">
+            <span>博客首页 URL</span>
+            <input
+              aria-label="博客首页 URL"
+              name="lookup"
+              type="url"
+              value={lookupInput}
+              onChange={(event) => setLookupInput(event.target.value)}
+              placeholder="https://your-blog.example/"
+            />
+          </label>
+          <button className="primary-button" type="submit">
+            检查是否已收录
+          </button>
+          <button className="secondary-button" type="button" onClick={clearLookup}>
+            清空
+          </button>
+        </form>
+
+        {!committedLookup ? <p className="meta-copy">输入博客首页 URL 后，会优先按 canonical homepage identity 判断是否已在库中。</p> : null}
+        {lookup.isLoading ? <p>正在查找匹配博客…</p> : null}
+        {lookup.error ? <p className="error-copy">查库失败：{lookup.error.message}</p> : null}
+
+        {lookup.data?.total_matches ? (
+          <div className="result-list">
+            {lookup.data.items.map((blog) => (
+              <article key={blog.id} className="result-item">
+                <Link className="card-link" to={`/blogs/${blog.id}`}>
+                  <SiteIdentity title={blog.title} domain={blog.domain} iconUrl={blog.icon_url} />
+                </Link>
+                <p className="page-copy">{blog.url}</p>
+                <p className="meta-copy">
+                  命中原因：{lookup.data?.match_reason ?? "unknown"} · 当前状态 {blog.crawl_status}
+                </p>
+              </article>
+            ))}
+          </div>
+        ) : null}
+
+        {committedLookup && !lookup.isLoading && !lookup.error && lookup.data?.total_matches === 0 ? (
+          <>
+            <p className="meta-copy">当前没有命中现有博客记录。你可以沿用既有 priority ingestion 流程提交博客 URL 与联系方式。</p>
+            <form className="search-form" onSubmit={handleIngestionSubmit}>
               <label className="search-field">
-                <span>跳转页码</span>
+                <span>联系邮箱</span>
                 <input
-                  aria-label="跳转页码"
+                  aria-label="联系邮箱"
+                  name="email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                />
+              </label>
+              <button className="primary-button" type="submit" disabled={createIngestionRequest.isPending}>
+                {createIngestionRequest.isPending ? "提交中…" : "提交你的博客首页"}
+              </button>
+            </form>
+          </>
+        ) : null}
+
+        {createIngestionRequest.error ? <p className="error-copy">提交失败：{createIngestionRequest.error.message}</p> : null}
+
+        {dedupedBlog ? (
+          <p className="meta-copy">
+            这个博客已经收录，<Link className="result-link" to={`/blogs/${dedupedBlog.id}`}>直接查看详情</Link>。
+          </p>
+        ) : null}
+
+        {visibleIngestionStatus ? (
+          <div className="result-list">
+            <article className="result-item">
+              <p className="result-title">优先录入请求状态：{visibleIngestionStatus.status}</p>
+              <p className="page-copy">{visibleIngestionStatus.requested_url}</p>
+              {visibleIngestionStatus.blog ? (
+                <p className="meta-copy">当前博客状态：{visibleIngestionStatus.blog.crawl_status}</p>
+              ) : null}
+              {visibleIngestionStatus.blog_id ? (
+                <Link className="result-link" to={`/blogs/${visibleIngestionStatus.blog_id}`}>
+                  {isTerminalIngestionStatus(visibleIngestionStatus.status) ? "查看博客详情" : "稍后查看博客详情"}
+                </Link>
+              ) : null}
+            </article>
+          </div>
+        ) : null}
+      </Surface>
+
+      <Surface title="高级关系线索搜索（兼容）" note="保留旧 /search?...kind=relations 的兼容入口">
+        <div className="catalog-checkbox-row">
+          <button
+            className="secondary-button"
+            onClick={() => setShowRelationPanel((current) => !current)}
+            type="button"
+          >
+            {showRelationPanel ? "收起关系线索搜索" : "展开关系线索搜索"}
+          </button>
+          {relationQuery ? (
+            <button className="secondary-button" onClick={clearRelationSearch} type="button">
+              清空关系线索
+            </button>
+          ) : null}
+        </div>
+
+        {showRelationPanel ? (
+          <>
+            <form className="search-form" onSubmit={handleRelationSubmit}>
+              <label className="search-field">
+                <span>关系关键词</span>
+                <input
+                  aria-label="关系关键词"
+                  name="q"
+                  type="search"
+                  value={relationInput}
+                  onChange={(event) => setRelationInput(event.target.value)}
+                  placeholder="例如 blogroll、friends、友情链接"
+                />
+              </label>
+              <label className="search-field">
+                <span>返回上限</span>
+                <input
+                  aria-label="每类上限"
                   inputMode="numeric"
                   min={1}
-                  name="page"
-                  onChange={(event) => setPageInput(event.target.value)}
+                  max={50}
                   type="number"
-                  value={pageInput}
+                  value={relationLimitInput}
+                  onChange={(event) => setRelationLimitInput(event.target.value)}
                 />
               </label>
               <button className="primary-button" type="submit">
-                跳转
+                搜索关系线索
               </button>
             </form>
-          </div>
+
+            {!relationQuery ? <p className="meta-copy">这里是旧 `/search?...kind=relations` 的兼容区，只在你需要关系线索时展开使用。</p> : null}
+            {relationSearch.isLoading ? <p>正在搜索关系线索…</p> : null}
+            {relationSearch.error ? <p className="error-copy">搜索失败：{relationSearch.error.message}</p> : null}
+
+            {relationQuery && !relationSearch.isLoading && !relationSearch.error && relationSearch.data?.edges.length === 0 ? (
+              <p>没有匹配的关系线索。</p>
+            ) : null}
+
+            {relationSearch.data?.edges.length ? (
+              <ul className="result-list">
+                {relationSearch.data.edges.map((edge) => (
+                  <li key={edge.id} className="result-item">
+                    <p className="result-title">{edge.link_text || edge.link_url_raw}</p>
+                    <p className="page-copy">{edge.link_url_raw}</p>
+                    <p className="meta-copy">
+                      {edge.from_blog?.domain ?? edge.from_blog_id} {"->"} {edge.to_blog?.domain ?? edge.to_blog_id}
+                    </p>
+                    {edge.to_blog ? (
+                      <Link className="result-link" to={`/blogs/${edge.to_blog.id}`}>
+                        前往 {edge.to_blog.title?.trim() || edge.to_blog.domain}
+                      </Link>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </>
         ) : null}
       </Surface>
     </div>

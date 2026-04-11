@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from shared.config import Settings
@@ -195,6 +196,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
         sort: str = "id_desc",
         has_title: str | None = None,
@@ -208,12 +210,25 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 site=site,
                 url=url,
                 status=status,
+                statuses=statuses,
                 q=q,
                 sort=sort,
                 has_title=has_title,
                 has_icon=has_icon,
                 min_connections=min_connections,
             )
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/blogs/lookup")
+    def lookup_blog_candidates(url: str) -> dict[str, Any]:
+        try:
+            return get_state().persistence.lookup_blog_candidates(url=url)
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
             try:
@@ -291,6 +306,25 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             except Exception:  # noqa: BLE001
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-labeling/export")
+    def export_blog_label_training_csv(_: None = Depends(require_admin_access)) -> Response:
+        try:
+            csv_payload = get_state().persistence.export_blog_label_training_csv()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return Response(
+            content=csv_payload,
+            media_type="text/csv",
+            headers={
+                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+            },
+        )
 
     @app.get("/api/blogs/{blog_id}")
     def get_blog(blog_id: int) -> dict[str, Any]:
@@ -390,6 +424,18 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
         try:
             return get_state().persistence.create_ingestion_request(**payload.model_dump())
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/ingestion-requests")
+    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_priority_ingestion_requests()
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
             try:

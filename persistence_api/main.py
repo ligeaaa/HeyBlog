@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
@@ -115,6 +116,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
         sort: str = "id_desc",
         has_title: str | None = None,
@@ -128,6 +130,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 site=site,
                 url=url,
                 status=status,
+                statuses=statuses,
                 q=q,
                 sort=sort,
                 has_title=has_title,
@@ -136,6 +139,17 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/blogs/lookup")
+    def lookup_blog_candidates(url: str) -> dict[str, Any]:
+        try:
+            return get_state().repository.lookup_blog_candidates(url=url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/ingestion-requests")
+    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
+        return get_state().repository.list_priority_ingestion_requests()
 
     @app.get("/internal/blog-labeling/candidates")
     def list_blog_labeling_candidates(
@@ -179,6 +193,16 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except BlogLabelingConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-labeling/export")
+    def export_blog_label_training_csv() -> Response:
+        return Response(
+            content=get_state().repository.export_blog_label_training_csv(),
+            media_type="text/csv",
+            headers={
+                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+            },
+        )
 
     @app.get("/internal/queue/next")
     def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:

@@ -6,8 +6,7 @@ export type NavigationItem = {
 
 export const publicNavigation: NavigationItem[] = [
   { to: "/stats", label: "统计总览", summary: "概览当前图谱规模、处理进度与结构变化。" },
-  { to: "/blogs", label: "发现博客", summary: "筛选、翻页并快速进入已抓取博客详情。" },
-  { to: "/search", label: "搜索发现", summary: "通过查询词与关系线索继续扩展发现范围。" },
+  { to: "/blogs", label: "发现博客", summary: "统一查看系统队列、优先录入清单、URL 查库与关系线索兼容入口。" },
   { to: "/graph", label: "关系图谱", summary: "查看核心图谱、邻域展开与结构布局。" },
   { to: "/about", label: "项目介绍", summary: "了解 HeyBlog 的目标、边界与当前架构。" },
 ];

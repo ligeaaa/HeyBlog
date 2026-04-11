@@ -166,6 +166,7 @@ export type BlogCatalogFilters = {
   site: string | null;
   url: string | null;
   status: string | null;
+  statuses: string[] | null;
   sort: string;
   has_title: boolean | null;
   has_icon: boolean | null;
@@ -264,6 +265,38 @@ export type IngestionRequestPayload = {
   seed_blog: BlogRecord | null;
   matched_blog: BlogRecord | null;
   blog: BlogRecord | null;
+};
+
+export type PublicBlogSummaryPayload = {
+  id: number;
+  url: string;
+  normalized_url: string;
+  domain: string;
+  title: string;
+  icon_url: string | null;
+  crawl_status: string;
+};
+
+export type PriorityIngestionRequestPayload = {
+  request_id: number;
+  requested_url: string;
+  normalized_url: string;
+  status: string;
+  seed_blog_id: number | null;
+  matched_blog_id: number | null;
+  blog_id: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  blog: PublicBlogSummaryPayload | null;
+};
+
+export type BlogLookupPayload = {
+  query_url: string;
+  normalized_query_url: string;
+  items: BlogRecord[];
+  total_matches: number;
+  match_reason: "identity_key" | "normalized_url" | null;
 };
 
 export type CreateIngestionRequestResponse =
@@ -386,6 +419,30 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestText(path: string, init?: RequestOptions): Promise<string> {
+  const headers = new Headers(init?.headers);
+  if (init?.authToken) {
+    headers.set("authorization", `Bearer ${init.authToken}`);
+  }
+  const response = await fetch(path, {
+    ...init,
+    headers,
+  });
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      if (payload.detail) {
+        message = String(payload.detail);
+      }
+    } catch {
+      // Keep the default status-based message when the body is not JSON.
+    }
+    throw new ApiError(response.status, message);
+  }
+  return response.text();
+}
+
 function withQuery(path: string, params: Record<string, string | number | boolean | null | undefined>) {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -407,6 +464,7 @@ export const publicApi = {
     site?: string | null;
     url?: string | null;
     status?: string | null;
+    statuses?: string[] | null;
     sort?: string;
     hasTitle?: boolean | null;
     hasIcon?: boolean | null;
@@ -420,6 +478,7 @@ export const publicApi = {
         site: params.site,
         url: params.url,
         status: params.status,
+        statuses: params.statuses?.length ? params.statuses.join(",") : null,
         sort: params.sort,
         has_title: params.hasTitle,
         has_icon: params.hasIcon,
@@ -464,6 +523,12 @@ export const publicApi = {
         limit: params.limit ?? 10,
       }),
     ),
+  blogLookup: (params: { url: string }) =>
+    request<BlogLookupPayload>(
+      withQuery("/api/blogs/lookup", {
+        url: params.url,
+      }),
+    ),
   createIngestionRequest: (params: { homepageUrl: string; email: string }) =>
     request<CreateIngestionRequestResponse>("/api/ingestion-requests", {
       method: "POST",
@@ -473,6 +538,7 @@ export const publicApi = {
         email: params.email,
       }),
     }),
+  priorityIngestionRequests: () => request<PriorityIngestionRequestPayload[]>("/api/ingestion-requests"),
   ingestionRequest: (requestId: number, requestToken: string) =>
     request<IngestionRequestPayload>(
       withQuery(`/api/ingestion-requests/${requestId}`, {
@@ -510,6 +576,8 @@ export const adminApi = {
       body: JSON.stringify({ name: params.name }),
       authToken,
     }),
+  exportBlogLabelTrainingCsv: (authToken: string | null) =>
+    requestText("/api/admin/blog-labeling/export", { authToken }),
   replaceBlogLinkLabels: (authToken: string | null, params: { blogId: number; tagIds: number[] }) =>
     request<ReplaceBlogLinkLabelsPayload>(`/api/admin/blog-labeling/labels/${params.blogId}`, {
       method: "PUT",

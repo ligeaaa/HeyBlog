@@ -5,6 +5,7 @@ import {
   BlogDedupScanRunItemPayload,
   BlogLabelTagRecord,
   BlogLabelingPagePayload,
+  BlogLookupPayload,
   CreateBlogLabelTagPayload,
   BlogNeighborSummary,
   EdgeRecord,
@@ -42,6 +43,7 @@ export type BlogCatalogOptions = {
   site?: string | null;
   url?: string | null;
   status?: string | null;
+  statuses?: string[] | null;
   sort?: string;
   hasTitle?: boolean | null;
   hasIcon?: boolean | null;
@@ -68,6 +70,7 @@ export function useBlogCatalog(options: BlogCatalogOptions) {
     site: options.site ?? null,
     url: options.url ?? null,
     status: options.status ?? null,
+    statuses: options.statuses ?? null,
     sort: options.sort ?? "id_desc",
     hasTitle: options.hasTitle ?? null,
     hasIcon: options.hasIcon ?? null,
@@ -84,6 +87,7 @@ export function useBlogCatalog(options: BlogCatalogOptions) {
         site: queryOptions.site,
         url: queryOptions.url,
         status: queryOptions.status,
+        statuses: queryOptions.statuses,
         sort: queryOptions.sort,
         hasTitle: queryOptions.hasTitle,
         hasIcon: queryOptions.hasIcon,
@@ -151,6 +155,12 @@ export function useCreateBlogLabelTag() {
       );
       await queryClient.invalidateQueries({ queryKey: ["blog-labeling-candidates"] });
     },
+  });
+}
+
+export function useExportBlogLabelTrainingCsv() {
+  return useMutation({
+    mutationFn: () => adminApi.exportBlogLabelTrainingCsv(getAdminToken()),
   });
 }
 
@@ -328,9 +338,35 @@ export function useSearch(
 }
 
 export function useCreateIngestionRequest() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (params: { homepageUrl: string; email: string }) =>
       publicApi.createIngestionRequest(params),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["priority-ingestion-requests"] });
+      await queryClient.invalidateQueries({ queryKey: ["blog-catalog"] });
+    },
+  });
+}
+
+export function usePriorityIngestionRequests(options: QueryTuning = {}) {
+  return useQuery({
+    queryKey: ["priority-ingestion-requests"],
+    queryFn: publicApi.priorityIngestionRequests,
+    enabled: options.enabled ?? true,
+    staleTime: options.staleTime ?? 10000,
+    refetchInterval: options.refetchInterval ?? 5000,
+  });
+}
+
+export function useBlogLookup(url: string, options: QueryTuning = {}) {
+  return useQuery({
+    queryKey: ["blog-lookup", url],
+    queryFn: () => publicApi.blogLookup({ url }),
+    enabled: (options.enabled ?? true) && url.trim().length > 0,
+    staleTime: options.staleTime ?? 10000,
+    refetchInterval: options.refetchInterval ?? false,
+    placeholderData: (previousData: BlogLookupPayload | undefined) => previousData,
   });
 }
 

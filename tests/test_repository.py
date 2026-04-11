@@ -1,5 +1,7 @@
 """Regression tests for the SQLAlchemy-backed repository."""
 
+import csv
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -706,6 +708,9 @@ def test_repository_blog_catalog_paginates_and_filters(tmp_path: Path) -> None:
     assert [row["id"] for row in normalized_url_filtered["items"]] == [seeded[0]]
     combined = repository.list_blogs_catalog(q="site", status="finished")
     assert [row["id"] for row in combined["items"]] == [seeded[2], seeded[0]]
+    queue = repository.list_blogs_catalog(statuses="waiting, processing", sort="id_asc")
+    assert queue["filters"]["statuses"] == ["WAITING", "PROCESSING"]
+    assert queue["sort"] == "id_asc"
 
 
 def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None:
@@ -733,6 +738,7 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
         "site": None,
         "url": None,
         "status": None,
+        "statuses": None,
         "sort": "id_desc",
         "has_title": None,
         "has_icon": None,
@@ -747,8 +753,14 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
     assert waiting["filters"]["status"] == "WAITING"
     assert len(waiting["items"]) == 1
 
+    multi_status = repository.list_blogs_catalog(statuses=" waiting , processing ")
+    assert multi_status["filters"]["statuses"] == ["WAITING", "PROCESSING"]
+
     with pytest.raises(ValueError, match="Unsupported crawl status"):
         repository.list_blogs_catalog(status="unknown")
+
+    with pytest.raises(ValueError, match="Unsupported crawl status"):
+        repository.list_blogs_catalog(statuses="waiting,bad")
 
     with pytest.raises(ValueError, match="Unsupported blog catalog sort"):
         repository.list_blogs_catalog(sort="magic")
@@ -786,6 +798,77 @@ def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows
     assert [row["id"] for row in icon_filtered["items"]] == [blog_id]
     assert title_filtered["items"][0]["title"] == "legacy.example"
     assert icon_filtered["items"][0]["icon_url"] == "https://legacy.example/favicon.ico"
+
+
+def test_repository_priority_ingestion_list_hides_private_fields_and_orders_active_first(tmp_path: Path) -> None:
+    """Public priority list should expose queue state without leaking request secrets."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    queued = repository.create_ingestion_request(
+        homepage_url="https://queued.example/",
+        email="owner@example.com",
+    )
+    processing = repository.create_ingestion_request(
+        homepage_url="https://processing.example/",
+        email="runner@example.com",
+    )
+    repository.mark_ingestion_request_crawling(blog_id=processing["seed_blog_id"])
+    repository.mark_blog_result(
+        blog_id=processing["seed_blog_id"],
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+        metadata_captured=True,
+        title="Processing Blog",
+        icon_url="https://processing.example/favicon.ico",
+    )
+
+    items = repository.list_priority_ingestion_requests()
+
+    assert [item["status"] for item in items] == ["QUEUED", "COMPLETED"]
+    assert items[0]["request_id"] == queued["request_id"]
+    assert items[0]["requested_url"] == "https://queued.example/"
+    assert items[0]["blog"]["crawl_status"] == "WAITING"
+    assert "email" not in items[0]
+    assert "request_token" not in items[0]
+    assert "priority" not in items[0]
+    assert "email" not in items[0]["blog"]
+
+
+def test_repository_blog_lookup_prefers_identity_match_and_returns_reason(tmp_path: Path) -> None:
+    """Lookup should follow the frozen identity-first match ladder."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://langhai.cc/",
+        normalized_url="https://langhai.cc/",
+        domain="langhai.cc",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+    )
+
+    payload = repository.lookup_blog_candidates(url="http://blog.langhai.cc/index.html")
+
+    assert payload["normalized_query_url"] == "https://langhai.cc/"
+    assert payload["match_reason"] == "identity_key"
+    assert [item["id"] for item in payload["items"]] == [blog_id]
+
+
+def test_repository_blog_lookup_returns_empty_payload_when_no_match(tmp_path: Path) -> None:
+    """Lookup should return a stable empty payload instead of broad fuzzy matches."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    payload = repository.lookup_blog_candidates(url="https://missing.example/")
+
+    assert payload["query_url"] == "https://missing.example/"
+    assert payload["normalized_query_url"] == "https://missing.example/"
+    assert payload["items"] == []
+    assert payload["total_matches"] == 0
+    assert payload["match_reason"] is None
 
 
 def test_repository_blog_labeling_candidates_only_return_finished_blogs_with_joined_label_state(
@@ -896,6 +979,59 @@ def test_repository_blog_labeling_upsert_rejects_invalid_targets_and_reset_clear
     assert reset["blog_link_labels_deleted"] == 2
     assert reset["blog_label_tags_deleted"] == 2
     assert repository.list_blog_labeling_candidates()["items"] == []
+
+
+def test_repository_exports_blog_label_training_csv_with_label_names_and_only_labeled_rows(
+    tmp_path: Path,
+) -> None:
+    """Training export should skip unlabeled rows and flatten one row per assigned label."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    alpha_id, inserted = repository.upsert_blog(
+        url="https://alpha.example/",
+        normalized_url="https://alpha.example/",
+        domain="alpha.example",
+    )
+    assert inserted is True
+    beta_id, inserted = repository.upsert_blog(
+        url="https://beta.example/",
+        normalized_url="https://beta.example/",
+        domain="beta.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=alpha_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="Alpha",
+    )
+    repository.mark_blog_result(
+        blog_id=beta_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+    )
+
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    official_tag = repository.create_blog_label_tag(name="official")
+    repository.replace_blog_link_labels(blog_id=alpha_id, tag_ids=[official_tag["id"], blog_tag["id"]])
+
+    exported = repository.export_blog_label_training_csv()
+
+    rows = list(csv.DictReader(StringIO(exported)))
+    assert rows == [
+        {
+            "url": "https://alpha.example/",
+            "title": "Alpha",
+            "label": "blog",
+        },
+        {
+            "url": "https://alpha.example/",
+            "title": "Alpha",
+            "label": "official",
+        },
+    ]
 
 
 def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path: Path) -> None:

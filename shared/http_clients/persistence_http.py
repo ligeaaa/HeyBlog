@@ -39,6 +39,11 @@ class PersistenceHttpClient:
         response.raise_for_status()
         return response.json()
 
+    def _get_text(self, path: str, params: dict[str, Any] | None = None) -> str:
+        response = self.client.get(path, params=params)
+        response.raise_for_status()
+        return response.text
+
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
     ) -> None:
@@ -90,6 +95,12 @@ class PersistenceHttpClient:
             f"/internal/ingestion-requests/{request_id}",
             {"request_token": request_token},
         )
+
+    def list_priority_ingestion_requests(self) -> list[dict[str, Any]]:
+        return self._get("/internal/ingestion-requests")
+
+    def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
+        return self._get("/internal/blogs/lookup", {"url": url})
 
     def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         return self._post(
@@ -195,6 +206,7 @@ class PersistenceHttpClient:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
         sort: str = "id_desc",
         has_title: bool | None = None,
@@ -209,6 +221,7 @@ class PersistenceHttpClient:
                 "site": site,
                 "url": url,
                 "status": status,
+                "statuses": statuses,
                 "q": q,
                 "sort": sort,
                 "has_title": has_title,
@@ -252,6 +265,9 @@ class PersistenceHttpClient:
                 "tag_ids": tag_ids,
             },
         )
+
+    def export_blog_label_training_csv(self) -> str:
+        return self._get_text("/internal/blog-labeling/export")
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         return self._get(f"/internal/blogs/{blog_id}")
