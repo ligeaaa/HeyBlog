@@ -67,6 +67,14 @@ def _parse_csv_env(name: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+def _parse_bool_env(name: str, *, default: bool = False) -> bool:
+    """Parse a boolean environment variable with an explicit default."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(slots=True)
 class Settings:
     """Configuration values for crawler, storage, and exports."""
@@ -95,6 +103,8 @@ class Settings:
     friend_link_prefix_blocklist: tuple[str, ...] = ()
     admin_token: str | None = None
     admin_dev_bypass: bool = False
+    decision_model_root: Path = PROJECT_ROOT / "data" / "model"
+    decision_model_consensus_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -179,6 +189,12 @@ class Settings:
             friend_link_exact_url_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST"),
             friend_link_prefix_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST"),
             admin_token=os.getenv("HEYBLOG_ADMIN_TOKEN"),
-            admin_dev_bypass=os.getenv("HEYBLOG_ADMIN_DEV_BYPASS", "").strip().lower()
-            in {"1", "true", "yes", "on"},
+            admin_dev_bypass=_parse_bool_env("HEYBLOG_ADMIN_DEV_BYPASS"),
+            decision_model_root=Path(
+                os.getenv("HEYBLOG_DECISION_MODEL_ROOT", str(PROJECT_ROOT / "data" / "model"))
+            ),
+            decision_model_consensus_enabled=_parse_bool_env(
+                "HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED",
+                default=True,
+            ),
         )

@@ -47,6 +47,7 @@ crawler/
 │   │   ├── __init__.py               # decisions 子包标记文件
 │   │   ├── base.py                   # 决策步骤协议 UrlDecisionStep
 │   │   ├── chain.py                  # 决策链 UrlDecisionChain
+│   │   ├── consensus.py              # 基于最新 trainer 模型的多模型交叉验证决策器
 │   │   └── rules.py                  # 基于现有 filters 的规则决策器
 │   └── fetching/                     # 网络抓取抽象与 HTTPX 实现
 │       ├── __init__.py               # fetching 子包标记文件
@@ -246,11 +247,26 @@ crawler/
 
 把 `filters.py` 的硬规则包装成一个决策步骤 `RuleBasedDecider`。
 
+#### `crawling/decisions/consensus.py`
+
+把 `data/model/<model_name>/<run>/` 下每个模型的最新 run 加载出来，对候选 URL 做一次轻量推理。
+
+规则是严格负向共识：
+
+- 如果所有可用模型都判定该 URL 为 `non_blog`，则过滤掉
+- 只要任意一个模型判定为 `blog`，就保留
+- 如果本地没有可用模型产物，或者某些模型 run 已损坏，则跳过这一层，不影响 crawler 主流程
+
 #### `crawling/decisions/chain.py`
 
 把多个决策步骤串起来，形成 `UrlDecisionChain`。
 
-当前实现里主要是单个 `RuleBasedDecider`，但结构已经为未来扩展留好了位置。
+当前实现顺序是：
+
+1. `RuleBasedDecider` 先执行确定性的硬规则拦截
+2. `ModelConsensusDecider` 再对剩余候选做多模型交叉验证
+
+也就是说，模型共识是附加过滤层，不会覆盖前面的硬规则。
 
 ### 7. 抓取基础设施
 
@@ -408,6 +424,7 @@ python -m uvicorn persistence_api.main:app --reload --port 8030
 HEYBLOG_PERSISTENCE_BASE_URL=http://127.0.0.1:8030 \
 HEYBLOG_SEED_PATH=$(pwd)/seed.csv \
 HEYBLOG_EXPORT_DIR=$(pwd)/data/exports \
+HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED=1 \
 python -m uvicorn crawler.main:app --reload --port 8010
 ```
 
