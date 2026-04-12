@@ -6,9 +6,9 @@ from typing import Callable
 
 import pytest
 
-from crawler.fetcher import FetchAttempt
-from crawler.fetcher import FetchResult
-from crawler.pipeline import CrawlPipeline
+from crawler.crawling.fetching.base import FetchAttempt
+from crawler.crawling.fetching.base import FetchResult
+from crawler.crawling.pipeline import CrawlPipeline
 from persistence_api.repository import Repository
 from shared.config import Settings
 

@@ -19,7 +19,14 @@ STRUCTURAL_CONTAINERS = ("main", "section", "article", "aside", "div", "ul", "ol
 
 @dataclass
 class ExtractedLink:
-    """Represent one extracted anchor link with nearby context."""
+    """Represent one extracted anchor candidate from a friend-link section.
+
+    Attributes:
+        url: Absolute URL resolved from the anchor's ``href``.
+        text: Normalized anchor text shown to users on the page.
+        context_text: Normalized local container text used later by filtering
+            and diagnostics.
+    """
 
     url: str
     text: str
@@ -27,7 +34,15 @@ class ExtractedLink:
 
 
 def _container_depth(container: Tag) -> int:
-    """Measure how specific a container is within the page tree."""
+    """Measure how deeply one HTML container is nested in the document tree.
+
+    Args:
+        container: Structural HTML container being considered as a section.
+
+    Returns:
+        An integer depth where higher values mean the container is more specific
+        and usually preferable when multiple nested containers match.
+    """
     depth = 0
     current = container.parent
     while isinstance(current, Tag):
@@ -37,7 +52,16 @@ def _container_depth(container: Tag) -> int:
 
 
 def _count_external_links(base_url: str, container: Tag) -> int:
-    """Count outbound-looking links in a section."""
+    """Count external-looking links inside one candidate section.
+
+    Args:
+        base_url: Page URL used to resolve relative anchors and identify the
+            page's own host.
+        container: Section candidate whose anchors should be counted.
+
+    Returns:
+        The number of anchors that resolve to non-empty external HTTP(S) hosts.
+    """
     host = urlparse(base_url).netloc.lower()
     count = 0
     for anchor in container.find_all("a", href=True):
@@ -49,7 +73,15 @@ def _count_external_links(base_url: str, container: Tag) -> int:
 
 
 def _heading_text(container: Tag) -> str:
-    """Return the strongest local heading for a section candidate."""
+    """Return the strongest local heading text for one section candidate.
+
+    Args:
+        container: HTML container that may represent a friend-links section.
+
+    Returns:
+        The most informative nearby heading text, or an empty string when no
+        heading-like element is found.
+    """
     heading = container.find(["h1", "h2", "h3", "h4", "legend", "summary", "strong"])
     if heading is not None:
         return clean_text(heading.get_text(" ", strip=True))
@@ -59,7 +91,16 @@ def _heading_text(container: Tag) -> str:
 
 
 def _looks_like_friend_links_section(base_url: str, container: Tag) -> bool:
-    """Return True when a container likely represents a friend-links section."""
+    """Decide whether one container likely represents a friend-links section.
+
+    Args:
+        base_url: Page URL used to evaluate external links within the container.
+        container: Structural HTML container being evaluated.
+
+    Returns:
+        ``True`` when section keywords, identifiers, or enough external links
+        suggest the container is a friend-links area.
+    """
     text = clean_text(container.get_text(" ", strip=True))
     if not text:
         return False
@@ -84,12 +125,30 @@ def _looks_like_friend_links_section(base_url: str, container: Tag) -> bool:
 
 
 def _is_overlapping_container(container: Tag, chosen: list[Tag]) -> bool:
-    """Return True when the container overlaps an already selected section."""
+    """Check whether one container overlaps an already selected section.
+
+    Args:
+        container: New candidate container being considered.
+        chosen: Containers already selected for extraction.
+
+    Returns:
+        ``True`` when the candidate is nested inside or wraps an already chosen
+        container and should therefore be skipped.
+    """
     return any(existing in container.parents or container in existing.parents for existing in chosen)
 
 
 def _select_candidate_containers(base_url: str, containers: list[Tag]) -> list[Tag]:
-    """Pick the most specific containers that look like friend-links sections."""
+    """Pick the best HTML containers that look like friend-links sections.
+
+    Args:
+        base_url: Page URL used to evaluate external links in each container.
+        containers: Structural HTML containers extracted from the page.
+
+    Returns:
+        A list of non-overlapping section containers ordered by specificity and
+        original appearance.
+    """
     matching: list[tuple[int, int, Tag]] = []
     for index, container in enumerate(containers):
         if not _looks_like_friend_links_section(base_url, container):
@@ -99,6 +158,8 @@ def _select_candidate_containers(base_url: str, containers: list[Tag]) -> list[T
     matching.sort(key=lambda item: (-item[0], item[1]))
     selected: list[Tag] = []
     for _, _, container in matching:
+        # When nested containers all look plausible, keep the deepest one to
+        # avoid extracting the same links from both a wrapper and its child list.
         if _is_overlapping_container(container, selected):
             continue
         selected.append(container)
@@ -106,7 +167,15 @@ def _select_candidate_containers(base_url: str, containers: list[Tag]) -> list[T
 
 
 def _fallback_container(containers: list[Tag]) -> list[Tag]:
-    """Use the first structural container when no explicit section matches."""
+    """Choose a minimal fallback container when no explicit section matches.
+
+    Args:
+        containers: Structural HTML containers extracted from the page.
+
+    Returns:
+        A one-item list containing the first anchor-bearing structural container,
+        or the first structural container when none contain anchors.
+    """
     for container in containers:
         if container.find("a", href=True) is not None:
             return [container]
@@ -114,7 +183,16 @@ def _fallback_container(containers: list[Tag]) -> list[Tag]:
 
 
 def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
-    """Parse HTML and return absolute links from friend-link-looking sections."""
+    """Extract absolute candidate links from a friend-link-like page.
+
+    Args:
+        base_url: Page URL used to resolve relative links.
+        html: Raw HTML source of the candidate friend-link page.
+
+    Returns:
+        A list of ``ExtractedLink`` objects representing unique anchors pulled
+        from the selected friend-link containers.
+    """
     soup = BeautifulSoup(html, "html.parser")
     containers = soup.find_all(STRUCTURAL_CONTAINERS)
     links: list[ExtractedLink] = []
@@ -122,6 +200,8 @@ def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
 
     selected = _select_candidate_containers(base_url, containers)
     if not selected:
+        # Fallback extraction keeps the pipeline moving for unusual markup, while
+        # the later filter stage still decides which targets are worth storing.
         selected = _fallback_container(containers)
 
     for container in selected:
@@ -139,4 +219,3 @@ def extract_candidate_links(base_url: str, html: str) -> list[ExtractedLink]:
                 )
             )
     return links
-

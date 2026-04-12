@@ -7,7 +7,16 @@ from dataclasses import dataclass
 
 @dataclass(slots=True, frozen=True)
 class CrawlState:
-    """Represent persisted crawl state for one blog node."""
+    """Represent the persisted crawl state written back for one blog node.
+
+    Attributes:
+        status: Final crawl status such as ``FINISHED`` or ``FAILED``.
+        status_code: HTTP status code associated with the crawl, when known.
+        friend_links_count: Number of accepted outbound blog links discovered.
+        metadata_captured: Whether title/icon metadata was successfully stored.
+        title: Extracted page title, if available.
+        icon_url: Extracted icon URL, if available.
+    """
 
     status: str
     status_code: int | None = None
@@ -15,4 +24,3 @@ class CrawlState:
     metadata_captured: bool = False
     title: str | None = None
     icon_url: str | None = None
-

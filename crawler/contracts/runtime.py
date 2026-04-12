@@ -11,6 +11,16 @@ from typing import Any
 
 
 def _elapsed_seconds(started_at: str | None, *, now: datetime | None = None) -> float | None:
+    """Return rounded elapsed seconds from an ISO timestamp.
+
+    Args:
+        started_at: ISO-8601 timestamp string representing when work started.
+        now: Optional reference timestamp used primarily by tests.
+
+    Returns:
+        Rounded elapsed seconds, or ``None`` when the timestamp is missing or
+        invalid.
+    """
     if not started_at:
         return None
     try:
@@ -25,7 +35,27 @@ def _elapsed_seconds(started_at: str | None, *, now: datetime | None = None) -> 
 
 @dataclass(slots=True)
 class RuntimeWorkerSnapshot:
-    """Represent one crawler worker's current progress."""
+    """Represent the current and recent state of one runtime worker.
+
+    Attributes:
+        worker_id: Stable public identifier for the worker.
+        worker_index: One-based worker index used for deterministic ordering.
+        status: Current worker state such as ``idle`` or ``running``.
+        current_blog_id: Blog currently assigned to the worker, if any.
+        current_url: URL of the blog currently assigned to the worker.
+        current_stage: Human-readable sub-stage within the worker lifecycle.
+        task_started_at: ISO timestamp recording when the current task began.
+        last_transition_at: ISO timestamp for the worker's most recent status
+            transition.
+        last_completed_at: ISO timestamp for the most recently completed task.
+        last_error: Last error message observed for this worker.
+        processed: Total number of processed blogs handled by this worker in the
+            active run.
+        discovered: Total number of discovered child links produced by this
+            worker in the active run.
+        failed: Total number of failed blog attempts recorded for this worker in
+            the active run.
+    """
 
     worker_id: str
     worker_index: int
@@ -42,6 +72,15 @@ class RuntimeWorkerSnapshot:
     failed: int = 0
 
     def as_dict(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Serialize the worker snapshot to the public API payload shape.
+
+        Args:
+            now: Optional reference timestamp used to compute elapsed time.
+
+        Returns:
+            A dictionary version of the snapshot with an added
+            ``elapsed_seconds`` field.
+        """
         payload = asdict(self)
         payload["elapsed_seconds"] = _elapsed_seconds(self.task_started_at, now=now)
         return payload
@@ -49,7 +88,25 @@ class RuntimeWorkerSnapshot:
 
 @dataclass(slots=True)
 class RuntimeSnapshot:
-    """Represent crawler runtime state for UI and API consumers."""
+    """Represent the aggregate crawler runtime state exposed over the API.
+
+    Attributes:
+        runner_status: Overall runtime status such as ``idle`` or ``running``.
+        active_run_id: Unique identifier for the currently active run, if any.
+        worker_count: Total number of configured runtime workers.
+        active_workers: Number of workers currently assigned a blog.
+        current_worker_id: Representative active worker chosen for legacy API
+            compatibility.
+        current_blog_id: Blog currently exposed through the compatibility view.
+        current_url: URL currently exposed through the compatibility view.
+        current_stage: Stage currently exposed through the compatibility view.
+        task_started_at: Start timestamp for the compatibility-view worker.
+        last_started_at: Timestamp of the most recent run start.
+        last_stopped_at: Timestamp of the most recent run completion or stop.
+        last_error: Most recent runtime-level error message.
+        last_result: Most recent aggregate run result payload.
+        workers: Per-worker runtime snapshots.
+    """
 
     runner_status: str = "idle"
     active_run_id: str | None = None
@@ -67,6 +124,12 @@ class RuntimeSnapshot:
     workers: list[RuntimeWorkerSnapshot] = field(default_factory=list)
 
     def _selected_worker(self) -> RuntimeWorkerSnapshot | None:
+        """Select the worker exposed through the compatibility snapshot fields.
+
+        Returns:
+            The first active worker by index, or ``None`` when no worker is
+            currently active.
+        """
         active = [worker for worker in self.workers if worker.status == "running"]
         if not active:
             active = [worker for worker in self.workers if worker.current_blog_id is not None]
@@ -75,7 +138,12 @@ class RuntimeSnapshot:
         return sorted(active, key=lambda worker: worker.worker_index)[0]
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the public runtime payload shape."""
+        """Serialize the runtime snapshot to the public API payload shape.
+
+        Returns:
+            A dictionary containing aggregate runtime status plus serialized
+            per-worker snapshots and compatibility fields.
+        """
         now = datetime.now(UTC)
         payload = asdict(self)
         payload["workers"] = [worker.as_dict(now=now) for worker in self.workers]
@@ -96,7 +164,14 @@ class RuntimeSnapshot:
 
 @dataclass(slots=True)
 class RuntimeAggregate:
-    """Accumulate the background loop totals across single-blog batches."""
+    """Accumulate totals across one runtime worker-pool execution.
+
+    Attributes:
+        processed: Total number of processed blogs.
+        discovered: Total number of discovered outbound links.
+        failed: Total number of failed blog attempts.
+        exports: Export payload returned after the run writes graph snapshots.
+    """
 
     processed: int = 0
     discovered: int = 0
@@ -104,14 +179,27 @@ class RuntimeAggregate:
     exports: dict[str, Any] = field(default_factory=dict)
 
     def include(self, result: dict[str, Any]) -> None:
-        """Merge one run_once result into the aggregate counters."""
+        """Merge one single-batch result into the aggregate counters.
+
+        Args:
+            result: ``run_once``-style result payload containing processed,
+                discovered, failed, and export fields.
+
+        Returns:
+            ``None``. The aggregate is updated in place.
+        """
         self.processed += int(result["processed"])
         self.discovered += int(result["discovered"])
         self.failed += int(result["failed"])
         self.exports = dict(result["exports"])
 
     def as_result(self) -> dict[str, Any]:
-        """Return the aggregate payload using the existing dict contract."""
+        """Return the aggregate counters using the crawler's dict contract.
+
+        Returns:
+            A dictionary containing the aggregate processed, discovered, failed,
+            and export values for the runtime execution.
+        """
         return {
             "processed": self.processed,
             "discovered": self.discovered,

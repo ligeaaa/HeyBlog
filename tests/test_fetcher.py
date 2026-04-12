@@ -7,7 +7,7 @@ import asyncio
 import httpx
 
 from crawler.crawling.fetching.base import PageTooLargeError
-from crawler.fetcher import Fetcher
+from crawler.crawling.fetching.httpx_fetcher import Fetcher
 
 
 class FakeStreamResponse:
@@ -153,7 +153,7 @@ def build_response(
 def test_fetch_many_respects_max_concurrency(monkeypatch) -> None:
     """Batch fetching should not exceed the configured concurrency limit."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         f"https://example.com/{index}": build_response(f"https://example.com/{index}")
@@ -169,7 +169,7 @@ def test_fetch_many_respects_max_concurrency(monkeypatch) -> None:
 def test_fetch_many_returns_partial_results_when_one_url_fails(monkeypatch) -> None:
     """One failed URL should not prevent the rest of the batch from succeeding."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/ok": build_response("https://example.com/ok"),
@@ -190,7 +190,7 @@ def test_fetch_many_returns_partial_results_when_one_url_fails(monkeypatch) -> N
 def test_fetch_many_preserves_input_key_space(monkeypatch) -> None:
     """Batch results should stay keyed by the original request URL."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/source": build_response(
@@ -210,7 +210,7 @@ def test_fetch_many_preserves_input_key_space(monkeypatch) -> None:
 def test_fetch_many_reuses_fetch_contract_for_headers_timeout_and_redirects(monkeypatch) -> None:
     """Batch fetching should reuse the same HTTP contract as single fetches."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=7.5, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/ok": build_response("https://example.com/ok")
@@ -229,7 +229,7 @@ def test_fetch_many_reuses_fetch_contract_for_headers_timeout_and_redirects(monk
 def test_fetch_many_allows_per_call_timeout_override(monkeypatch) -> None:
     """Batch fetching should allow callers to tighten the timeout per crawl budget."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=7.5, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/ok": build_response("https://example.com/ok")
@@ -243,7 +243,7 @@ def test_fetch_many_allows_per_call_timeout_override(monkeypatch) -> None:
 def test_fetch_many_classifies_failures_by_error_kind(monkeypatch) -> None:
     """Batch fetching should expose stable error kinds for expected failure classes."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     failing_response = build_response("https://example.com/http-error", status_code=503)
     FakeAsyncClient.responses = {
@@ -268,7 +268,7 @@ def test_fetch_many_classifies_failures_by_error_kind(monkeypatch) -> None:
 def test_fetch_many_classifies_invalid_url_without_failing_the_batch(monkeypatch) -> None:
     """Malformed URLs should be downgraded to a failed attempt instead of crashing the batch."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/ok": build_response("https://example.com/ok"),
@@ -297,7 +297,7 @@ def test_fetch_many_requires_unique_request_urls() -> None:
 def test_fetch_many_sync_wrapper_rejects_running_event_loop(monkeypatch) -> None:
     """The sync wrapper should fail clearly when called from an existing event loop."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/ok": build_response("https://example.com/ok")
@@ -317,7 +317,7 @@ def test_fetch_many_sync_wrapper_rejects_running_event_loop(monkeypatch) -> None
 def test_fetch_many_async_supports_callers_with_running_event_loop(monkeypatch) -> None:
     """Async callers should be able to use the public async batch-fetch API directly."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=1024)
     FakeAsyncClient.responses = {
         "https://example.com/ok": build_response("https://example.com/ok")
@@ -354,7 +354,7 @@ def test_fetch_rejects_large_page_from_content_length(monkeypatch) -> None:
 def test_fetch_many_classifies_page_too_large(monkeypatch) -> None:
     """Batch fetching should downgrade oversized pages to a stable error kind."""
     reset_fake_async_client()
-    monkeypatch.setattr("crawler.fetcher.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("crawler.crawling.fetching.httpx_fetcher.httpx.AsyncClient", FakeAsyncClient)
     fetcher = Fetcher(user_agent="TestAgent/1.0", timeout_seconds=3.0, max_page_bytes=16)
     FakeAsyncClient.responses = {
         "https://example.com/huge": build_response(

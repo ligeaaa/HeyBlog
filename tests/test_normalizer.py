@@ -1,7 +1,7 @@
 """Unit tests for URL normalization behavior."""
 
-from crawler.normalizer import normalize_url
-from crawler.normalizer import resolve_blog_identity
+from crawler.crawling.normalization import normalize_url
+from crawler.crawling.normalization import resolve_blog_identity
 
 
 def test_normalize_url_removes_tracking_params_and_fragment() -> None:

@@ -20,8 +20,8 @@
 
 - [frontend/server.py](../frontend/server.py)
 - [backend/main.py](../backend/main.py)
-- [crawler/runtime.py](../crawler/runtime.py)
-- [crawler/pipeline.py](../crawler/pipeline.py)
+- [crawler/runtime/service.py](../crawler/runtime/service.py)
+- [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
 - [persistence_api/graph_service.py](../persistence_api/graph_service.py)
 
 ## 1. 总体拓扑
@@ -117,7 +117,7 @@ search  -> persistence-api
   -> POST /api/crawl/bootstrap
   -> frontend 代理到 backend
   -> backend -> crawler /internal/crawl/bootstrap
-  -> crawler.pipeline 读取 seed.csv
+  -> crawler.crawling.bootstrap 读取 seed.csv
   -> crawler -> persistence-api /internal/blogs/upsert
   -> crawler -> persistence-api /internal/logs
 ```

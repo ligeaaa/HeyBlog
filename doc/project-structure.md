@@ -67,8 +67,8 @@ HeyBlog 现在以“顶层服务包是主线，`services/` 是兼容层”的结
 
 ### 3.2 关键实现文件
 
-- `crawler` 主流程： [crawler/pipeline.py](../crawler/pipeline.py)
-- `crawler` 运行时： [crawler/runtime.py](../crawler/runtime.py)
+- `crawler` 主流程： [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
+- `crawler` 运行时： [crawler/runtime/service.py](../crawler/runtime/service.py)
 - `persistence-api` 仓储实现： [persistence_api/repository.py](../persistence_api/repository.py)
 - `persistence-api` 图聚合： [persistence_api/graph_service.py](../persistence_api/graph_service.py)
 - 前端路由： [frontend/src/router.tsx](../frontend/src/router.tsx)

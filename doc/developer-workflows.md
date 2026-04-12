@@ -18,7 +18,7 @@
 ## 最后核对源码入口
 
 - [backend/main.py](../backend/main.py)
-- [crawler/pipeline.py](../crawler/pipeline.py)
+- [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
 - [persistence_api/graph_service.py](../persistence_api/graph_service.py)
 - [search/main.py](../search/main.py)
 - [shared/config.py](../shared/config.py)
@@ -43,16 +43,16 @@
 先看：
 
 - [crawler/main.py](../crawler/main.py)
-- [crawler/pipeline.py](../crawler/pipeline.py)
-- [crawler/runtime.py](../crawler/runtime.py)
+- [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
+- [crawler/runtime/service.py](../crawler/runtime/service.py)
 
 常见落点：
 
-- 抓取行为： [crawler/fetcher.py](../crawler/fetcher.py)
-- 友链页发现： [crawler/discovery.py](../crawler/discovery.py)
-- 链接抽取： [crawler/extractor.py](../crawler/extractor.py)
+- 抓取行为： [crawler/crawling/fetching/httpx_fetcher.py](../crawler/crawling/fetching/httpx_fetcher.py)
+- 友链页发现： [crawler/crawling/discovery.py](../crawler/crawling/discovery.py)
+- 链接抽取： [crawler/crawling/extraction.py](../crawler/crawling/extraction.py)
 - 过滤规则： [crawler/filters.py](../crawler/filters.py)
-- URL 归一化： [crawler/normalizer.py](../crawler/normalizer.py)
+- URL 归一化： [crawler/crawling/normalization.py](../crawler/crawling/normalization.py)
 - 导出逻辑： [crawler/export_service.py](../crawler/export_service.py)
 
 ## 3. 我要查 graph 链路
@@ -96,7 +96,7 @@
 - [frontend/src/pages/ControlPage.tsx](../frontend/src/pages/ControlPage.tsx)
 - [frontend/src/pages/CurrentRuntimePage.tsx](../frontend/src/pages/CurrentRuntimePage.tsx)
 - [backend/main.py](../backend/main.py)
-- [crawler/runtime.py](../crawler/runtime.py)
+- [crawler/runtime/service.py](../crawler/runtime/service.py)
 
 重点记住：
 

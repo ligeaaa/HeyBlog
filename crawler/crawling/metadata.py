@@ -14,13 +14,29 @@ from crawler.utils import clean_text
 
 @dataclass(slots=True)
 class SiteMetadata:
-    """Represent display metadata derived from one site homepage."""
+    """Represent display metadata derived from one crawled homepage.
+
+    Attributes:
+        title: Normalized page title suitable for display, or ``None`` when no
+            usable title exists.
+        icon_url: Best icon candidate URL for the site, or ``None`` when no
+            safe icon URL can be derived.
+    """
 
     title: str | None
     icon_url: str | None
 
 
 def _link_rel_tokens(link: Tag) -> set[str]:
+    """Normalize the ``rel`` tokens for one HTML ``<link>`` element.
+
+    Args:
+        link: HTML link tag whose ``rel`` attribute should be interpreted.
+
+    Returns:
+        A set of lower-cased relation tokens, or an empty set when ``rel`` is
+        missing or unusable.
+    """
     rel_value = link.get("rel")
     if isinstance(rel_value, str):
         return {token.strip().lower() for token in rel_value.split() if token.strip()}
@@ -30,6 +46,15 @@ def _link_rel_tokens(link: Tag) -> set[str]:
 
 
 def _icon_priority(rel_tokens: set[str]) -> int | None:
+    """Assign icon-selection priority to one set of ``rel`` tokens.
+
+    Args:
+        rel_tokens: Normalized relation tokens from a ``<link>`` tag.
+
+    Returns:
+        A lower-is-better priority integer for supported icon relations, or
+        ``None`` when the relation should not be treated as a site icon.
+    """
     if rel_tokens == {"shortcut", "icon"}:
         return 0
     if "icon" in rel_tokens and "apple-touch-icon" not in rel_tokens and "mask-icon" not in rel_tokens:
@@ -42,11 +67,29 @@ def _icon_priority(rel_tokens: set[str]) -> int | None:
 
 
 def _is_http_url(candidate_url: str) -> bool:
+    """Check whether one candidate URL is a usable absolute HTTP(S) URL.
+
+    Args:
+        candidate_url: URL string to validate.
+
+    Returns:
+        ``True`` when the URL uses HTTP(S) and has a non-empty network location.
+    """
     parsed = urlsplit(candidate_url)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _pick_icon_url(page_url: str, soup: BeautifulSoup) -> str | None:
+    """Choose the best icon URL for one crawled page.
+
+    Args:
+        page_url: Final fetched page URL used to resolve relative icon paths.
+        soup: Parsed HTML document for the page.
+
+    Returns:
+        The highest-priority safe icon URL found in the page markup, or a
+        ``/favicon.ico`` fallback derived from the page origin when possible.
+    """
     ranked_candidates: list[tuple[int, int, str]] = []
     for index, link in enumerate(soup.find_all("link", href=True)):
         rel_tokens = _link_rel_tokens(link)
@@ -70,11 +113,19 @@ def _pick_icon_url(page_url: str, soup: BeautifulSoup) -> str | None:
 
 
 def extract_site_metadata(page_url: str, html: str) -> SiteMetadata:
-    """Return title and browser-tab icon metadata for one homepage HTML document."""
+    """Extract title and icon metadata from one homepage HTML document.
+
+    Args:
+        page_url: Final fetched homepage URL used for icon resolution.
+        html: Raw homepage HTML to parse.
+
+    Returns:
+        A ``SiteMetadata`` object containing the normalized title and best icon
+        candidate derived from the page.
+    """
     soup = BeautifulSoup(html, "html.parser")
     title = None
     if soup.title is not None:
         title = clean_text(soup.title.get_text(" ", strip=True)) or None
 
     return SiteMetadata(title=title, icon_url=_pick_icon_url(page_url, soup))
-

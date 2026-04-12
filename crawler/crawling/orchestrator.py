@@ -25,7 +25,17 @@ from shared.config import Settings
 
 
 class CrawlOrchestrator:
-    """Coordinate crawling one blog while preserving the existing persistence contract."""
+    """Coordinate crawling one blog while preserving the persistence contract.
+
+    Attributes:
+        settings: Shared crawler settings controlling timeouts and concurrency.
+        repository: Persistence boundary used to store discovered blogs and
+            edges.
+        fetcher: HTTP fetcher used for homepage and candidate-page requests.
+        decision_chain: URL filtering chain that decides which extracted links
+            represent blogs.
+        logger: Logging facade used for success and error events.
+    """
 
     def __init__(
         self,
@@ -36,6 +46,20 @@ class CrawlOrchestrator:
         decision_chain: UrlDecisionChain,
         logger: CrawlerLogger,
     ) -> None:
+        """Store the strategy and infrastructure dependencies for blog crawling.
+
+        Args:
+            settings: Shared crawler configuration for timeout and concurrency
+                behavior.
+            repository: Persistence interface for blog and edge writes.
+            fetcher: Fetch strategy used to retrieve HTML pages.
+            decision_chain: Filtering strategy used on extracted links.
+            logger: Logging facade for crawl lifecycle events.
+
+        Returns:
+            ``None``. The orchestrator stores the provided dependencies for
+            later single-blog crawl operations.
+        """
         self.settings = settings
         self.repository = repository
         self.fetcher = fetcher
@@ -43,9 +67,19 @@ class CrawlOrchestrator:
         self.logger = logger
 
     def crawl_blog(self, blog: dict[str, object]) -> int:
-        """Crawl one blog and persist outgoing blog links."""
+        """Crawl one blog homepage and persist accepted outbound blog links.
+
+        Args:
+            blog: Repository blog row describing the site that should be
+                crawled.
+
+        Returns:
+            Number of accepted outbound blog links discovered for the blog.
+        """
         blog_record = BlogNode.from_row(blog)
         deadline = monotonic() + self.settings.blog_crawl_timeout_seconds
+        # The homepage drives all downstream work: metadata comes from it, and
+        # candidate friend-link pages are discovered from it.
         homepage = self.fetcher.fetch(
             blog_record.url,
             timeout_seconds=self._remaining_timeout_seconds(deadline, blog_record.url),
@@ -70,7 +104,16 @@ class CrawlOrchestrator:
         return discovered_count
 
     def _discover_candidate_pages(self, homepage: FetchResult) -> list[str]:
-        """Return the candidate friend-link pages to visit for one homepage."""
+        """Discover friend-link candidate pages starting from the homepage.
+
+        Args:
+            homepage: Successful homepage fetch result whose HTML should be
+                inspected.
+
+        Returns:
+            Ordered unique candidate page URLs worth visiting for link
+            extraction.
+        """
         return unique_in_order(discover_friend_links_pages(homepage.url, homepage.text))
 
     def _crawl_candidate_pages(
@@ -80,12 +123,24 @@ class CrawlOrchestrator:
         *,
         deadline: float,
     ) -> int:
-        """Fetch each candidate page and persist accepted child links."""
+        """Fetch candidate pages and persist accepted outbound blog links.
+
+        Args:
+            blog: Typed source blog being processed.
+            candidate_pages: Candidate friend-link page URLs discovered from the
+                homepage.
+            deadline: Monotonic deadline for the entire per-blog crawl budget.
+
+        Returns:
+            Number of accepted outbound blog links stored for the blog.
+        """
         discovered_count = 0
         seen_normalized: set[str] = set()
         page_attempts = self._fetch_candidate_pages(candidate_pages, deadline=deadline, blog_url=blog.url)
 
         for page_url in candidate_pages:
+            # Iterate in original candidate order even though fetch_many() may
+            # complete out of order; this keeps persistence deterministic.
             self._remaining_timeout_seconds(deadline, blog.url)
             page_attempt = page_attempts.get(page_url)
             if page_attempt is not None and page_attempt.error_kind == "page_too_large":
@@ -107,7 +162,17 @@ class CrawlOrchestrator:
         deadline: float,
         blog_url: str,
     ) -> dict[str, FetchAttempt]:
-        """Fetch candidate pages while preserving the original candidate ordering contract."""
+        """Fetch candidate pages while preserving the original request keys.
+
+        Args:
+            candidate_pages: Candidate page URLs to retrieve.
+            deadline: Monotonic deadline shared by the whole blog crawl.
+            blog_url: URL of the source blog, used only for timeout messages.
+
+        Returns:
+            Mapping from original candidate page URL to its fetch attempt
+            outcome.
+        """
         if not candidate_pages:
             return {}
         return self.fetcher.fetch_many(
@@ -123,7 +188,17 @@ class CrawlOrchestrator:
         page: FetchResult,
         seen_normalized: set[str],
     ) -> int:
-        """Persist accepted links extracted from one friend-link page."""
+        """Persist accepted extracted links from one fetched candidate page.
+
+        Args:
+            blog: Source blog whose candidate page is being processed.
+            page: Successful fetched candidate page.
+            seen_normalized: Set used to avoid persisting duplicate normalized
+                child URLs across multiple candidate pages.
+
+        Returns:
+            Number of newly stored outbound blog links from the page.
+        """
         stored_count = 0
 
         for link in extract_candidate_links(page.url, page.text):
@@ -131,6 +206,8 @@ class CrawlOrchestrator:
                 continue
 
             normalized = normalize_url(link.url)
+            # Multiple friend-link pages often repeat the same target blog, so
+            # de-duplicate on normalized URL before creating blogs or edges.
             if normalized.normalized_url in seen_normalized:
                 continue
             seen_normalized.add(normalized.normalized_url)
@@ -157,7 +234,18 @@ class CrawlOrchestrator:
         return stored_count
 
     def _should_store_link(self, blog: BlogNode, link: ExtractedLink) -> bool:
-        """Return True when the extracted link survives the configured decision chain."""
+        """Return whether an extracted link survives the configured decisions.
+
+        Args:
+            blog: Source blog currently being crawled.
+            link: Extracted link candidate from a friend-link page.
+
+        Returns:
+            ``True`` when the decision chain accepts the extracted link as a
+            blog candidate.
+        """
+        # The chain boundary keeps extraction focused on "what links exist" and
+        # filtering focused on "which of those links represent blogs".
         decision = self.decision_chain.decide(
             link.url,
             blog.domain,
@@ -167,7 +255,15 @@ class CrawlOrchestrator:
         return decision.accepted
 
     def _mark_blog_finished(self, blog: BlogNode, result: BlogCrawlResult) -> None:
-        """Persist the crawl result for one processed blog."""
+        """Persist the final crawl result for one processed blog.
+
+        Args:
+            blog: Source blog whose crawl completed successfully.
+            result: Typed crawl result including metadata and discovered counts.
+
+        Returns:
+            ``None``. Repository state and logs are updated in place.
+        """
         state = CrawlState(
             status="FINISHED",
             status_code=result.status_code,
@@ -188,7 +284,18 @@ class CrawlOrchestrator:
         self.logger.crawl_success(blog_id=blog.id, blog_url=blog.url)
 
     def _remaining_timeout_seconds(self, deadline: float, blog_url: str) -> float:
-        """Return the remaining crawl budget or raise once the per-blog deadline is exhausted."""
+        """Return remaining crawl budget or raise when the deadline is exhausted.
+
+        Args:
+            deadline: Monotonic deadline timestamp for the current blog crawl.
+            blog_url: Source blog URL used in timeout error messages.
+
+        Returns:
+            Remaining allowed seconds for this blog crawl.
+
+        Raises:
+            TimeoutError: If the per-blog crawl deadline has already expired.
+        """
         remaining = deadline - monotonic()
         if remaining <= 0:
             raise TimeoutError(

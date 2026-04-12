@@ -236,13 +236,13 @@ pytest tests/test_service_split.py
 
 适用目录：
 
-- `crawler/pipeline.py`
-- `crawler/runtime.py`
-- `crawler/fetcher.py`
-- `crawler/discovery.py`
-- `crawler/extractor.py`
+- `crawler/crawling/pipeline.py`
+- `crawler/runtime/service.py`
+- `crawler/crawling/fetching/httpx_fetcher.py`
+- `crawler/crawling/discovery.py`
+- `crawler/crawling/extraction.py`
 - `crawler/filters.py`
-- `crawler/normalizer.py`
+- `crawler/crawling/normalization.py`
 - `crawler/export_service.py`
 
 最小启动集合：
