@@ -12,17 +12,30 @@ DEFAULT_SPLIT_RATIOS = {
     "test": 0.15,
 }
 DEFAULT_THRESHOLD = 0.5
-DEFAULT_MODELS = ("structured", "tfidf")
+SUPPORTED_MODELS = (
+    "structured",
+    "structured_lr",
+    "structured_svm",
+    "structured_rf",
+    "tfidf",
+    "tfidf_lr",
+    "tfidf_svm",
+    "tfidf_nb",
+)
+DEFAULT_MODELS = ("structured", "structured_svm", "structured_rf", "tfidf", "tfidf_svm", "tfidf_nb")
 DEFAULT_DATA_ROOT = Path("data")
 DEFAULT_TRAINER_ROOT = DEFAULT_DATA_ROOT / "trainer"
 DEFAULT_DATASET_ROOT = DEFAULT_TRAINER_ROOT / "datasets"
 DEFAULT_RUN_ROOT = DEFAULT_TRAINER_ROOT / "runs"
+DEFAULT_MODEL_ROOT = DEFAULT_DATA_ROOT / "model"
 DEFAULT_POSITIVE_LABELS = ("blog",)
-DEFAULT_NEGATIVE_LABELS = ("others",)
+DEFAULT_NEGATIVE_LABELS = ("others","company")
 DEFAULT_STRUCTURED_EPOCHS = 30
 DEFAULT_TFIDF_EPOCHS = 24
 DEFAULT_LEARNING_RATE = 0.35
 DEFAULT_L2_STRENGTH = 0.0005
+DEFAULT_NB_ALPHA = 1.0
+DEFAULT_RF_ESTIMATORS = 200
 DEFAULT_URL_CHAR_NGRAM_RANGE = (3, 5)
 DEFAULT_TITLE_WORD_NGRAM_RANGE = (1, 2)
 DEFAULT_MIN_DF = 1

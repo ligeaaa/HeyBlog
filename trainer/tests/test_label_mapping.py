@@ -14,8 +14,8 @@ def test_label_mapping_defaults_resolve_blog_non_blog_and_excluded() -> None:
     assert blog.resolution_status == "mapped"
     assert non_blog.binary_label == "non_blog"
     assert non_blog.resolution_status == "mapped"
-    assert excluded.binary_label is None
-    assert excluded.resolution_status == "excluded"
+    assert excluded.binary_label == "non_blog"
+    assert excluded.resolution_status == "mapped"
     assert conflict.binary_label is None
     assert conflict.resolution_status == "conflict_review"
 

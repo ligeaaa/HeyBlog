@@ -132,7 +132,7 @@ python -m trainer.cli full-run --source-csv data/blog-label-training-2026-04-11.
 Outputs are written under:
 
 - `data/trainer/datasets/`
-- `data/trainer/runs/`
+- `data/model/`
 
 ## Suggested Flow
 

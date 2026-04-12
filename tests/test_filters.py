@@ -52,7 +52,7 @@ def test_filter_rejects_exact_url_and_prefix_blocklist_entries() -> None:
 
 
 def test_filter_rejects_asset_suffixes_and_blocked_paths() -> None:
-    """Reject assets and obvious non-homepage paths before soft scoring."""
+    """Reject assets and obvious non-homepage paths before acceptance."""
     asset = decide_blog_candidate("https://friend.example/banner.png", "blog.example.com")
     blocked_path = decide_blog_candidate("https://friend.example/archive", "blog.example.com")
 
@@ -106,8 +106,8 @@ def test_filter_rejects_root_url_with_query_or_fragment_payload() -> None:
     assert "non_root_location" in query_decision.reasons
 
 
-def test_filter_accepts_blog_like_links_with_positive_context() -> None:
-    """Accept links surfaced from a strong friend-link context."""
+def test_filter_accepts_blog_like_links_without_soft_scoring() -> None:
+    """Accept external homepage links once they pass the hard rules."""
     decision = decide_blog_candidate(
         "https://friend.example/",
         "blog.example.com",
@@ -116,7 +116,8 @@ def test_filter_accepts_blog_like_links_with_positive_context() -> None:
     )
 
     assert decision.accepted
-    assert "positive_context" in decision.reasons
+    assert not decision.hard_blocked
+    assert decision.reasons == ("passed_hard_filters",)
 
 
 def test_filter_keeps_hard_blocks_authoritative() -> None:
@@ -133,5 +134,5 @@ def test_filter_keeps_hard_blocks_authoritative() -> None:
 
 
 def test_filter_accepts_external_blog_without_extra_context() -> None:
-    """External blog homepages can pass after hard blocks even without extra text."""
+    """External blog homepages can pass with no soft context once hard rules pass."""
     assert is_blog_candidate("https://other-blog.example.net/", "blog.example.com")

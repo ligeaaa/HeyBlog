@@ -1,4 +1,4 @@
-"""TF-IDF baseline over URL and title inputs."""
+"""TF-IDF Complement Naive Bayes baseline over URL and title inputs."""
 
 from __future__ import annotations
 
@@ -9,25 +9,24 @@ import numpy as np
 from scipy.sparse import hstack
 from scipy.sparse import spmatrix
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import ComplementNB
 
 from trainer.config import ModelConfig
 from trainer.dataset.schema import SupervisedSample
 from trainer.features.assemble import build_tfidf_documents
-from trainer.models.sklearn_utils import build_logistic_regression
-from trainer.models.sklearn_utils import build_training_log
+from trainer.models.sklearn_utils import build_complement_nb
 from trainer.models.sklearn_utils import identity_analyzer
 from trainer.models.sklearn_utils import positive_class_probabilities
-from trainer.models.sklearn_utils import summarize_linear_weights
+from trainer.models.sklearn_utils import summarize_weight_vector
 
 
 @dataclass(slots=True)
-class TfidfBaseline:
+class TfidfNaiveBayesBaseline:
     model_name: str
     threshold: float
     url_vectorizer: TfidfVectorizer
     title_vectorizer: TfidfVectorizer
-    estimator: LogisticRegression
+    estimator: ComplementNB
     metadata: dict[str, Any]
 
     def _transform(self, samples: list[SupervisedSample]) -> spmatrix:
@@ -50,17 +49,29 @@ class TfidfBaseline:
                 np.asarray([f"title_tfidf:{name}" for name in self.title_vectorizer.get_feature_names_out()], dtype=object),
             ]
         )
-        return summarize_linear_weights(self.estimator, feature_names)
+        class_list = self.estimator.classes_.tolist()
+        positive_index = class_list.index(1)
+        negative_index = class_list.index(0)
+        weight_vector = self.estimator.feature_log_prob_[negative_index] - self.estimator.feature_log_prob_[positive_index]
+        return summarize_weight_vector(weight_vector, feature_names)
 
     def training_log(self) -> str:
         feature_count = len(self.url_vectorizer.get_feature_names_out()) + len(self.title_vectorizer.get_feature_names_out())
-        return build_training_log(self.estimator, feature_count=feature_count)
+        classes = ",".join(str(value) for value in self.estimator.classes_.tolist())
+        return "\n".join(
+            [
+                "estimator=tfidf_complement_nb",
+                f"alpha={self.estimator.alpha}",
+                f"feature_count={feature_count}",
+                f"classes={classes}",
+            ]
+        )
 
 
-def train_tfidf_baseline(
+def train_tfidf_nb_baseline(
     train_samples: list[SupervisedSample],
     model_config: ModelConfig,
-) -> TfidfBaseline:
+) -> TfidfNaiveBayesBaseline:
     url_docs, title_docs = build_tfidf_documents(
         train_samples,
         url_char_ngram_range=model_config.url_char_ngram_range,
@@ -86,14 +97,10 @@ def train_tfidf_baseline(
     title_features = title_vectorizer.fit_transform(title_docs)
     matrix = hstack([url_features, title_features], format="csr")
     labels = [1 if sample.binary_label == "blog" else 0 for sample in train_samples]
-    estimator = build_logistic_regression(
-        seed=model_config.seed,
-        epochs=model_config.epochs,
-        l2_strength=model_config.l2_strength,
-    )
+    estimator = build_complement_nb(alpha=model_config.nb_alpha)
     estimator.fit(matrix, labels)
-    return TfidfBaseline(
-        model_name=model_config.model_name,
+    return TfidfNaiveBayesBaseline(
+        model_name="tfidf_nb",
         threshold=model_config.threshold,
         url_vectorizer=url_vectorizer,
         title_vectorizer=title_vectorizer,

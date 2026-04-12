@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from datetime import UTC
+from datetime import timezone
 from pathlib import Path
+import sys
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trainer.constants import DEFAULT_MODELS
 from trainer.constants import DEFAULT_RUN_ROOT
@@ -24,13 +28,13 @@ def run_full_pipeline(
 ) -> dict[str, object]:
     prepared = run_prepare_dataset(source_csv=source_csv, dataset_version=dataset_version)
     dataset_dir = Path(prepared["dataset_dir"])
-    full_run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "--full-run"
+    full_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "--full-run"
     full_run_dir = ensure_dir(DEFAULT_RUN_ROOT / full_run_id)
     results: list[dict[str, object]] = []
     for model_name in DEFAULT_MODELS:
-        model_dir = ensure_dir(full_run_dir / model_name)
-        run_train_baseline(dataset_dir=dataset_dir, model_name=model_name, output_dir=model_dir)
-        results.append(run_evaluate_run(run_dir=model_dir))
+        train_result = run_train_baseline(dataset_dir=dataset_dir, model_name=model_name)
+        model_run_dir = Path(train_result["run_dir"])
+        results.append(run_evaluate_run(run_dir=model_run_dir))
     write_json(full_run_dir / "summary.json", {"dataset_dir": str(dataset_dir), "results": results})
     write_text(full_run_dir / "report.md", build_full_run_summary(results))
     return {

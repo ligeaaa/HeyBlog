@@ -11,10 +11,12 @@ from trainer.constants import DEFAULT_DATASET_ROOT
 from trainer.constants import DEFAULT_L2_STRENGTH
 from trainer.constants import DEFAULT_LEARNING_RATE
 from trainer.constants import DEFAULT_MIN_DF
+from trainer.constants import DEFAULT_NB_ALPHA
 from trainer.constants import DEFAULT_NEGATIVE_LABELS
 from trainer.constants import DEFAULT_POSITIVE_LABELS
 from trainer.constants import DEFAULT_RANDOM_SEED
-from trainer.constants import DEFAULT_RUN_ROOT
+from trainer.constants import DEFAULT_RF_ESTIMATORS
+from trainer.constants import DEFAULT_MODEL_ROOT
 from trainer.constants import DEFAULT_SPLIT_RATIOS
 from trainer.constants import DEFAULT_STRUCTURED_EPOCHS
 from trainer.constants import DEFAULT_TFIDF_EPOCHS
@@ -46,12 +48,14 @@ class DatasetConfig:
 @dataclass(slots=True)
 class ModelConfig:
     model_name: str
-    run_root: Path = DEFAULT_RUN_ROOT
+    run_root: Path = DEFAULT_MODEL_ROOT
     seed: int = DEFAULT_RANDOM_SEED
     threshold: float = DEFAULT_THRESHOLD
     epochs: int = DEFAULT_STRUCTURED_EPOCHS
     learning_rate: float = DEFAULT_LEARNING_RATE
     l2_strength: float = DEFAULT_L2_STRENGTH
+    nb_alpha: float = DEFAULT_NB_ALPHA
+    rf_estimators: int = DEFAULT_RF_ESTIMATORS
     url_char_ngram_range: tuple[int, int] = DEFAULT_URL_CHAR_NGRAM_RANGE
     title_word_ngram_range: tuple[int, int] = DEFAULT_TITLE_WORD_NGRAM_RANGE
     min_df: int = DEFAULT_MIN_DF
@@ -68,3 +72,27 @@ def structured_model_config() -> ModelConfig:
 
 def tfidf_model_config() -> ModelConfig:
     return ModelConfig(model_name="tfidf", epochs=DEFAULT_TFIDF_EPOCHS)
+
+
+def structured_lr_model_config() -> ModelConfig:
+    return ModelConfig(model_name="structured_lr", epochs=DEFAULT_STRUCTURED_EPOCHS)
+
+
+def tfidf_lr_model_config() -> ModelConfig:
+    return ModelConfig(model_name="tfidf_lr", epochs=DEFAULT_TFIDF_EPOCHS)
+
+
+def structured_svm_model_config() -> ModelConfig:
+    return ModelConfig(model_name="structured_svm", epochs=DEFAULT_STRUCTURED_EPOCHS)
+
+
+def structured_rf_model_config() -> ModelConfig:
+    return ModelConfig(model_name="structured_rf", epochs=DEFAULT_STRUCTURED_EPOCHS)
+
+
+def tfidf_svm_model_config() -> ModelConfig:
+    return ModelConfig(model_name="tfidf_svm", epochs=DEFAULT_TFIDF_EPOCHS)
+
+
+def tfidf_nb_model_config() -> ModelConfig:
+    return ModelConfig(model_name="tfidf_nb", epochs=DEFAULT_TFIDF_EPOCHS)

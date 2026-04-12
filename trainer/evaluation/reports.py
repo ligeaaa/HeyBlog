@@ -39,7 +39,7 @@ def build_run_report(
             "",
             "## Notes",
             "",
-            "- `company` and other unmapped labels remain outside the supervised set by default.",
+            "- `blog` maps to `blog`; `others` and `company` map to `non_blog` in the current baseline dataset.",
             "- Domain-aware split keeps the same domain out of multiple splits.",
         ]
     ) + "\n"

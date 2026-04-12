@@ -1,12 +1,9 @@
-"""Filter extracted links to keep only likely external blogs."""
+"""Filter extracted links to keep only deterministic external blog homepages."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from urllib.parse import urlparse
-
-from crawler.utils import text_contains_any
-
 
 PLATFORM_BLOCKLIST = {
     "bsky.app",
@@ -49,29 +46,6 @@ PATH_BLOCKLIST = {
     "/rss",
     "/search",
 }
-NEGATIVE_CONTEXT_KEYWORDS = (
-    "contact",
-    "donate",
-    "donation",
-    "github",
-    "rss",
-    "search",
-    "sitemap",
-    "sponsor",
-    "sponsored",
-    "telegram",
-    "twitter",
-)
-POSITIVE_CONTEXT_KEYWORDS = (
-    "blog",
-    "friend",
-    "homepage",
-    "site",
-    "友链",
-    "友情链接",
-    "伙伴",
-    "邻居",
-)
 BLOCKED_TLDS = (".gov", ".gov.cn", ".org", ".edu")
 FILE_SUFFIX_BLOCKLIST = (
     ".7z",
@@ -146,7 +120,6 @@ def decide_blog_candidate(
     normalized_source_domain = source_domain.lower()
     normalized_url = url.rstrip("/")
     path = parsed.path.lower() or "/"
-    reasons: list[str] = []
     score = 0.0
 
     # Apply hard blocks first so clearly invalid candidates never reach the softer scoring layer.
@@ -175,25 +148,8 @@ def decide_blog_candidate(
     if _path_has_blocked_segment(path):
         return LinkDecision(False, score, ("blocked_path",), hard_blocked=True)
 
-    # Once hard blocks pass, light context scoring can keep likely blog homepages without mixing in discovery logic.
-    combined_text = f"{link_text} {context_text}".strip()
-    if text_contains_any(combined_text, NEGATIVE_CONTEXT_KEYWORDS):
-        reasons.append("negative_context")
-        score -= 1.0
-    if text_contains_any(combined_text, POSITIVE_CONTEXT_KEYWORDS):
-        reasons.append("positive_context")
-        score += 1.0
-    if path in {"", "/"}:
-        reasons.append("root_path")
-        score += 0.5
-    if "." in domain and len(domain.split(".")) >= 2:
-        reasons.append("external_domain")
-        score += 0.5
-
-    accepted = score >= 0.5
-    if not accepted and not reasons:
-        reasons.append("insufficient_signal")
-    return LinkDecision(accepted, score, tuple(reasons), hard_blocked=False)
+    # Passing all hard rules is now sufficient for acceptance.
+    return LinkDecision(True, score, ("passed_hard_filters",), hard_blocked=False)
 
 
 def is_blog_candidate(url: str, source_domain: str) -> bool:
