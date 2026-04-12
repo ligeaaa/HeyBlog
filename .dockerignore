@@ -5,6 +5,7 @@
 .ruff_cache
 build
 data
+runtime_resources
 volumes
 frontend/node_modules
 frontend/dist

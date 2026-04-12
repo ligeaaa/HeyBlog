@@ -13,6 +13,7 @@ from persistence_api.main import build_persistence_state
 from persistence_api.main import create_app as create_persistence_app
 from search.main import SearchService
 from search.main import create_app as create_search_app
+from shared.config import PROJECT_ROOT
 from shared.config import Settings
 from shared.http_clients.persistence_http import PersistenceHttpClient
 
@@ -420,6 +421,15 @@ def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> No
     settings = Settings.from_env()
 
     assert settings.db_dsn == "postgresql://heyblog:heyblog@persistence-db:5432/heyblog"
+
+
+def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch) -> None:
+    """Environment loading should default runtime model reads to published resources."""
+    monkeypatch.delenv("HEYBLOG_DECISION_MODEL_ROOT", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.decision_model_root == PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
 
 
 def test_backend_service_preserves_public_api_shape() -> None:

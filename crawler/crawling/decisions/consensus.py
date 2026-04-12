@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from dataclasses import field
+import logging
 from pathlib import Path
 import pickle
 from typing import Any
@@ -13,6 +14,7 @@ from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
 
 DEFAULT_MODEL_THRESHOLD = 0.5
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -174,12 +176,21 @@ class ModelConsensusDecider:
                         threshold=_read_threshold(run_dir, predictor),
                     )
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 # One corrupt or incompatible model artifact should not block
                 # the crawler from evaluating the rest of the available runs.
+                LOGGER.warning(
+                    "Skipping consensus model load for %s from %s: %s: %s",
+                    model_name,
+                    model_path,
+                    type(exc).__name__,
+                    exc,
+                )
                 continue
 
         self.loaded_models = tuple(models)
+        if not self.loaded_models:
+            LOGGER.warning("No consensus models were loaded from %s", self.model_root)
         return self.loaded_models
 
     def _build_sample(

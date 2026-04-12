@@ -72,6 +72,7 @@ services:
       HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST:-}
       HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST:-}
       HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST:-}
+      HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
     command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_CRAWLER_PORT:-8010}"]
     healthcheck:
       test:
@@ -89,6 +90,7 @@ services:
     volumes:
       - ./volumes/exports:/data/exports
       - ./seed.csv:/data/seeds/seed.csv:ro
+      - ./runtime_resources:/app/runtime_resources:ro
     networks:
       - heyblog_net
 
@@ -126,6 +128,7 @@ services:
     environment:
       HEYBLOG_DB_DSN: ${HEYBLOG_DB_DSN:-postgresql+psycopg://heyblog:heyblog@persistence-db:5432/heyblog}
       HEYBLOG_EXPORT_DIR: ${HEYBLOG_DOCKER_EXPORT_DIR:-/data/exports}
+      HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
     command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_PERSISTENCE_API_PORT:-8030}"]
     healthcheck:
       test:
@@ -140,6 +143,8 @@ services:
     depends_on:
       persistence-db:
         condition: service_healthy
+    volumes:
+      - ./runtime_resources:/app/runtime_resources:ro
     networks:
       - heyblog_net
 

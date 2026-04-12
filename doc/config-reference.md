@@ -52,6 +52,8 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST` | 空 | `crawler` | 逗号分隔的顶级域黑名单 |
 | `HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST` | 空 | `crawler` | 逗号分隔的精确 URL 黑名单 |
 | `HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST` | 空 | `crawler` | 逗号分隔的 URL 前缀黑名单 |
+| `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `data/model/` |
+| `HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED` | `true` | `crawler`、`persistence-api` | 是否启用多模型负向共识决策层 |
 
 ## 3. Docker Compose 里的默认覆盖
 
@@ -66,9 +68,25 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `crawler` | `HEYBLOG_DOCKER_PERSISTENCE_BASE_URL` | 写入持久化边界 |
 | `crawler` | `HEYBLOG_DOCKER_SEED_PATH` | 使用挂载后的种子文件 |
 | `crawler` | `HEYBLOG_DOCKER_EXPORT_DIR` | 导出目录映射到 `volumes/exports` |
+| `crawler` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 容器内运行时模型根目录，默认指向挂载后的 `/app/runtime_resources/models/url_decision/current` |
 | `search` | `HEYBLOG_DOCKER_PERSISTENCE_BASE_URL` | 获取搜索快照 |
 | `search` | `HEYBLOG_DOCKER_SEARCH_CACHE_DIR` | 搜索缓存映射到 `volumes/search-cache` |
 | `persistence-api` | `HEYBLOG_DB_DSN` | 启用 PostgreSQL 后端 |
+| `persistence-api` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 全库规则重扫读取的容器内运行时模型根目录 |
+
+## 3.1 运行时资源目录约定
+
+推荐把模型和类似资源拆成两层：
+
+- `data/`：训练输出、实验报表、人工观察数据
+- `runtime_resources/`：已经被选中、准备给服务真正加载的运行时资源
+
+当前推荐的 URL 决策模型发布目录是：
+
+- `runtime_resources/models/url_decision/current/`
+
+这样本地 debug、pytest 和 Docker 只需要统一设置
+`HEYBLOG_DECISION_MODEL_ROOT`，不需要直接依赖 `data/model/` 的实验输出结构。
 
 ## 4. Postgres 容器级变量
 
@@ -87,6 +105,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 2. `crawler` 和 `search` 即使本地跑，也会通过 HTTP 调 `persistence-api`，不是直接 import 仓储。
 3. `frontend` 不是直接访问 `crawler` 或 `persistence-api`，它只认 `HEYBLOG_BACKEND_BASE_URL`。
 4. 只改 `HEYBLOG_DB_PATH` 不会启用 PostgreSQL；真正切换数据库后端要设置 `HEYBLOG_DB_DSN`。
+5. 如果 Docker 内启用了模型共识，而宿主机的 `runtime_resources/` 没有挂进去，服务会退化成 `model_consensus_skipped_no_models`，看起来像“规则开了”，实际不会过滤任何 URL。
 
 ## 6. 相关文档
 

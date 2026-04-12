@@ -19,6 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+runtime-models = [
+  "numpy>=1.26,<3",
+  "scikit-learn>=1.5,<2",
+  "scipy>=1.11,<2",
+]
 trainer = [
   "numpy>=1.26,<3",
   "scikit-learn>=1.5,<2",

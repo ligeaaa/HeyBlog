@@ -18,3 +18,4 @@ ai_doc/
 .env
 todo.md
 tracker/
+runtime_resources/*

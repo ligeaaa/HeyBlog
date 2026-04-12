@@ -134,6 +134,14 @@ Outputs are written under:
 - `data/trainer/datasets/`
 - `data/model/`
 
+Runtime services do not read trainer output from `data/model/` directly.
+Promote the model version you want to serve into:
+
+- `runtime_resources/models/url_decision/current/`
+
+Then keep local debug, tests, and Docker aligned by pointing
+`HEYBLOG_DECISION_MODEL_ROOT` at that runtime resource path.
+
 ## Suggested Flow
 
 1. Use the public surface for discovery: browse blogs, search, inspect graph, and submit ingestion requests.

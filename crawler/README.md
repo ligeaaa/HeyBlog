@@ -249,7 +249,13 @@ crawler/
 
 #### `crawling/decisions/consensus.py`
 
-把 `data/model/<model_name>/<run>/` 下每个模型的最新 run 加载出来，对候选 URL 做一次轻量推理。
+默认会从 `runtime_resources/models/url_decision/current/<model_name>/<run>/`
+下把每个模型的最新 run 加载出来，对候选 URL 做一次轻量推理。
+
+如果你想覆盖默认运行时资源目录，可以设置
+`HEYBLOG_DECISION_MODEL_ROOT`。训练产物仍然建议先写到 `data/model/`，
+再手动挑选并发布到 `runtime_resources/`，这样本地 debug、pytest 和
+Docker 服务都能走同一条运行时资源链路。
 
 规则是严格负向共识：
 
