@@ -39,11 +39,13 @@ from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
+from crawler.crawling.decisions.chain import build_url_decision_chain
 from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
 from crawler.crawling.normalization import BlogIdentityResolution
 from crawler.crawling.normalization import normalize_url
 from crawler.crawling.normalization import resolve_blog_identity
 from shared.contracts.enums import CrawlStatus
+from shared.config import Settings
 
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
 BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
@@ -539,6 +541,21 @@ def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[
     }
 
 
+def _decision_scan_ruleset_version(settings: Settings) -> str:
+    """Describe the current URL decision-chain configuration in one string.
+
+    Args:
+        settings: Runtime settings that determine which decision steps are
+            active for crawler URL filtering.
+
+    Returns:
+        A compact version string suitable for storing in scan summaries.
+    """
+    if settings.decision_model_consensus_enabled:
+        return "url_decision_chain:rule_based+model_consensus"
+    return "url_decision_chain:rule_based"
+
+
 def _blog_labeling_payload(
     row: Any,
     *,
@@ -717,6 +734,7 @@ class SQLAlchemyRepository:
     """Repository implemented with one SQLAlchemy engine."""
 
     database_url: str
+    decision_settings: Settings | None = None
     engine: Any = field(init=False, repr=False)
     session_factory: Any = field(init=False, repr=False)
 
@@ -1040,6 +1058,53 @@ class SQLAlchemyRepository:
         basis_parts.append(f"created_at={_iso(survivor.created_at)}")
         basis_parts.append(f"id={int(survivor.id)}")
         return survivor, ", ".join(basis_parts)
+
+    def _decision_scan_settings(self) -> Settings:
+        """Return the settings object used for administrative URL rescans.
+
+        Returns:
+            The injected persistence-service settings when available, or a
+            minimal local fallback that keeps model consensus disabled for
+            direct repository tests.
+        """
+        if self.decision_settings is not None:
+            return self.decision_settings
+        return Settings(
+            db_path=Path("data/heyblog.sqlite"),
+            seed_path=Path("seed.csv"),
+            export_dir=Path("data/exports"),
+            decision_model_consensus_enabled=False,
+        )
+
+    def _delete_blog_graph(self, session: Session, *, blog_id: int) -> None:
+        """Delete one blog and its direct graph attachments safely.
+
+        Args:
+            session: Active database session used for the deletion.
+            blog_id: Blog identifier that should be removed from persistence.
+
+        Returns:
+            ``None``. The blog, its edges, label assignments, and dangling
+            ingestion references are removed or cleared in place.
+        """
+        session.query(EdgeModel).filter(
+            or_(
+                EdgeModel.from_blog_id == blog_id,
+                EdgeModel.to_blog_id == blog_id,
+            )
+        ).delete(synchronize_session=False)
+        session.query(BlogLabelAssignmentModel).filter(
+            BlogLabelAssignmentModel.blog_id == blog_id
+        ).delete(synchronize_session=False)
+        session.query(IngestionRequestModel).filter(
+            IngestionRequestModel.seed_blog_id == blog_id
+        ).update({IngestionRequestModel.seed_blog_id: None})
+        session.query(IngestionRequestModel).filter(
+            IngestionRequestModel.matched_blog_id == blog_id
+        ).update({IngestionRequestModel.matched_blog_id: None})
+        blog = session.get(BlogModel, blog_id)
+        if blog is not None:
+            session.delete(blog)
 
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
@@ -1853,11 +1918,12 @@ class SQLAlchemyRepository:
 
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         started_at = now_utc()
+        settings = self._decision_scan_settings()
         with session_scope(self.session_factory) as session:
             total_count = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
             run = BlogDedupScanRunModel(
                 status="RUNNING",
-                ruleset_version=IDENTITY_RULESET_VERSION,
+                ruleset_version=_decision_scan_ruleset_version(settings),
                 started_at=started_at,
                 completed_at=None,
                 duration_ms=0,
@@ -1879,7 +1945,8 @@ class SQLAlchemyRepository:
 
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
         started_at = now_utc()
-        groups: list[list[int]] = []
+        settings = self._decision_scan_settings()
+        decision_chain = build_url_decision_chain(settings)
         try:
             with session_scope(self.session_factory) as session:
                 run = session.get(BlogDedupScanRunModel, run_id)
@@ -1894,127 +1961,60 @@ class SQLAlchemyRepository:
                 run.kept_count = 0
                 run.error_message = None
                 run.updated_at = started_at
-
-                blogs = session.scalars(select(BlogModel).order_by(BlogModel.id.asc())).all()
-                run.total_count = len(blogs)
-                groups_map: dict[str, list[int]] = {}
-                for blog in blogs:
-                    identity = self._resolve_identity_from_blog_fields(
-                        url=blog.url,
-                        normalized_url=blog.normalized_url,
+                blog_rows = session.execute(
+                    select(
+                        BlogModel.id,
+                        BlogModel.url,
+                        BlogModel.domain,
+                        BlogModel.identity_key,
                     )
-                    if not blog.domain:
-                        _, stored_domain = _storage_url_and_domain(
-                            input_url=blog.url,
-                            input_normalized_url=blog.normalized_url,
-                            input_domain=blog.domain or "",
-                            identity=identity,
-                        )
-                        blog.domain = stored_domain
-                    blog.identity_key = identity.identity_key
-                    blog.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
-                    blog.identity_ruleset_version = identity.ruleset_version
-                    groups_map.setdefault(identity.identity_key, []).append(int(blog.id))
-
-                groups = list(groups_map.values())
+                    .order_by(BlogModel.id.asc())
+                ).all()
+                run.total_count = len(blog_rows)
 
             scanned_count = 0
-            removed_count = 0
-            kept_count = 0
-            for group_ids in groups:
+            rejected_blog_count = 0
+            for blog_row in blog_rows:
                 with session_scope(self.session_factory) as session:
                     run = session.get(BlogDedupScanRunModel, run_id)
                     if run is None:
                         raise ValueError("blog_dedup_scan_run_not_found")
-                    blogs = session.scalars(
-                        select(BlogModel).where(BlogModel.id.in_(group_ids)).order_by(BlogModel.id.asc())
-                    ).all()
-                    if not blogs:
+                    blog = session.get(BlogModel, int(blog_row.id))
+                    if blog is None:
                         continue
-
-                    kept_count += 1
-                    identity_key = blogs[0].identity_key
-                    survivor, basis = self._select_survivor(blogs)
-                    survivor_identity = self._resolve_identity_from_blog_fields(
-                        url=survivor.url,
-                        normalized_url=survivor.normalized_url,
+                    decision = decision_chain.decide(
+                        str(blog.url or ""),
+                        "",
+                        link_text=str(blog.domain or ""),
+                        context_text="",
                     )
-                    if _uses_tenant_root_canonicalization(survivor_identity.reason_codes):
-                        survivor.url = survivor_identity.canonical_url
-                        survivor.normalized_url = survivor_identity.canonical_url
-                        survivor.domain = survivor_identity.canonical_host
-                    if len(blogs) > 1:
-                        for duplicate in blogs:
-                            if duplicate.id == survivor.id:
-                                continue
-                            removed_count += 1
-                            survivor.title = survivor.title or duplicate.title
-                            survivor.icon_url = survivor.icon_url or duplicate.icon_url
-                            survivor.email = survivor.email or duplicate.email
-                            survivor.status_code = survivor.status_code or duplicate.status_code
-                            survivor.friend_links_count = max(
-                                int(survivor.friend_links_count or 0),
-                                int(duplicate.friend_links_count or 0),
+                    if not decision.accepted:
+                        session.add(
+                            BlogDedupScanRunItemModel(
+                                run_id=int(run.id),
+                                survivor_blog_id=None,
+                                removed_blog_id=int(blog.id),
+                                survivor_identity_key=str(blog.identity_key or ""),
+                                removed_url=str(blog.url or ""),
+                                removed_normalized_url=str(blog.normalized_url or blog.url or ""),
+                                removed_domain=str(blog.domain or ""),
+                                reason_code=decision.reasons[0] if decision.reasons else "decision_rejected",
+                                reason_codes=_dump_reason_codes(list(decision.reasons)),
+                                survivor_selection_basis=(
+                                    f"scanned_blog_id={int(blog.id)}, "
+                                    f"decision_score={decision.score:.6f}"
+                                ),
+                                created_at=now_utc(),
                             )
-                            if survivor.last_crawled_at is None or (
-                                duplicate.last_crawled_at is not None
-                                and duplicate.last_crawled_at > survivor.last_crawled_at
-                            ):
-                                survivor.last_crawled_at = duplicate.last_crawled_at
-                            if (
-                                survivor.crawl_status != CrawlStatus.FINISHED
-                                and duplicate.crawl_status == CrawlStatus.FINISHED
-                            ):
-                                survivor.crawl_status = CrawlStatus.FINISHED
-                            if _sortable_datetime(survivor.created_at) > _sortable_datetime(
-                                duplicate.created_at
-                            ):
-                                survivor.created_at = duplicate.created_at
-                            survivor.updated_at = now_utc()
+                        )
+                        self._delete_blog_graph(session, blog_id=int(blog.id))
+                        rejected_blog_count += 1
 
-                            session.query(EdgeModel).filter(
-                                or_(
-                                    EdgeModel.from_blog_id == duplicate.id,
-                                    EdgeModel.to_blog_id == duplicate.id,
-                                )
-                            ).delete(synchronize_session=False)
-                            session.query(BlogLabelAssignmentModel).filter(
-                                BlogLabelAssignmentModel.blog_id == duplicate.id
-                            ).delete(synchronize_session=False)
-                            session.query(IngestionRequestModel).filter(
-                                IngestionRequestModel.seed_blog_id == duplicate.id
-                            ).update({IngestionRequestModel.seed_blog_id: survivor.id})
-                            session.query(IngestionRequestModel).filter(
-                                IngestionRequestModel.matched_blog_id == duplicate.id
-                            ).update({IngestionRequestModel.matched_blog_id: survivor.id})
-
-                            duplicate_reason_codes = _load_reason_codes(duplicate.identity_reason_codes)
-                            session.add(
-                                BlogDedupScanRunItemModel(
-                                    run_id=int(run.id),
-                                    survivor_blog_id=int(survivor.id),
-                                    removed_blog_id=int(duplicate.id),
-                                    survivor_identity_key=identity_key,
-                                    removed_url=duplicate.url,
-                                    removed_normalized_url=duplicate.normalized_url,
-                                    removed_domain=duplicate.domain,
-                                    reason_code=(
-                                        duplicate_reason_codes[0]
-                                        if duplicate_reason_codes
-                                        else "identity_key_match"
-                                    ),
-                                    reason_codes=_dump_reason_codes(duplicate_reason_codes),
-                                    survivor_selection_basis=basis,
-                                    created_at=now_utc(),
-                                )
-                            )
-                            session.delete(duplicate)
-
-                    scanned_count += len(group_ids)
+                    scanned_count += 1
                     completed_so_far = now_utc()
                     run.scanned_count = scanned_count
-                    run.removed_count = removed_count
-                    run.kept_count = kept_count
+                    run.removed_count = rejected_blog_count
+                    run.kept_count = max(run.total_count - rejected_blog_count, 0)
                     run.duration_ms = max(int((completed_so_far - started_at).total_seconds() * 1000), 0)
                     run.updated_at = completed_so_far
 
@@ -2023,12 +2023,13 @@ class SQLAlchemyRepository:
                 if run is None:
                     raise ValueError("blog_dedup_scan_run_not_found")
                 completed_at = now_utc()
+                final_blog_count = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
                 run.status = "SUCCEEDED"
                 run.completed_at = completed_at
                 run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
                 run.scanned_count = scanned_count
-                run.removed_count = removed_count
-                run.kept_count = kept_count
+                run.removed_count = max(run.total_count - final_blog_count, 0)
+                run.kept_count = final_blog_count
                 run.updated_at = completed_at
                 session.flush()
                 return _blog_dedup_scan_run_payload(run)
@@ -2136,16 +2137,21 @@ class SQLAlchemyRepository:
 class Repository(SQLAlchemyRepository):
     """Compatibility wrapper for test call sites that still pass a db path."""
 
-    def __init__(self, db_path: Path) -> None:
-        super().__init__(f"sqlite+pysqlite:///{db_path}")
+    def __init__(self, db_path: Path, *, decision_settings: Settings | None = None) -> None:
+        super().__init__(f"sqlite+pysqlite:///{db_path}", decision_settings=decision_settings)
 
 
-def build_repository(*, db_path: Path, db_dsn: str | None = None) -> RepositoryProtocol:
+def build_repository(
+    *,
+    db_path: Path,
+    db_dsn: str | None = None,
+    settings: Settings | None = None,
+) -> RepositoryProtocol:
     """Build the configured repository implementation."""
     if db_dsn is not None:
         try:
-            return SQLAlchemyRepository(db_dsn)
+            return SQLAlchemyRepository(db_dsn, decision_settings=settings)
         except ModuleNotFoundError as exc:
             if exc.name != "psycopg":
                 raise
-    return Repository(db_path)
+    return Repository(db_path, decision_settings=settings)

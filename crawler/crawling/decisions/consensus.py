@@ -6,13 +6,57 @@ import json
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+import pickle
 from typing import Any
 
 from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
-from trainer.constants import DEFAULT_THRESHOLD
-from trainer.dataset.schema import SupervisedSample
-from trainer.models.inference import load_model
+
+DEFAULT_MODEL_THRESHOLD = 0.5
+
+
+@dataclass(slots=True, frozen=True)
+class ConsensusSample:
+    """Carry the minimal crawler-owned fields needed for model inference.
+
+    Attributes:
+        sample_id: Stable identifier for the candidate URL being scored.
+        url: Original candidate URL under evaluation.
+        normalized_url: Normalized form used by URL-based features.
+        domain: Host/domain portion of the normalized URL.
+        title: Best-effort title-like text built from link/context metadata.
+        raw_labels: Empty placeholder preserved for model compatibility.
+        binary_label: Placeholder label value unused during inference.
+        resolution_status: Marker explaining that the sample is inference-only.
+        resolution_reason: Marker identifying crawler model-consensus scoring.
+        title_missing: Whether the synthetic title-like text was empty.
+        split: Synthetic dataset split marker for compatibility.
+    """
+
+    sample_id: str
+    url: str
+    normalized_url: str
+    domain: str
+    title: str
+    raw_labels: list[str]
+    binary_label: str
+    resolution_status: str
+    resolution_reason: str
+    title_missing: bool
+    split: str | None = None
+
+
+def load_model(path: Path) -> Any:
+    """Load one serialized consensus model without importing trainer helpers.
+
+    Args:
+        path: Filesystem path to the pickled model artifact.
+
+    Returns:
+        The deserialized model object.
+    """
+    with path.open("rb") as handle:
+        return pickle.load(handle)
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,9 +132,9 @@ def _read_threshold(run_dir: Path, predictor: Any) -> float:
     config_path = run_dir / "config.json"
     if config_path.exists():
         payload = json.loads(config_path.read_text(encoding="utf-8"))
-        return float(payload.get("model_config", {}).get("threshold", DEFAULT_THRESHOLD))
+        return float(payload.get("model_config", {}).get("threshold", DEFAULT_MODEL_THRESHOLD))
 
-    return float(DEFAULT_THRESHOLD)
+    return float(DEFAULT_MODEL_THRESHOLD)
 
 
 @dataclass(slots=True)
@@ -144,7 +188,7 @@ class ModelConsensusDecider:
         *,
         link_text: str,
         context_text: str,
-    ) -> SupervisedSample:
+    ) -> ConsensusSample:
         """Convert one crawler candidate URL into a trainer inference sample.
 
         Args:
@@ -153,8 +197,8 @@ class ModelConsensusDecider:
             context_text: Nearby text around the extracted link.
 
         Returns:
-            A synthetic ``SupervisedSample`` carrying the normalized URL and a
-            title-like text fallback so trainer models can score the URL.
+            A crawler-owned ``ConsensusSample`` carrying the normalized URL and
+            a title-like text fallback so serialized models can score the URL.
         """
         normalized = normalize_url(url)
         title = next(
@@ -165,7 +209,7 @@ class ModelConsensusDecider:
             ),
             "",
         )
-        return SupervisedSample(
+        return ConsensusSample(
             sample_id=normalized.normalized_url,
             url=url,
             normalized_url=normalized.normalized_url,

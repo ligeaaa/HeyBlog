@@ -83,7 +83,7 @@ class FinalizeBlogDedupScanRunRequest(BaseModel):
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
     """Construct the persistence service state."""
     resolved = settings or Settings.from_env()
-    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn)
+    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn, settings=resolved)
     return PersistenceState(
         repository=repository,
         # Keep graph/stats assembly owned by persistence so this service does not

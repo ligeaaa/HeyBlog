@@ -112,7 +112,7 @@ test("confirms and triggers database reset", async () => {
   confirmSpy.mockRestore();
 });
 
-test("shows latest dedup scan summary and removed item details", () => {
+test("shows latest decision rescan summary and removed item details", () => {
   mockedUseLatestBlogDedupScanRun.mockReturnValue({
     data: {
       id: 9,
@@ -141,7 +141,7 @@ test("shows latest dedup scan summary and removed item details", () => {
 
   render(<ControlPage />);
 
-  expect(screen.getByText(/扫描进度：已扫描节点 3 \/ 总共节点 3/i)).toBeInTheDocument();
+  expect(screen.getByText(/扫描进度：已扫描 URL 3 \/ 总共 URL 3/i)).toBeInTheDocument();
   expect(screen.getByText(/最近一次扫描：status=SUCCEEDED/i)).toBeInTheDocument();
   expect(screen.getByText("http://blog.langhai.cc")).toBeInTheDocument();
   expect(screen.getByText("blog_alias_collapsed")).toBeInTheDocument();
@@ -167,5 +167,5 @@ test("shows running scan progress and disables the scan button", () => {
   render(<ControlPage />);
 
   expect(screen.getByRole("button", { name: "全库规则重扫进行中" })).toBeDisabled();
-  expect(screen.getByText(/扫描进度：已扫描节点 5 \/ 总共节点 12/i)).toBeInTheDocument();
+  expect(screen.getByText(/扫描进度：已扫描 URL 5 \/ 总共 URL 12/i)).toBeInTheDocument();
 });

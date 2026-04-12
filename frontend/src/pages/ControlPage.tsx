@@ -120,22 +120,22 @@ export function ControlPage() {
       </Surface>
       <Surface title="Blog 规则重扫" variant="danger">
         <p className="page-copy">
-          按当前 `identity_key` 规则对全库 blog 做一次归并，不重跑 crawler；执行时会自动停爬并在结束后按需恢复。
+          按当前 `UrlDecisionChain` 对全库已收录 blog URL 重新评估，不重抓网页内容；被新规则过滤的 blog 会连同相关边一起删除。执行时会自动停爬并在结束后按需恢复。
         </p>
         <button
           className="danger-button"
           disabled={scan.isPending || maintenanceInProgress || scanIsRunning}
           onClick={async () => {
-            if (!window.confirm("确认执行全库规则重扫吗？执行期间会阻止新的 runtime 启动和批处理。")) {
+            if (!window.confirm("确认按当前 UrlDecisionChain 重扫全库已收录 blog URL 吗？执行期间会阻止新的 runtime 启动和批处理。")) {
               return;
             }
             try {
               const result = await scan.mutateAsync();
               setMessage(
-                `blog dedup scan started: scanned=${result.scanned_count}/${result.total_count}, kept=${result.kept_count}, removed=${result.removed_count}`,
+                `blog decision rescan started: scanned=${result.scanned_count}/${result.total_count}, kept=${result.kept_count}, removed=${result.removed_count}`,
               );
             } catch (error) {
-              setMessage(`blog dedup scan failed: ${(error as Error).message}`);
+              setMessage(`blog decision rescan failed: ${(error as Error).message}`);
             }
           }}
         >
@@ -144,7 +144,7 @@ export function ControlPage() {
         {latestScan.data ? (
           <div className="page-copy">
             <p>
-              扫描进度：已扫描节点 {latestScan.data.scanned_count} / 总共节点 {latestScan.data.total_count}
+              扫描进度：已扫描 URL {latestScan.data.scanned_count} / 总共 URL {latestScan.data.total_count}
             </p>
             <p>
               最近一次扫描：status={latestScan.data.status}，scanned={latestScan.data.scanned_count}/

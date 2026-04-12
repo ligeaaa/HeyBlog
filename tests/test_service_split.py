@@ -1396,7 +1396,7 @@ def test_backend_admin_routes_fail_when_auth_not_configured() -> None:
 
 
 def test_persistence_service_exposes_blog_dedup_scan_endpoints(tmp_path: Path) -> None:
-    """Persistence should expose scan summary and removed item endpoints."""
+    """Persistence should expose decision-rescan summary and removed item endpoints."""
     settings = Settings(
         db_path=tmp_path / "heyblog.sqlite",
         seed_path=tmp_path / "seed.csv",

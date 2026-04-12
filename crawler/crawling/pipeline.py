@@ -7,9 +7,7 @@ from typing import Callable
 
 from crawler.contracts.results import CrawlRunStats
 from crawler.crawling.bootstrap import BootstrapService
-from crawler.crawling.decisions.chain import UrlDecisionChain
-from crawler.crawling.decisions.consensus import ModelConsensusDecider
-from crawler.crawling.decisions.rules import RuleBasedDecider
+from crawler.crawling.decisions.chain import build_url_decision_chain
 from crawler.crawling.fetching.base import PageTooLargeError
 from crawler.crawling.fetching.httpx_fetcher import Fetcher
 from crawler.crawling.orchestrator import CrawlOrchestrator
@@ -290,19 +288,7 @@ class CrawlPipeline:
             A configured ``CrawlOrchestrator`` using the current fetcher,
             repository, settings, logger, and URL-decision chain.
         """
-        steps = [
-            RuleBasedDecider(
-                domain_blocklist=self.settings.friend_link_domain_blocklist,
-                blocked_tlds=self.settings.friend_link_tld_blocklist,
-                exact_url_blocklist=self.settings.friend_link_exact_url_blocklist,
-                prefix_blocklist=self.settings.friend_link_prefix_blocklist,
-            ),
-            ModelConsensusDecider(
-                model_root=self.settings.decision_model_root
-            )
-        ]
-
-        decision_chain = UrlDecisionChain(steps=tuple(steps))
+        decision_chain = build_url_decision_chain(self.settings)
         return CrawlOrchestrator(
             settings=self.settings,
             repository=self.repository,

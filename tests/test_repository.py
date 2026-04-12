@@ -14,6 +14,7 @@ from persistence_api.models import BlogModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from shared.contracts.enums import CrawlStatus
+from shared.config import Settings
 
 
 def test_build_repository_roundtrip_works_with_path_backed_repository(tmp_path: Path) -> None:
@@ -223,44 +224,31 @@ def test_repository_dedupes_ingestion_request_by_identity_key_but_keeps_history(
     assert len(repository.list_blogs()) == 1
 
 
-def test_repository_run_blog_dedup_scan_deletes_duplicate_edges_and_labels_and_records_items(
+def test_repository_run_blog_dedup_scan_removes_rejected_links_and_orphaned_targets(
     tmp_path: Path,
 ) -> None:
-    """Full-library dedup scan should keep one survivor and delete duplicate-owned edges and labels."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    canonical_id, inserted = repository.upsert_blog(
-        url="https://langhai.cc/",
-        normalized_url="https://langhai.cc/",
-        domain="langhai.cc",
+    """Admin rescan should drop persisted blog URLs rejected by the current decision chain."""
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        friend_link_exact_url_blocklist=("https://rejected.example/",),
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
     )
     assert inserted is True
-    external_id, inserted = repository.upsert_blog(
-        url="https://friend.example/",
-        normalized_url="https://friend.example/",
-        domain="friend.example",
+    target_id, inserted = repository.upsert_blog(
+        url="https://rejected.example/",
+        normalized_url="https://rejected.example/",
+        domain="rejected.example",
     )
     assert inserted is True
 
     with session_scope(repository.session_factory) as session:
-        duplicate = BlogModel(
-            url="http://blog.langhai.cc/index.html",
-            normalized_url="http://blog.langhai.cc/index.html",
-            identity_key="",
-            identity_reason_codes="[]",
-            identity_ruleset_version="",
-            domain="blog.langhai.cc",
-            email=None,
-            title="Duplicate Langhai",
-            icon_url=None,
-            status_code=200,
-            crawl_status=CrawlStatus.FINISHED,
-            friend_links_count=1,
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        session.add(duplicate)
-        session.flush()
-        duplicate_id = int(duplicate.id)
         tag = BlogLabelTagModel(
             name="blog",
             slug="blog",
@@ -271,112 +259,100 @@ def test_repository_run_blog_dedup_scan_deletes_duplicate_edges_and_labels_and_r
         session.flush()
         session.add(
             BlogLabelAssignmentModel(
-                blog_id=duplicate_id,
+                blog_id=target_id,
                 tag_id=int(tag.id),
                 labeled_at=repository_module.now_utc(),
                 created_at=repository_module.now_utc(),
                 updated_at=repository_module.now_utc(),
             )
         )
-        session.add(
-            EdgeModel(
-                from_blog_id=external_id,
-                to_blog_id=duplicate_id,
-                link_url_raw="http://blog.langhai.cc/index.html",
-                link_text="duplicate",
-                discovered_at=repository_module.now_utc(),
-            )
-        )
 
     repository.add_edge(
-        from_blog_id=external_id,
-        to_blog_id=canonical_id,
-        link_url_raw="https://langhai.cc/",
-        link_text="canonical",
-    )
-    repository.add_edge(
-        from_blog_id=external_id,
-        to_blog_id=duplicate_id,
-        link_url_raw="http://blog.langhai.cc/index.html",
-        link_text="duplicate",
-    )
-    queued = repository.create_ingestion_request(
-        homepage_url="http://www.langhai.cc/",
-        email="owner@example.com",
+        from_blog_id=source_id,
+        to_blog_id=target_id,
+        link_url_raw="https://rejected.example/",
+        link_text="Rejected",
     )
 
     summary = repository.run_blog_dedup_scan(crawler_was_running=True)
     items = repository.list_blog_dedup_scan_run_items(summary["id"])
     blogs = repository.list_blogs()
-    edges = repository.list_edges()
-    labeling = repository.list_blog_labeling_candidates()
 
     assert summary["status"] == "SUCCEEDED"
     assert summary["crawler_was_running"] is True
+    assert summary["total_count"] == 2
+    assert summary["scanned_count"] == 2
     assert summary["removed_count"] == 1
+    assert summary["kept_count"] == 1
+    assert repository.list_edges() == []
+    assert [blog["id"] for blog in blogs] == [source_id]
     assert len(items) == 1
-    assert items[0]["survivor_identity_key"] == "site:langhai.cc/"
-    assert items[0]["survivor_selection_basis"].startswith("normalized_url_length=")
-    assert sum(1 for blog in blogs if blog["identity_key"] == "site:langhai.cc/") == 1
-    assert edges == [
-        {
-            "id": edges[0]["id"],
-            "from_blog_id": external_id,
-            "to_blog_id": canonical_id,
-            "link_url_raw": "https://langhai.cc/",
-            "link_text": "canonical",
-            "discovered_at": edges[0]["discovered_at"],
-        }
-    ]
-    assert [row["id"] for row in labeling["items"]] == [canonical_id]
-    assert labeling["items"][0]["labels"] == []
-    request = repository.get_ingestion_request(
-        request_id=queued["request_id"],
-        request_token=queued["request_token"],
+    assert items[0]["survivor_blog_id"] is None
+    assert items[0]["removed_blog_id"] == target_id
+    assert items[0]["removed_url"] == "https://rejected.example/"
+    assert items[0]["reason_code"] == "exact_url_blocked"
+
+
+def test_repository_dedup_scan_keeps_valid_blog_urls(tmp_path: Path) -> None:
+    """Rescan should preserve persisted blogs whose own URLs still pass the chain."""
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        friend_link_exact_url_blocklist=("https://blocked.example/",),
     )
-    assert request is not None
-    assert request["identity_key"] == "site:langhai.cc/"
-
-
-def test_repository_dedup_scan_prefers_shortest_normalized_url_as_survivor(tmp_path: Path) -> None:
-    """Within one identity group, the shortest normalized_url should survive."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    shortest_id, inserted = repository.upsert_blog(
-        url="https://langhai.cc/",
-        normalized_url="https://langhai.cc/",
-        domain="langhai.cc",
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    first_source_id, inserted = repository.upsert_blog(
+        url="https://source-a.example/",
+        normalized_url="https://source-a.example/",
+        domain="source-a.example",
+    )
+    assert inserted is True
+    second_source_id, inserted = repository.upsert_blog(
+        url="https://source-b.example/",
+        normalized_url="https://source-b.example/",
+        domain="source-b.example",
+    )
+    assert inserted is True
+    target_id, inserted = repository.upsert_blog(
+        url="https://blocked.example/",
+        normalized_url="https://blocked.example/",
+        domain="blocked.example",
+    )
+    assert inserted is True
+    survivor_id, inserted = repository.upsert_blog(
+        url="https://friend.example/",
+        normalized_url="https://friend.example/",
+        domain="friend.example",
     )
     assert inserted is True
 
-    with session_scope(repository.session_factory) as session:
-        duplicate = BlogModel(
-            url="http://blog.langhai.cc/index.html",
-            normalized_url="http://blog.langhai.cc/index.html",
-            identity_key="",
-            identity_reason_codes="[]",
-            identity_ruleset_version="",
-            domain="blog.langhai.cc",
-            email=None,
-            title=None,
-            icon_url=None,
-            status_code=None,
-            crawl_status=CrawlStatus.FINISHED,
-            friend_links_count=0,
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        session.add(duplicate)
-        session.flush()
-        duplicate_id = int(duplicate.id)
+    repository.add_edge(
+        from_blog_id=first_source_id,
+        to_blog_id=survivor_id,
+        link_url_raw="https://friend.example/",
+        link_text="Canonical",
+    )
+    repository.add_edge(
+        from_blog_id=second_source_id,
+        to_blog_id=target_id,
+        link_url_raw="https://blocked.example/",
+        link_text="Blocked",
+    )
 
     summary = repository.run_blog_dedup_scan(crawler_was_running=False)
-    blogs = repository.list_blogs()
     items = repository.list_blog_dedup_scan_run_items(summary["id"])
+    blogs = repository.list_blogs()
+    edges = repository.list_edges()
 
+    assert summary["total_count"] == 4
+    assert summary["scanned_count"] == 4
     assert summary["removed_count"] == 1
-    assert [blog["id"] for blog in blogs if blog["identity_key"] == "site:langhai.cc/"] == [shortest_id]
-    assert items[0]["removed_blog_id"] == duplicate_id
-    assert "normalized_url=https://langhai.cc/" in items[0]["survivor_selection_basis"]
+    assert summary["kept_count"] == 3
+    assert len(items) == 1
+    assert items[0]["removed_url"] == "https://blocked.example/"
+    assert [edge["link_url_raw"] for edge in edges] == ["https://friend.example/"]
+    assert {blog["id"] for blog in blogs} == {first_source_id, second_source_id, survivor_id}
 
 
 def test_repository_upsert_blog_collapses_tenant_like_subdomains_to_root_url(tmp_path: Path) -> None:
@@ -487,57 +463,61 @@ def test_repository_reused_tenant_like_ingestion_request_is_canonicalized_to_roo
     assert reused["identity_key"] == "site:66law.cn/"
 
 
-def test_repository_dedup_scan_canonicalizes_tenant_like_survivor_to_root_url(tmp_path: Path) -> None:
-    """Historical tenant-like subdomains should merge into one root survivor after dedup scan."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+def test_repository_dedup_scan_uses_model_consensus_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    """Rescan should share the same model-consensus decision layer as live crawler filtering."""
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        decision_model_root=tmp_path / "models",
+        decision_model_consensus_enabled=True,
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    assert inserted is True
+    target_id, inserted = repository.upsert_blog(
+        url="https://maybe-blog.example/",
+        normalized_url="https://maybe-blog.example/",
+        domain="maybe-blog.example",
+    )
+    assert inserted is True
 
-    with session_scope(repository.session_factory) as session:
-        first = BlogModel(
-            url="https://zhuruilei.66law.cn/",
-            normalized_url="https://zhuruilei.66law.cn/",
-            identity_key="",
-            identity_reason_codes="[]",
-            identity_ruleset_version="",
-            domain="zhuruilei.66law.cn",
-            email=None,
-            title=None,
-            icon_url=None,
-            status_code=None,
-            crawl_status=CrawlStatus.WAITING,
-            friend_links_count=0,
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        second = BlogModel(
-            url="https://lichenlvs.66law.cn/",
-            normalized_url="https://lichenlvs.66law.cn/",
-            identity_key="",
-            identity_reason_codes="[]",
-            identity_ruleset_version="",
-            domain="lichenlvs.66law.cn",
-            email=None,
-            title=None,
-            icon_url=None,
-            status_code=None,
-            crawl_status=CrawlStatus.WAITING,
-            friend_links_count=0,
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        session.add(first)
-        session.add(second)
-        session.flush()
-        first_id = int(first.id)
+    run_dir = settings.decision_model_root / "structured" / "2604120847"
+    run_dir.mkdir(parents=True)
+    (run_dir / "model.joblib").write_bytes(b"stub")
+    (run_dir / "config.json").write_text('{"model_config":{"threshold":0.5}}', encoding="utf-8")
+
+    class StubPredictor:
+        threshold = 0.5
+
+        def predict_proba(self, samples: list[object]) -> list[float]:
+            probabilities: list[float] = []
+            for sample in samples:
+                url = str(getattr(sample, "url", ""))
+                probabilities.append(0.9 if "source.example" in url else 0.1)
+            return probabilities
+
+    monkeypatch.setattr("crawler.crawling.decisions.consensus.load_model", lambda path: StubPredictor())
+
+    repository.add_edge(
+        from_blog_id=source_id,
+        to_blog_id=target_id,
+        link_url_raw="https://maybe-blog.example/",
+        link_text="Maybe Blog",
+    )
 
     summary = repository.run_blog_dedup_scan(crawler_was_running=False)
-    assert summary["removed_count"] == 1
+    items = repository.list_blog_dedup_scan_run_items(summary["id"])
 
-    blogs = repository.list_blogs()
-    assert [blog["id"] for blog in blogs] == [first_id]
-    assert blogs[0]["url"] == "https://66law.cn/"
-    assert blogs[0]["normalized_url"] == "https://66law.cn/"
-    assert blogs[0]["domain"] == "66law.cn"
-    assert blogs[0]["identity_key"] == "site:66law.cn/"
+    assert summary["removed_count"] == 1
+    assert summary["kept_count"] == 1
+    assert repository.list_edges() == []
+    assert [blog["id"] for blog in repository.list_blogs()] == [source_id]
+    assert items[0]["reason_code"] == "model_consensus_all_non_blog"
 
 
 def test_repository_startup_migrates_legacy_tenant_like_rows_and_merges_to_root_url(tmp_path: Path) -> None:
