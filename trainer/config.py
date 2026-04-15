@@ -20,6 +20,7 @@ from trainer.constants import DEFAULT_MODEL_ROOT
 from trainer.constants import DEFAULT_SPLIT_RATIOS
 from trainer.constants import DEFAULT_STRUCTURED_EPOCHS
 from trainer.constants import DEFAULT_TFIDF_EPOCHS
+from trainer.constants import DEFAULT_TITLE_TOKEN_CHUNK_SIZE
 from trainer.constants import DEFAULT_THRESHOLD
 from trainer.constants import DEFAULT_TITLE_WORD_NGRAM_RANGE
 from trainer.constants import DEFAULT_URL_CHAR_NGRAM_RANGE
@@ -58,6 +59,7 @@ class ModelConfig:
     rf_estimators: int = DEFAULT_RF_ESTIMATORS
     url_char_ngram_range: tuple[int, int] = DEFAULT_URL_CHAR_NGRAM_RANGE
     title_word_ngram_range: tuple[int, int] = DEFAULT_TITLE_WORD_NGRAM_RANGE
+    title_token_chunk_size: int = DEFAULT_TITLE_TOKEN_CHUNK_SIZE
     min_df: int = DEFAULT_MIN_DF
 
     def to_dict(self) -> dict[str, Any]:

@@ -35,6 +35,7 @@ class TfidfBaseline:
             samples,
             url_char_ngram_range=tuple(self.metadata["url_char_ngram_range"]),
             title_word_ngram_range=tuple(self.metadata["title_word_ngram_range"]),
+            title_token_chunk_size=self.metadata["title_token_chunk_size"],
         )
         url_features = self.url_vectorizer.transform(url_docs)
         title_features = self.title_vectorizer.transform(title_docs)
@@ -65,6 +66,7 @@ def train_tfidf_baseline(
         train_samples,
         url_char_ngram_range=model_config.url_char_ngram_range,
         title_word_ngram_range=model_config.title_word_ngram_range,
+        title_token_chunk_size=model_config.title_token_chunk_size,
     )
     url_vectorizer = TfidfVectorizer(
         analyzer=identity_analyzer,

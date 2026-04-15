@@ -121,13 +121,15 @@ TF-IDF 路径不会直接使用上述数值特征，而是先把 URL 转成 toke
 Title 文档路径也来自 [`trainer/features/assemble.py`](/Users/lige/code/HeyBlog/trainer/features/assemble.py)：
 
 - 先做 title 清洗
-- 再 tokenization
+- 再删除所有非英文、非中文、非数字字符
+- 按固定字符块切 token
+  - 默认每 `2` 个字符一个 token
 - 最后构造词级 n-gram
   - 默认 `1-2 gram`
 
 最终 title 文档约等于：
 
-- `title_word_ngrams(tokenize_title(clean_title(title)), 1, 2)`
+- `title_word_ngrams(tokenize_title_char_chunks(title, 2), 1, 2)`
 
 ### TF-IDF Vectorization
 

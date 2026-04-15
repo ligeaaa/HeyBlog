@@ -33,3 +33,4 @@ def test_tfidf_baseline_can_fit_and_predict_probabilities() -> None:
 
     assert len(probabilities) == 4
     assert all(0.0 <= probability <= 1.0 for probability in probabilities)
+    assert model.metadata["title_token_chunk_size"] == 2
