@@ -19,3 +19,5 @@ ai_doc/
 todo.md
 tracker/
 runtime_resources/*
+archive/*
+frontend_example/*

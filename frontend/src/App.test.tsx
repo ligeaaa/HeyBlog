@@ -1,38 +1,35 @@
-import type { ReactNode } from "react";
-import { expect, test } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import { AdminLayout } from "./shell/AdminLayout";
-import { PublicLayout } from "./shell/PublicLayout";
+import { beforeEach, expect, test, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-function renderWithProviders(node: ReactNode) {
-  const queryClient = new QueryClient();
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{node}</MemoryRouter>
-    </QueryClientProvider>,
-  );
-}
+vi.mock("react-force-graph-2d", () => ({
+  default: () => <div data-testid="fake-force-graph" />,
+}));
 
-test("renders only public navigation entries in public layout", () => {
+import App from "./App";
+
+beforeEach(() => {
   cleanup();
-  renderWithProviders(<PublicLayout />);
-
-  const nav = screen.getByRole("navigation", { name: "Public navigation" });
-  expect(nav).toBeInTheDocument();
-  expect(within(nav).getByRole("link", { name: /统计总览/i })).toBeInTheDocument();
-  expect(within(nav).getByRole("link", { name: /发现博客/i })).toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: /控制台/i })).not.toBeInTheDocument();
+  vi.restoreAllMocks();
 });
 
-test("renders admin navigation and auth gate in admin layout", () => {
-  cleanup();
-  renderWithProviders(<AdminLayout />);
+test("renders the example-aligned graph explorer and opens the fake submit dialog", async () => {
+  render(<App />);
 
-  const nav = screen.getByRole("navigation", { name: "Admin navigation" });
-  expect(nav).toBeInTheDocument();
-  expect(within(nav).getByRole("link", { name: /控制台/i })).toBeInTheDocument();
-  expect(screen.getByLabelText(/Admin token/i)).toBeInTheDocument();
-  expect(within(nav).queryByRole("link", { name: /发现博客/i })).not.toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: /博客关系网络可视化/i })).toBeInTheDocument();
+  });
+
+  expect(screen.getByTestId("fake-force-graph")).toBeInTheDocument();
+  expect(screen.getByText(/当前阶段先按 `frontend_example` 的 UI 结构推进/i)).toBeInTheDocument();
+  expect(screen.getByText("6")).toBeInTheDocument();
+  expect(screen.getByText("10")).toBeInTheDocument();
+
+  fireEvent.change(screen.getByPlaceholderText(/输入博客URL进行搜索/i), {
+    target: { value: "https://missing.example" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /搜索博客 URL/i }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: /博客未找到/i })).toBeInTheDocument();
+  });
 });
