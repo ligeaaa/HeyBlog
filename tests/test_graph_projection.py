@@ -11,6 +11,8 @@ from persistence_api.graph_projection import build_neighborhood_graph_view
 from persistence_api.graph_projection import load_snapshot_manifest
 from persistence_api.graph_projection import load_snapshot_payload
 from persistence_api.graph_projection import write_snapshot_files
+from persistence_api.graph_projection import latest_snapshot_manifest_filename
+from persistence_api.graph_projection import snapshot_filename
 
 
 def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -165,6 +167,28 @@ def test_snapshot_files_are_written_with_latest_manifest(tmp_path: Path) -> None
     assert manifest["graph_fingerprint"] == snapshot["meta"]["graph_fingerprint"]
     assert payload is not None
     assert payload["nodes"][0]["x"] is not None
+
+
+def test_snapshot_files_support_source_namespaces(tmp_path: Path) -> None:
+    blogs, edges = sample_graph()
+    snapshot = build_graph_snapshot_payload(
+        blogs,
+        edges,
+        version="v1",
+        generated_at="2026-03-31T00:00:00Z",
+        snapshot_namespace="legacy",
+    )
+
+    write_snapshot_files(tmp_path, snapshot, namespace="legacy")
+
+    assert (tmp_path / latest_snapshot_manifest_filename("legacy")).exists()
+    assert (tmp_path / snapshot_filename("v1", "legacy")).exists()
+    manifest = load_snapshot_manifest(tmp_path, namespace="legacy")
+    payload = load_snapshot_payload(tmp_path, "v1", namespace="legacy")
+    assert manifest is not None
+    assert manifest["snapshot_namespace"] == "legacy"
+    assert payload is not None
+    assert payload["meta"]["snapshot_namespace"] == "legacy"
 
 
 def test_snapshot_files_serialize_postgres_style_datetimes(tmp_path: Path) -> None:

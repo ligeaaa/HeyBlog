@@ -10,12 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@antv/g6": "^5.0.49",
     "@tanstack/react-query": "^5.83.0",
     "d3": "^7.9.0",
     "lucide-react": "^0.487.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-force-graph-2d": "^1.29.1",
     "react-router-dom": "^7.7.1",
     "sonner": "^2.0.3"
   },

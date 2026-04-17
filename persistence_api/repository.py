@@ -319,6 +319,170 @@ def _catalog_response(
     }
 
 
+def ensure_legacy_compat_schema(engine: Any) -> None:
+    """Apply additive compatibility fixes needed by existing persistence databases."""
+    inspector = inspect(engine)
+    blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
+    ingestion_columns = {column["name"] for column in inspector.get_columns("ingestion_requests")}
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        if "email" not in blog_columns:
+            connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
+        if "identity_key" not in blog_columns:
+            connection.execute(text("ALTER TABLE blogs ADD COLUMN identity_key TEXT"))
+        if "identity_reason_codes" not in blog_columns:
+            connection.execute(
+                text("ALTER TABLE blogs ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL")
+            )
+        if "identity_ruleset_version" not in blog_columns:
+            connection.execute(
+                text("ALTER TABLE blogs ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL")
+            )
+        if "identity_key" not in ingestion_columns:
+            connection.execute(text("ALTER TABLE ingestion_requests ADD COLUMN identity_key TEXT"))
+        if "identity_reason_codes" not in ingestion_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE ingestion_requests ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL"
+                )
+            )
+        if "identity_ruleset_version" not in ingestion_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE ingestion_requests ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL"
+                )
+            )
+        if "blog_dedup_scan_runs" in existing_tables:
+            run_columns = {column["name"] for column in inspector.get_columns("blog_dedup_scan_runs")}
+            if "total_count" not in run_columns:
+                connection.execute(
+                    text("ALTER TABLE blog_dedup_scan_runs ADD COLUMN total_count INTEGER DEFAULT 0 NOT NULL")
+                )
+        if "ix_blogs_identity_key" not in {index["name"] for index in inspector.get_indexes("blogs")}:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_blogs_identity_key ON blogs (identity_key)"))
+        if "ix_ingestion_requests_identity_key" not in {
+            index["name"] for index in inspector.get_indexes("ingestion_requests")
+        }:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_ingestion_requests_identity_key "
+                    "ON ingestion_requests (identity_key)"
+                )
+            )
+        if (
+            "blog_link_labels" in existing_tables
+            and "blog_label_tags" in existing_tables
+            and "blog_label_assignments" in existing_tables
+        ):
+            old_columns = {column["name"] for column in inspector.get_columns("blog_link_labels")}
+            if {"blog_id", "label"}.issubset(old_columns):
+                legacy_rows = connection.execute(
+                    text("SELECT blog_id, label, labeled_at, created_at, updated_at FROM blog_link_labels")
+                ).mappings().all()
+                for row in legacy_rows:
+                    slug = slugify_blog_label(str(row["label"]))
+                    existing_tag = connection.execute(
+                        text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
+                        {"slug": slug},
+                    ).scalar()
+                    if existing_tag is None:
+                        connection.execute(
+                            text(
+                                "INSERT INTO blog_label_tags (name, slug, created_at, updated_at) "
+                                "VALUES (:name, :slug, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                            ),
+                            {"name": str(row["label"]), "slug": slug},
+                        )
+                        existing_tag = connection.execute(
+                            text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
+                            {"slug": slug},
+                        ).scalar()
+                    existing_assignment = connection.execute(
+                        text(
+                            "SELECT id FROM blog_label_assignments "
+                            "WHERE blog_id = :blog_id AND tag_id = :tag_id"
+                        ),
+                        {"blog_id": row["blog_id"], "tag_id": existing_tag},
+                    ).scalar()
+                    if existing_assignment is None:
+                        connection.execute(
+                            text(
+                                "INSERT INTO blog_label_assignments "
+                                "(blog_id, tag_id, labeled_at, created_at, updated_at) "
+                                "VALUES (:blog_id, :tag_id, :labeled_at, :created_at, :updated_at)"
+                            ),
+                            {
+                                "blog_id": row["blog_id"],
+                                "tag_id": existing_tag,
+                                "labeled_at": row["labeled_at"] or now_utc(),
+                                "created_at": row["created_at"] or now_utc(),
+                                "updated_at": row["updated_at"] or now_utc(),
+                            },
+                        )
+        blog_rows = connection.execute(
+            text(
+                "SELECT id, url, normalized_url, domain, identity_key, identity_ruleset_version "
+                "FROM blogs"
+            )
+        ).mappings().all()
+        for row in blog_rows:
+            needs_refresh = (
+                not row["identity_key"]
+                or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
+            )
+            if not needs_refresh:
+                continue
+            identity = resolve_blog_identity(str(row["url"]) or str(row["normalized_url"]))
+            connection.execute(
+                text(
+                    "UPDATE blogs SET identity_key = :identity_key, identity_reason_codes = :reason_codes, "
+                    "identity_ruleset_version = :ruleset_version, domain = :domain "
+                    "WHERE id = :blog_id"
+                ),
+                {
+                    "blog_id": row["id"],
+                    "identity_key": identity.identity_key,
+                    "reason_codes": _dump_reason_codes(identity.reason_codes),
+                    "ruleset_version": identity.ruleset_version,
+                    "domain": str(row["domain"] or identity.domain),
+                },
+            )
+        ingestion_rows = connection.execute(
+            text(
+                "SELECT id, requested_url, normalized_url, identity_key, identity_ruleset_version "
+                "FROM ingestion_requests"
+            )
+        ).mappings().all()
+        for row in ingestion_rows:
+            needs_refresh = (
+                not row["identity_key"]
+                or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
+            )
+            if not needs_refresh:
+                continue
+            identity = resolve_blog_identity(str(row["requested_url"]) or str(row["normalized_url"]))
+            storage_url = (
+                identity.canonical_url
+                if _uses_tenant_root_canonicalization(identity.reason_codes)
+                else normalize_url(str(row["requested_url"]) or str(row["normalized_url"])).normalized_url
+            )
+            connection.execute(
+                text(
+                    "UPDATE ingestion_requests SET identity_key = :identity_key, "
+                    "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version, "
+                    "normalized_url = :normalized_url "
+                    "WHERE id = :request_id"
+                ),
+                {
+                    "request_id": row["id"],
+                    "identity_key": identity.identity_key,
+                    "reason_codes": _dump_reason_codes(identity.reason_codes),
+                    "ruleset_version": identity.ruleset_version,
+                    "normalized_url": storage_url,
+                },
+            )
+
+
 def _blog_payload(
     model: BlogModel,
     *,
@@ -735,14 +899,16 @@ class SQLAlchemyRepository:
 
     database_url: str
     decision_settings: Settings | None = None
+    startup_schema_sync: bool = True
     engine: Any = field(init=False, repr=False)
     session_factory: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.engine = create_persistence_engine(self.database_url)
         self.session_factory = create_session_factory(self.engine)
-        Base.metadata.create_all(self.engine)
-        self._ensure_schema()
+        if self.startup_schema_sync:
+            Base.metadata.create_all(self.engine)
+            ensure_legacy_compat_schema(self.engine)
         with session_scope(self.session_factory) as session:
             self._fail_orphaned_dedup_scan_runs(session)
             self._requeue_processing(session)
@@ -783,162 +949,7 @@ class SQLAlchemyRepository:
             run.updated_at = failed_at
 
     def _ensure_schema(self) -> None:
-        inspector = inspect(self.engine)
-        blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
-        ingestion_columns = {column["name"] for column in inspector.get_columns("ingestion_requests")}
-        existing_tables = set(inspector.get_table_names())
-        with self.engine.begin() as connection:
-            if "email" not in blog_columns:
-                connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
-            if "identity_key" not in blog_columns:
-                connection.execute(text("ALTER TABLE blogs ADD COLUMN identity_key TEXT"))
-            if "identity_reason_codes" not in blog_columns:
-                connection.execute(
-                    text("ALTER TABLE blogs ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL")
-                )
-            if "identity_ruleset_version" not in blog_columns:
-                connection.execute(
-                    text("ALTER TABLE blogs ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL")
-                )
-            if "identity_key" not in ingestion_columns:
-                connection.execute(text("ALTER TABLE ingestion_requests ADD COLUMN identity_key TEXT"))
-            if "identity_reason_codes" not in ingestion_columns:
-                connection.execute(
-                    text(
-                        "ALTER TABLE ingestion_requests ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL"
-                    )
-                )
-            if "identity_ruleset_version" not in ingestion_columns:
-                connection.execute(
-                    text(
-                        "ALTER TABLE ingestion_requests ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL"
-                    )
-                )
-            if "blog_dedup_scan_runs" in existing_tables:
-                run_columns = {column["name"] for column in inspector.get_columns("blog_dedup_scan_runs")}
-                if "total_count" not in run_columns:
-                    connection.execute(
-                        text("ALTER TABLE blog_dedup_scan_runs ADD COLUMN total_count INTEGER DEFAULT 0 NOT NULL")
-                    )
-            if "ix_blogs_identity_key" not in {index["name"] for index in inspector.get_indexes("blogs")}:
-                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_blogs_identity_key ON blogs (identity_key)"))
-            if "ix_ingestion_requests_identity_key" not in {
-                index["name"] for index in inspector.get_indexes("ingestion_requests")
-            }:
-                connection.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_ingestion_requests_identity_key "
-                        "ON ingestion_requests (identity_key)"
-                    )
-                )
-            if "blog_link_labels" in existing_tables and "blog_label_tags" in existing_tables and "blog_label_assignments" in existing_tables:
-                old_columns = {column["name"] for column in inspector.get_columns("blog_link_labels")}
-                if {"blog_id", "label"}.issubset(old_columns):
-                    legacy_rows = connection.execute(
-                        text("SELECT blog_id, label, labeled_at, created_at, updated_at FROM blog_link_labels")
-                    ).mappings().all()
-                    for row in legacy_rows:
-                        slug = slugify_blog_label(str(row["label"]))
-                        existing_tag = connection.execute(
-                            text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
-                            {"slug": slug},
-                        ).scalar()
-                        if existing_tag is None:
-                            connection.execute(
-                                text(
-                                    "INSERT INTO blog_label_tags (name, slug, created_at, updated_at) "
-                                    "VALUES (:name, :slug, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-                                ),
-                                {"name": str(row["label"]), "slug": slug},
-                            )
-                            existing_tag = connection.execute(
-                                text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
-                                {"slug": slug},
-                            ).scalar()
-                        existing_assignment = connection.execute(
-                            text(
-                                "SELECT id FROM blog_label_assignments "
-                                "WHERE blog_id = :blog_id AND tag_id = :tag_id"
-                            ),
-                            {"blog_id": row["blog_id"], "tag_id": existing_tag},
-                        ).scalar()
-                        if existing_assignment is None:
-                            connection.execute(
-                                text(
-                                    "INSERT INTO blog_label_assignments "
-                                    "(blog_id, tag_id, labeled_at, created_at, updated_at) "
-                                    "VALUES (:blog_id, :tag_id, :labeled_at, :created_at, :updated_at)"
-                                ),
-                                {
-                                    "blog_id": row["blog_id"],
-                                    "tag_id": existing_tag,
-                                    "labeled_at": row["labeled_at"] or now_utc(),
-                                    "created_at": row["created_at"] or now_utc(),
-                                    "updated_at": row["updated_at"] or now_utc(),
-                                },
-                            )
-            blog_rows = connection.execute(
-                text(
-                    "SELECT id, url, normalized_url, domain, identity_key, identity_ruleset_version "
-                    "FROM blogs"
-                )
-            ).mappings().all()
-            for row in blog_rows:
-                needs_refresh = (
-                    not row["identity_key"]
-                    or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
-                )
-                if not needs_refresh:
-                    continue
-                identity = resolve_blog_identity(str(row["url"]) or str(row["normalized_url"]))
-                connection.execute(
-                    text(
-                        "UPDATE blogs SET identity_key = :identity_key, identity_reason_codes = :reason_codes, "
-                        "identity_ruleset_version = :ruleset_version, domain = :domain "
-                        "WHERE id = :blog_id"
-                    ),
-                    {
-                        "blog_id": row["id"],
-                        "identity_key": identity.identity_key,
-                        "reason_codes": _dump_reason_codes(identity.reason_codes),
-                        "ruleset_version": identity.ruleset_version,
-                        "domain": str(row["domain"] or identity.domain),
-                    },
-                )
-            ingestion_rows = connection.execute(
-                text(
-                    "SELECT id, requested_url, normalized_url, identity_key, identity_ruleset_version "
-                    "FROM ingestion_requests"
-                )
-            ).mappings().all()
-            for row in ingestion_rows:
-                needs_refresh = (
-                    not row["identity_key"]
-                    or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
-                )
-                if not needs_refresh:
-                    continue
-                identity = resolve_blog_identity(str(row["requested_url"]) or str(row["normalized_url"]))
-                storage_url = (
-                    identity.canonical_url
-                    if _uses_tenant_root_canonicalization(identity.reason_codes)
-                    else normalize_url(str(row["requested_url"]) or str(row["normalized_url"])).normalized_url
-                )
-                connection.execute(
-                    text(
-                        "UPDATE ingestion_requests SET identity_key = :identity_key, "
-                        "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version, "
-                        "normalized_url = :normalized_url "
-                        "WHERE id = :request_id"
-                    ),
-                    {
-                        "request_id": row["id"],
-                        "identity_key": identity.identity_key,
-                        "reason_codes": _dump_reason_codes(identity.reason_codes),
-                        "ruleset_version": identity.ruleset_version,
-                        "normalized_url": storage_url,
-                    },
-                )
+        ensure_legacy_compat_schema(self.engine)
 
     def _blog_labeling_select(self) -> tuple[Any, dict[str, Any]]:
         statement, metrics = self._blog_select()
@@ -2138,7 +2149,11 @@ class Repository(SQLAlchemyRepository):
     """Compatibility wrapper for test call sites that still pass a db path."""
 
     def __init__(self, db_path: Path, *, decision_settings: Settings | None = None) -> None:
-        super().__init__(f"sqlite+pysqlite:///{db_path}", decision_settings=decision_settings)
+        super().__init__(
+            f"sqlite+pysqlite:///{db_path}",
+            decision_settings=decision_settings,
+            startup_schema_sync=True,
+        )
 
 
 def build_repository(
@@ -2150,7 +2165,7 @@ def build_repository(
     """Build the configured repository implementation."""
     if db_dsn is not None:
         try:
-            return SQLAlchemyRepository(db_dsn, decision_settings=settings)
+            return SQLAlchemyRepository(db_dsn, decision_settings=settings, startup_schema_sync=False)
         except ModuleNotFoundError as exc:
             if exc.name != "psycopg":
                 raise

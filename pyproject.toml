@@ -9,6 +9,7 @@ description = "MVP blog friend-link crawler and graph API"
 readme = "readme.md"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.14,<2",
   "beautifulsoup4>=4.12,<5",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",

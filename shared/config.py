@@ -25,6 +25,9 @@ DEFAULT_PERSISTENCE_BASE_URL = "http://127.0.0.1:8030"
 DEFAULT_CRAWLER_BASE_URL = "http://127.0.0.1:8010"
 DEFAULT_SEARCH_BASE_URL = "http://127.0.0.1:8020"
 DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_GRAPH_BACKEND = "legacy"
+DEFAULT_GRAPH_SNAPSHOT_NAMESPACE = "legacy"
+DEFAULT_AGE_GRAPH_NAME = "heyblog_graph"
 _ENV_LOADED = False
 
 
@@ -106,6 +109,11 @@ class Settings:
     admin_dev_bypass: bool = False
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
     decision_model_consensus_enabled: bool = True
+    graph_backend: str = DEFAULT_GRAPH_BACKEND
+    graph_snapshot_namespace: str = DEFAULT_GRAPH_SNAPSHOT_NAMESPACE
+    age_enabled: bool = False
+    age_graph_name: str = DEFAULT_AGE_GRAPH_NAME
+    age_shadow_reads: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -198,4 +206,12 @@ class Settings:
                 "HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED",
                 default=True,
             ),
+            graph_backend=os.getenv("HEYBLOG_GRAPH_BACKEND", DEFAULT_GRAPH_BACKEND).strip().lower() or DEFAULT_GRAPH_BACKEND,
+            graph_snapshot_namespace=(
+                os.getenv("HEYBLOG_GRAPH_SNAPSHOT_NAMESPACE", DEFAULT_GRAPH_SNAPSHOT_NAMESPACE).strip().lower()
+                or DEFAULT_GRAPH_SNAPSHOT_NAMESPACE
+            ),
+            age_enabled=_parse_bool_env("HEYBLOG_AGE_ENABLED"),
+            age_graph_name=os.getenv("HEYBLOG_AGE_GRAPH_NAME", DEFAULT_AGE_GRAPH_NAME).strip() or DEFAULT_AGE_GRAPH_NAME,
+            age_shadow_reads=_parse_bool_env("HEYBLOG_AGE_SHADOW_READS"),
         )

@@ -287,6 +287,12 @@ class PersistenceHttpClient:
     def graph(self) -> dict[str, Any]:
         return self._get("/internal/graph")
 
+    def graph_status(self) -> dict[str, Any]:
+        return self._get("/internal/graph/status")
+
+    def rebuild_graph_shadow(self) -> dict[str, Any]:
+        return self._post("/internal/graph/shadow/rebuild", {})
+
     def graph_view(
         self,
         *,

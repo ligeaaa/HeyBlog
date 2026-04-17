@@ -14,7 +14,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-COPY pyproject.toml readme.md ./
+COPY pyproject.toml readme.md alembic.ini ./
+COPY alembic ./alembic
 COPY shared ./shared
 COPY backend ./backend
 COPY crawler ./crawler

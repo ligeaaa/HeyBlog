@@ -12,9 +12,11 @@ from pydantic import BaseModel
 
 from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
 from persistence_api.repository import BLOG_LABELING_DEFAULT_PAGE_SIZE
+from persistence_api.age_graph import AgeGraphManager
 from persistence_api.repository import BlogLabelingConflictError
 from persistence_api.repository import BlogLabelingNotFoundError
 from persistence_api.graph_service import GraphService
+from persistence_api.migrations import run_postgres_migrations
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
 from persistence_api.stats_service import StatsService
@@ -83,12 +85,25 @@ class FinalizeBlogDedupScanRunRequest(BaseModel):
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
     """Construct the persistence service state."""
     resolved = settings or Settings.from_env()
+    if resolved.db_dsn:
+        run_postgres_migrations(resolved.db_dsn)
     repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn, settings=resolved)
+    age_manager = AgeGraphManager(
+        getattr(repository, "engine", None),
+        enabled=resolved.age_enabled and resolved.age_shadow_reads,
+        graph_name=resolved.age_graph_name,
+    )
     return PersistenceState(
         repository=repository,
         # Keep graph/stats assembly owned by persistence so this service does not
         # depend on backend-only modules for its own read models.
-        graph_service=GraphService(repository, resolved.export_dir),
+        graph_service=GraphService(
+            repository,
+            resolved.export_dir,
+            graph_backend=resolved.graph_backend,
+            snapshot_namespace=resolved.graph_snapshot_namespace,
+            age_manager=age_manager,
+        ),
         stats_service=StatsService(repository),
     )
 
@@ -96,14 +111,16 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
 def create_app(state: PersistenceState | None = None) -> FastAPI:
     """Create the persistence API app."""
     app = FastAPI(title="HeyBlog Persistence Service", version="0.1.0")
-    app.state.persistence_state = state or build_persistence_state()
+    app.state.persistence_state = state
 
     def get_state() -> PersistenceState:
+        if app.state.persistence_state is None:
+            app.state.persistence_state = build_persistence_state()
         return app.state.persistence_state
 
     @app.get("/internal/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health() -> dict[str, Any]:
+        return {"status": "ok"} | get_state().graph_service.graph_status()
 
     @app.get("/internal/blogs")
     def list_blogs() -> list[dict[str, Any]]:
@@ -322,6 +339,14 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.get("/internal/graph")
     def get_graph() -> dict[str, Any]:
         return get_state().graph_service.graph()
+
+    @app.get("/internal/graph/status")
+    def get_graph_status() -> dict[str, Any]:
+        return get_state().graph_service.graph_status()
+
+    @app.post("/internal/graph/shadow/rebuild")
+    def rebuild_graph_shadow() -> dict[str, Any]:
+        return get_state().graph_service.rebuild_shadow_graph()
 
     @app.get("/internal/graph/views/core")
     def get_graph_view(

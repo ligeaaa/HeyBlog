@@ -1,103 +1,295 @@
-import { useCallback, useEffect, useRef } from "react";
-import ForceGraph2D from "react-force-graph-2d";
-import type { BlogNode, GraphData } from "../types/graph";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Graph } from "@antv/g6";
+import type { GraphData, GraphNode } from "../types/graph";
 
 interface GraphVisualizationProps {
   data: GraphData;
-  onNodeClick?: (node: BlogNode) => void;
-  highlightNodeId?: string;
+  onNodeClick?: (node: GraphNode) => void;
+  highlightNodeId?: number;
+}
+
+type RendererNode = {
+  id: string;
+  type: "circle" | "image";
+  data: GraphNode;
+  style: {
+    x?: number;
+    y?: number;
+    size: number;
+    fill?: string;
+    stroke?: string;
+    lineWidth?: number;
+    src?: string;
+  };
+};
+
+type RendererEdge = {
+  id: string;
+  source: string;
+  target: string;
+  style: {
+    stroke: string;
+    lineWidth: number;
+    endArrow: boolean;
+  };
+};
+
+function resolveOriginFaviconUrl(node: GraphNode): string | undefined {
+  if (!node.url) {
+    return undefined;
+  }
+  try {
+    return new URL("/favicon.ico", node.url).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveDuckDuckGoIconUrl(node: GraphNode): string | undefined {
+  const hostname = node.domain?.trim();
+  if (!hostname) {
+    return undefined;
+  }
+  return `https://icons.duckduckgo.com/ip3/${hostname}.ico`;
+}
+
+function resolveNodeIconUrl(node: GraphNode): string | undefined {
+  const originFaviconUrl = resolveOriginFaviconUrl(node);
+  const normalizedIconUrl = node.iconUrl?.trim() || undefined;
+
+  if (normalizedIconUrl && normalizedIconUrl !== originFaviconUrl) {
+    return normalizedIconUrl;
+  }
+
+  const duckDuckGoIconUrl = resolveDuckDuckGoIconUrl(node);
+  if (duckDuckGoIconUrl) {
+    return duckDuckGoIconUrl;
+  }
+
+  if (normalizedIconUrl) {
+    return normalizedIconUrl;
+  }
+
+  if (originFaviconUrl) {
+    return originFaviconUrl;
+  }
+
+  if (node.iconUrl) {
+    return node.iconUrl;
+  }
+  return undefined;
+}
+
+function buildNodeStyle(node: GraphNode, highlightNodeId?: number) {
+  const isHighlighted = node.id === highlightNodeId;
+  const iconUrl = resolveNodeIconUrl(node);
+  const size = isHighlighted ? 34 : 26;
+
+  if (iconUrl) {
+    return {
+      x: node.x,
+      y: node.y,
+      size,
+      src: iconUrl,
+      lineWidth: isHighlighted ? 3 : 1.5,
+    };
+  }
+
+  return {
+    x: node.x,
+    y: node.y,
+    size,
+    fill: isHighlighted ? "#3b82f6" : "#60a5fa",
+    stroke: isHighlighted ? "#1d4ed8" : "#2563eb",
+    lineWidth: isHighlighted ? 3 : 1.5,
+  };
+}
+
+function buildRendererNodes(data: GraphData, highlightNodeId?: number): RendererNode[] {
+  return data.nodes.map((node) => {
+    const style = buildNodeStyle(node, highlightNodeId);
+    return {
+      id: String(node.id),
+      type: style.src ? "image" : "circle",
+      data: node,
+      style,
+    };
+  });
+}
+
+function buildRendererEdges(data: GraphData): RendererEdge[] {
+  return data.edges.map((edge) => ({
+    // G6 requires globally unique element ids across nodes and edges.
+    // Backend edge ids are numeric and can collide with node ids, so we namespace them here.
+    id: `edge:${edge.id}`,
+    source: String(edge.source),
+    target: String(edge.target),
+    style: {
+      stroke: "#94a3b8",
+      lineWidth: 1.5,
+      endArrow: true,
+    },
+  }));
+}
+
+function buildLayout() {
+  return {
+    type: "d3-force" as const,
+    animation: true,
+    nodeSize: 24,
+    link: {
+      distance: 140,
+      strength: 0.2,
+    },
+    manyBody: {
+      strength: -220,
+    },
+    collide: {
+      radius: 28,
+      strength: 0.8,
+    },
+    center: {
+      strength: 0.08,
+    },
+    alpha: 0.9,
+    alphaMin: 0.002,
+    alphaDecay: 0.04,
+    velocityDecay: 0.3,
+  };
+}
+
+function buildBehaviors() {
+  return [
+    "drag-canvas",
+    "zoom-canvas",
+    {
+      type: "drag-element-force",
+      fixed: false,
+    },
+  ];
 }
 
 /**
- * Render the example force-graph canvas with lightweight custom node drawing.
+ * Render the graph canvas with AntV G6.
  *
- * @param data Graph nodes and links to render.
- * @param onNodeClick Optional click handler for selected nodes.
- * @param highlightNodeId Optional highlighted node id.
- * @returns ForceGraph2D visualization container.
+ * @param data Graph payload normalized from backend APIs.
+ * @param onNodeClick Optional callback for node selection.
+ * @param highlightNodeId Selected node id.
+ * @returns Graph container.
  */
 export function GraphVisualization({ data, onNodeClick, highlightNodeId }: GraphVisualizationProps) {
-  const graphRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const graphRef = useRef<Graph | null>(null);
+  const latestDataRef = useRef(data);
+  const latestOnNodeClickRef = useRef(onNodeClick);
+  const [size, setSize] = useState({ width: 960, height: 720 });
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  const rendererEdges = useMemo(() => buildRendererEdges(data), [data]);
+  const styledRendererNodes = useMemo(() => buildRendererNodes(data, highlightNodeId), [data, highlightNodeId]);
+  const layout = useMemo(() => buildLayout(), []);
+  const behaviors = useMemo(() => buildBehaviors(), []);
 
   useEffect(() => {
-    if (highlightNodeId && graphRef.current) {
-      const node = data.nodes.find((item) => item.id === highlightNodeId);
-      if (node && typeof node.x === "number" && typeof node.y === "number") {
-        graphRef.current.centerAt(node.x, node.y, 1000);
-        graphRef.current.zoom(3, 1000);
-      }
+    latestDataRef.current = data;
+    latestOnNodeClickRef.current = onNodeClick;
+  }, [data, onNodeClick]);
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return undefined;
     }
-  }, [highlightNodeId, data.nodes]);
+    const observer = new ResizeObserver(([entry]) => {
+      setSize({
+        width: Math.max(640, Math.floor(entry.contentRect.width)),
+        height: Math.max(480, Math.floor(entry.contentRect.height)),
+      });
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
-  const handleNodeClick = useCallback(
-    (node: unknown) => {
-      if (onNodeClick) {
-        onNodeClick(node as BlogNode);
+  useEffect(() => {
+    if (!containerRef.current || graphRef.current) {
+      return undefined;
+    }
+
+    const graph = new Graph({
+      container: containerRef.current,
+      width: size.width,
+      height: size.height,
+      autoFit: "view",
+      data: {
+        nodes: [],
+        edges: [],
+      } as never,
+      edge: {
+        type: "line",
+      },
+    });
+
+    graph.on("node:click", (event: any) => {
+      const targetId = Number(event?.target?.id);
+      const node = latestDataRef.current.nodes.find((item) => item.id === targetId);
+      if (node) {
+        latestOnNodeClickRef.current?.(node);
       }
-    },
-    [onNodeClick],
-  );
+    });
 
-  const nodeCanvasObject = useCallback(
-    (node: any, context: CanvasRenderingContext2D, globalScale: number) => {
-      const label = (node as BlogNode).title || (node as BlogNode).url;
-      const fontSize = 12 / globalScale;
-      const isHighlighted = node.id === highlightNodeId;
+    graphRef.current = graph;
 
-      context.beginPath();
-      context.arc(node.x, node.y, isHighlighted ? 8 : 5, 0, 2 * Math.PI);
-      context.fillStyle = isHighlighted ? "#3b82f6" : "#60a5fa";
-      context.fill();
+    return () => {
+      graphRef.current = null;
+      graph.destroy();
+    };
+  }, [size.height, size.width]);
 
-      if (isHighlighted) {
-        context.strokeStyle = "#1d4ed8";
-        context.lineWidth = 2 / globalScale;
-        context.stroke();
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) {
+      return;
+    }
+    let cancelled = false;
+
+    const renderGraph = async () => {
+      try {
+        graph.setSize(size.width, size.height);
+        graph.setOptions({
+          autoFit: "view",
+          data: {
+            nodes: styledRendererNodes,
+            edges: rendererEdges,
+          } as never,
+          behaviors,
+          layout,
+        });
+        await graph.render();
+        if (!cancelled) {
+          setRenderError(null);
+        }
+      } catch (error) {
+        console.error("graph_render_failed", error);
+        if (!cancelled) {
+          setRenderError("图谱渲染失败，请刷新页面重试");
+        }
       }
+    };
 
-      context.font = `${fontSize}px Sans-Serif`;
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.fillStyle = isHighlighted ? "#1e293b" : "#475569";
-      context.fillText(label.slice(0, 20), node.x, node.y + (isHighlighted ? 12 : 10));
-    },
-    [highlightNodeId],
-  );
+    void renderGraph();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [behaviors, layout, rendererEdges, size.height, size.width, styledRendererNodes]);
 
   return (
-    <div className="h-full w-full bg-gradient-to-br from-blue-50 to-indigo-50">
-      <ForceGraph2D
-        ref={graphRef}
-        graphData={data}
-        nodeId="id"
-        nodeLabel={(node: any) => {
-          const blogNode = node as BlogNode;
-          return `
-            <div style="background: white; padding: 8px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
-              <div style="font-weight: bold; margin-bottom: 4px;">${blogNode.title || "Untitled"}</div>
-              <div style="font-size: 12px; color: #666;">${blogNode.url}</div>
-              ${blogNode.author ? `<div style="font-size: 11px; color: #888; margin-top: 4px;">作者: ${blogNode.author}</div>` : ""}
-            </div>
-          `;
-        }}
-        nodeCanvasObject={nodeCanvasObject}
-        nodeCanvasObjectMode={() => "replace"}
-        onNodeClick={handleNodeClick}
-        linkColor={() => "#94a3b8"}
-        linkWidth={2}
-        linkDirectionalArrowLength={6}
-        linkDirectionalArrowRelPos={1}
-        linkDirectionalParticles={2}
-        linkDirectionalParticleWidth={2}
-        linkDirectionalParticleSpeed={0.005}
-        d3AlphaDecay={0.02}
-        d3VelocityDecay={0.3}
-        warmupTicks={100}
-        cooldownTicks={0}
-        enableNodeDrag
-        enableZoomInteraction
-        enablePanInteraction
-      />
+    <div className="relative h-full w-full bg-gradient-to-br from-blue-50 to-indigo-50">
+      <div ref={containerRef} className="h-full w-full" />
+      {renderError ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/70 px-6 text-center text-sm text-red-700">
+          {renderError}
+        </div>
+      ) : null}
     </div>
   );
 }

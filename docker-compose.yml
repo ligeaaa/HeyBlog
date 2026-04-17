@@ -149,7 +149,9 @@ services:
       - heyblog_net
 
   persistence-db:
-    image: postgres:16
+    build:
+      context: .
+      dockerfile: docker/persistence-db/Dockerfile
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-heyblog}
       POSTGRES_USER: ${POSTGRES_USER:-heyblog}
@@ -158,6 +160,7 @@ services:
       - "${HEYBLOG_PERSISTENCE_DB_PORT:-5432}:${HEYBLOG_PERSISTENCE_DB_PORT:-5432}"
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
+      - ./docker/persistence-db/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-heyblog} -d ${POSTGRES_DB:-heyblog}"]
       interval: 10s
