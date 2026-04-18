@@ -23,8 +23,9 @@ FALLBACK_HTML = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HeyBlog Frontend Build Missing</title>
   </head>
-  <body>
-    <main style="max-width: 720px; margin: 48px auto; font-family: sans-serif;">
+  <body style="margin: 0; font-family: sans-serif; background: #f8fafc; color: #0f172a;">
+    <div id="root"></div>
+    <main style="max-width: 720px; margin: 48px auto; padding: 0 24px;">
       <h1>Frontend build is not ready</h1>
       <p>Run <code>npm install</code> and <code>npm run build</code> inside <code>frontend/</code>.</p>
     </main>
