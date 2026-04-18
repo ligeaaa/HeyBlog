@@ -57,6 +57,9 @@ function sortCatalogItems(items: Array<Record<string, unknown>>, sort: string) {
     copied.sort((left, right) => Number(right.id) - Number(left.id));
   } else if (sort === "id_asc") {
     copied.sort((left, right) => Number(left.id) - Number(right.id));
+  } else if (sort === "random") {
+    copied.sort((left, right) => Number(left.id) - Number(right.id));
+    copied.reverse();
   }
   return copied;
 }
@@ -284,4 +287,32 @@ test("renders paginated home cards, reloads from server for filters, and refresh
   expect(screen.queryByText("Newest Waiting Blog")).not.toBeInTheDocument();
   expect(screen.queryByText("Waiting Blog")).not.toBeInTheDocument();
   expect(screen.getByText("搜索词: Newest")).toBeInTheDocument();
+});
+
+test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {
+  window.history.replaceState({}, "", "/random");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: /随机发现 9 个已完成抓取的博客/i })).toBeInTheDocument();
+  });
+
+  expect(fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
+    expect.anything(),
+  );
+  expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /刷新随机博客/i }));
+
+  await waitFor(() => {
+    const randomCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input]) =>
+        String(input).includes("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
+      );
+    expect(randomCalls).toHaveLength(2);
+  });
 });

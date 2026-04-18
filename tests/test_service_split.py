@@ -928,6 +928,11 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert queue_catalog.json()["filters"]["statuses"] == "WAITING,PROCESSING"
     assert queue_catalog.json()["sort"] == "id_asc"
 
+    random_catalog = client.get("/api/blogs/catalog?page_size=9&status=FINISHED&sort=random")
+    assert random_catalog.status_code == 200
+    assert random_catalog.json()["filters"]["status"] == "FINISHED"
+    assert random_catalog.json()["sort"] == "random"
+
     labeling = client.get("/api/admin/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true", headers=admin_headers())
     assert labeling.status_code == 200
     assert labeling.json()["page"] == 2

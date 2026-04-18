@@ -3,6 +3,7 @@ import { Toaster } from "sonner";
 import { AboutPage } from "./pages/AboutPage";
 import { AdminPage } from "./pages/AdminPage";
 import { HomePage } from "./pages/HomePage";
+import { RandomBlogPage } from "./pages/RandomBlogPage";
 import { VisualizationPage } from "./pages/VisualizationPage";
 
 /**
@@ -16,6 +17,7 @@ export default function App() {
       <Toaster position="top-right" richColors />
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/random" element={<RandomBlogPage />} />
         <Route path="/visualization" element={<VisualizationPage />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/admin" element={<AdminPage />} />

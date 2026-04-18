@@ -758,6 +758,32 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
     assert empty_optional_filters["filters"]["min_connections"] == 0
 
 
+def test_repository_blog_catalog_supports_random_sort_for_finished_sampling(tmp_path: Path) -> None:
+    """Catalog should allow random ordering so the frontend can sample finished blogs."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    for index in range(3):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://random-{index}.example",
+            normalized_url=f"https://random-{index}.example",
+            domain=f"random-{index}.example",
+        )
+        assert inserted is True
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=index,
+            metadata_captured=True,
+            title=f"Random {index}",
+            icon_url=f"https://random-{index}.example/favicon.ico",
+        )
+
+    random_page = repository.list_blogs_catalog(status="finished", sort="random", page_size=2)
+    assert random_page["sort"] == "random"
+    assert random_page["filters"]["status"] == "FINISHED"
+    assert len(random_page["items"]) == 2
+
+
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:
     """Catalog should remain usable for older rows that were created before metadata capture existed."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")

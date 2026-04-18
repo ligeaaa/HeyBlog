@@ -1,8 +1,9 @@
-import { Home, Info, Network, Shield } from "lucide-react";
+import { Dices, Home, Info, Network, Shield } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 const navigationItems = [
   { to: "/", label: "首页", icon: Home },
+  { to: "/random", label: "随机博客", icon: Dices },
   { to: "/visualization", label: "可视化", icon: Network },
   { to: "/about", label: "About", icon: Info },
   { to: "/admin", label: "Admin", icon: Shield },

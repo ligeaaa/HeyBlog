@@ -52,7 +52,7 @@ BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
 BLOG_CATALOG_MAX_PAGE_SIZE = 200
 BLOG_CATALOG_DEFAULT_SORT = "id_desc"
 BLOG_CATALOG_ALLOWED_SORTS = frozenset(
-    {"id_asc", "id_desc", "recent_activity", "connections", "recently_discovered"}
+    {"id_asc", "id_desc", "recent_activity", "connections", "recently_discovered", "random"}
 )
 INGESTION_PRIORITY_LIST_LIMIT = 20
 BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
@@ -1580,6 +1580,8 @@ class SQLAlchemyRepository:
                 statement = statement.order_by(BlogModel.created_at.desc(), BlogModel.id.desc())
             elif query["sort"] == "id_asc":
                 statement = statement.order_by(BlogModel.id.asc())
+            elif query["sort"] == "random":
+                statement = statement.order_by(func.random())
             else:
                 statement = statement.order_by(BlogModel.id.desc())
 
