@@ -274,7 +274,8 @@ def test_repository_run_blog_dedup_scan_removes_rejected_links_and_orphaned_targ
         link_text="Rejected",
     )
 
-    summary = repository.run_blog_dedup_scan(crawler_was_running=True)
+    run = repository.create_blog_dedup_scan_run(crawler_was_running=True)
+    summary = repository.execute_blog_dedup_scan_run(run_id=int(run["id"]))
     items = repository.list_blog_dedup_scan_run_items(summary["id"])
     blogs = repository.list_blogs()
 
@@ -340,7 +341,8 @@ def test_repository_dedup_scan_keeps_valid_blog_urls(tmp_path: Path) -> None:
         link_text="Blocked",
     )
 
-    summary = repository.run_blog_dedup_scan(crawler_was_running=False)
+    run = repository.create_blog_dedup_scan_run(crawler_was_running=False)
+    summary = repository.execute_blog_dedup_scan_run(run_id=int(run["id"]))
     items = repository.list_blog_dedup_scan_run_items(summary["id"])
     blogs = repository.list_blogs()
     edges = repository.list_edges()
@@ -510,7 +512,8 @@ def test_repository_dedup_scan_uses_model_consensus_when_enabled(tmp_path: Path,
         link_text="Maybe Blog",
     )
 
-    summary = repository.run_blog_dedup_scan(crawler_was_running=False)
+    run = repository.create_blog_dedup_scan_run(crawler_was_running=False)
+    summary = repository.execute_blog_dedup_scan_run(run_id=int(run["id"]))
     items = repository.list_blog_dedup_scan_run_items(summary["id"])
 
     assert summary["removed_count"] == 1

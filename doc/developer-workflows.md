@@ -75,26 +75,23 @@
 
 - [prd-graph-community-discovery.md](./prd-graph-community-discovery.md)
 
-## 4. 我要看搜索链路
+## 4. 我要看搜索索引链路
 
 先看：
 
-- [frontend/src/pages/SearchPage.tsx](../frontend/src/pages/SearchPage.tsx)
-- [frontend/src/lib/api.ts](../frontend/src/lib/api.ts)
 - [backend/main.py](../backend/main.py)
 - [search/main.py](../search/main.py)
 - [persistence_api/main.py](../persistence_api/main.py)
 
 链路顺序：
 
-`SearchPage` -> `/api/search` -> `backend` -> `search` -> `search-index.json` 或 `persistence-api /internal/search-snapshot`
+`backend` 在 health 检查、crawl run、runtime batch、database reset 后触发 `search` 读/重建索引 -> `search` 读取 `search-index.json`，缓存为空时回退到 `persistence-api /internal/search-snapshot`
 
 ## 5. 我要调 runtime / 控制台
 
 先看：
 
-- [frontend/src/pages/ControlPage.tsx](../frontend/src/pages/ControlPage.tsx)
-- [frontend/src/pages/CurrentRuntimePage.tsx](../frontend/src/pages/CurrentRuntimePage.tsx)
+- [frontend/src/pages/AdminPage.tsx](../frontend/src/pages/AdminPage.tsx)
 - [backend/main.py](../backend/main.py)
 - [crawler/runtime/service.py](../crawler/runtime/service.py)
 

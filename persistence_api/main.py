@@ -122,10 +122,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def health() -> dict[str, Any]:
         return {"status": "ok"} | get_state().graph_service.graph_status()
 
-    @app.get("/internal/blogs")
-    def list_blogs() -> list[dict[str, Any]]:
-        return get_state().repository.list_blogs()
-
     @app.get("/internal/blogs/catalog")
     def list_blogs_catalog(
         page: int = 1,
@@ -231,10 +227,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         row = get_state().repository.get_next_priority_blog()
         return dict(row) if row else None
 
-    @app.get("/internal/blogs/{blog_id}")
-    def get_blog(blog_id: int) -> dict[str, Any] | None:
-        return get_state().repository.get_blog(blog_id)
-
     @app.get("/internal/blogs/{blog_id}/detail")
     def get_blog_detail(blog_id: int) -> dict[str, Any]:
         payload = get_state().repository.get_blog_detail(blog_id)
@@ -258,10 +250,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         if payload is None:
             raise HTTPException(status_code=404, detail="ingestion_request_not_found")
         return payload
-
-    @app.post("/internal/blog-dedup-scans")
-    def run_blog_dedup_scan(crawler_was_running: bool = False) -> dict[str, Any]:
-        return get_state().repository.run_blog_dedup_scan(crawler_was_running=crawler_was_running)
 
     @app.post("/internal/blog-dedup-scans/runs")
     def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
@@ -288,13 +276,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="blog_dedup_scan_run_not_found")
         return payload
 
-    @app.get("/internal/blog-dedup-scans/{run_id}")
-    def get_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
-        payload = get_state().repository.get_blog_dedup_scan_run(run_id)
-        if payload is None:
-            raise HTTPException(status_code=404, detail="blog_dedup_scan_run_not_found")
-        return payload
-
     @app.get("/internal/blog-dedup-scans/{run_id}/items")
     def list_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
         return get_state().repository.list_blog_dedup_scan_run_items(run_id)
@@ -314,18 +295,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         get_state().repository.mark_blog_result(blog_id=blog_id, **payload.model_dump())
         return {"ok": True}
 
-    @app.get("/internal/edges")
-    def list_edges() -> list[dict[str, Any]]:
-        return get_state().repository.list_edges()
-
     @app.post("/internal/edges")
     def add_edge(payload: AddEdgeRequest) -> dict[str, bool]:
         get_state().repository.add_edge(**payload.model_dump())
         return {"ok": True}
-
-    @app.get("/internal/logs")
-    def list_logs(limit: int = 100) -> list[dict[str, Any]]:
-        return get_state().repository.list_logs(limit=limit)
 
     @app.post("/internal/logs")
     def add_log(payload: AddLogRequest) -> dict[str, bool]:
@@ -335,10 +308,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.get("/internal/stats")
     def get_stats() -> dict[str, Any]:
         return get_state().stats_service.stats()
-
-    @app.get("/internal/graph")
-    def get_graph() -> dict[str, Any]:
-        return get_state().graph_service.graph()
 
     @app.get("/internal/graph/status")
     def get_graph_status() -> dict[str, Any]:

@@ -44,14 +44,16 @@ Admin capabilities:
 ### Public API
 
 - `GET /api/status`
-- `GET /api/blogs`
 - `GET /api/blogs/catalog`
+- `GET /api/blogs/lookup`
 - `GET /api/blogs/{blog_id}`
-- `GET /api/edges`
-- `GET /api/graph*`
+- `GET /api/graph/views/core`
+- `GET /api/graph/nodes/{blog_id}/neighbors`
+- `GET /api/graph/snapshots/latest`
+- `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
-- `GET /api/search`
 - `POST /api/ingestion-requests`
+- `GET /api/ingestion-requests`
 - `GET /api/ingestion-requests/{request_id}`
 
 ### Admin API
@@ -70,7 +72,6 @@ Admin capabilities:
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
 - `POST /api/admin/blog-dedup-scans`
 - `GET /api/admin/blog-dedup-scans/latest`
-- `GET /api/admin/blog-dedup-scans/{run_id}`
 - `GET /api/admin/blog-dedup-scans/{run_id}/items`
 
 ## Auth

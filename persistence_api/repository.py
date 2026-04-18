@@ -872,8 +872,6 @@ class RepositoryProtocol(Protocol):
 
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]: ...
 
-    def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
-
     def finalize_blog_dedup_scan_run(
         self,
         *,
@@ -885,8 +883,6 @@ class RepositoryProtocol(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None: ...
-
-    def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, Any] | None: ...
 
     def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]: ...
 
@@ -2056,10 +2052,6 @@ class SQLAlchemyRepository:
                     run.updated_at = completed_at
             raise
 
-    def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        run = self.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-        return self.execute_blog_dedup_scan_run(run_id=int(run["id"]))
-
     def finalize_blog_dedup_scan_run(
         self,
         *,
@@ -2087,11 +2079,6 @@ class SQLAlchemyRepository:
             row = session.scalar(
                 select(BlogDedupScanRunModel).order_by(BlogDedupScanRunModel.id.desc()).limit(1)
             )
-            return _blog_dedup_scan_run_payload(row) if row is not None else None
-
-    def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            row = session.get(BlogDedupScanRunModel, run_id)
             return _blog_dedup_scan_run_payload(row) if row is not None else None
 
     def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:

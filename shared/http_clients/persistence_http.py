@@ -102,12 +102,6 @@ class PersistenceHttpClient:
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         return self._get("/internal/blogs/lookup", {"url": url})
 
-    def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        return self._post(
-            f"/internal/blog-dedup-scans?crawler_was_running={str(crawler_was_running).lower()}",
-            {},
-        )
-
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         return self._post(
             f"/internal/blog-dedup-scans/runs?crawler_was_running={str(crawler_was_running).lower()}",
@@ -138,9 +132,6 @@ class PersistenceHttpClient:
 
     def latest_blog_dedup_scan_run(self) -> dict[str, Any]:
         return self._get("/internal/blog-dedup-scans/latest")
-
-    def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, Any]:
-        return self._get(f"/internal/blog-dedup-scans/{run_id}")
 
     def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
         return self._get(f"/internal/blog-dedup-scans/{run_id}/items")
@@ -194,9 +185,6 @@ class PersistenceHttpClient:
                 "link_text": link_text,
             },
         )
-
-    def list_blogs(self) -> list[dict[str, Any]]:
-        return self._get("/internal/blogs")
 
     def list_blogs_catalog(
         self,
@@ -269,23 +257,11 @@ class PersistenceHttpClient:
     def export_blog_label_training_csv(self) -> str:
         return self._get_text("/internal/blog-labeling/export")
 
-    def get_blog(self, blog_id: int) -> dict[str, Any] | None:
-        return self._get(f"/internal/blogs/{blog_id}")
-
     def get_blog_detail(self, blog_id: int) -> dict[str, Any]:
         return self._get(f"/internal/blogs/{blog_id}/detail")
 
-    def list_edges(self) -> list[dict[str, Any]]:
-        return self._get("/internal/edges")
-
-    def list_logs(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self._get("/internal/logs", {"limit": limit})
-
     def stats(self) -> dict[str, Any]:
         return self._get("/internal/stats")
-
-    def graph(self) -> dict[str, Any]:
-        return self._get("/internal/graph")
 
     def graph_status(self) -> dict[str, Any]:
         return self._get("/internal/graph/status")

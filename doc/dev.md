@@ -180,10 +180,8 @@ npm test
 
 常看的测试文件：
 
-- `frontend/src/pages/BlogsPage.test.tsx`
-- `frontend/src/pages/BlogDetailPage.test.tsx`
-- `frontend/src/pages/ControlPage.test.tsx`
-- `frontend/src/pages/SearchPage.test.tsx`
+- `frontend/src/App.test.tsx`
+- `frontend/src/components/GraphVisualization.test.tsx`
 - `frontend/src/pages/GraphPage.test.tsx`
 - `frontend/src/components/graph/D3GraphCanvas.test.tsx`
 
@@ -223,7 +221,7 @@ npm test
 curl http://127.0.0.1:8000/internal/health
 curl http://127.0.0.1:8000/api/status
 curl http://127.0.0.1:8000/api/blogs/catalog
-curl "http://127.0.0.1:8000/api/search?q=blog"
+curl "http://127.0.0.1:8000/api/graph/views/core?strategy=degree&limit=80"
 ```
 
 对应后端回归测试：
@@ -278,14 +276,14 @@ curl -X POST "http://127.0.0.1:8010/internal/crawl/run?max_nodes=2"
 或者：
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/crawl/run?max_nodes=2"
+curl -X POST "http://127.0.0.1:8000/api/admin/crawl/run?max_nodes=2"
 ```
 
 3. 查看运行态
 
 ```bash
 curl http://127.0.0.1:8010/internal/runtime/status
-curl http://127.0.0.1:8000/api/runtime/status
+curl http://127.0.0.1:8000/api/admin/runtime/status
 ```
 
 4. 检查导出文件
@@ -322,7 +320,6 @@ pytest tests/test_fetcher.py tests/test_discovery.py tests/test_extractor.py tes
 ```bash
 curl http://127.0.0.1:8030/internal/health
 curl http://127.0.0.1:8030/internal/stats
-curl http://127.0.0.1:8030/internal/graph
 curl http://127.0.0.1:8030/internal/graph/views/core
 curl http://127.0.0.1:8030/internal/search-snapshot
 ```
@@ -360,7 +357,6 @@ pytest tests/test_repository.py tests/test_graph_projection.py tests/test_servic
 ```bash
 curl -X POST http://127.0.0.1:8020/internal/search/reindex
 curl "http://127.0.0.1:8020/internal/search?q=blog"
-curl "http://127.0.0.1:8000/api/search?q=blog"
 ```
 
 要关注的文件：
@@ -386,23 +382,22 @@ curl "http://127.0.0.1:8000/api/search?q=blog"
 
 推荐联调路径：
 
-1. `POST /api/crawl/bootstrap`
-2. `POST /api/crawl/run?max_nodes=...`
+1. `POST /api/admin/crawl/bootstrap`
+2. `POST /api/admin/crawl/run?max_nodes=...`
 3. `GET /api/status`
 4. `GET /api/blogs/catalog`
 5. `GET /api/graph/views/core`
-6. `GET /api/search?q=...`
-7. `GET /api/runtime/status`
+6. `GET /api/admin/runtime/status`
 
 示例：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/crawl/bootstrap
-curl -X POST "http://127.0.0.1:8000/api/crawl/run?max_nodes=3"
+curl -X POST http://127.0.0.1:8000/api/admin/crawl/bootstrap
+curl -X POST "http://127.0.0.1:8000/api/admin/crawl/run?max_nodes=3"
 curl http://127.0.0.1:8000/api/status
 curl http://127.0.0.1:8000/api/blogs/catalog
 curl "http://127.0.0.1:8000/api/graph/views/core?strategy=degree&limit=80"
-curl "http://127.0.0.1:8000/api/search?q=blog"
+curl http://127.0.0.1:8000/api/admin/runtime/status
 ```
 
 ## 5. 开发时怎么测
@@ -461,14 +456,15 @@ curl http://127.0.0.1:8000/internal/health
 curl http://127.0.0.1:8000/api/status
 curl http://127.0.0.1:8000/api/stats
 curl http://127.0.0.1:8000/api/blogs/catalog
-curl http://127.0.0.1:8000/api/runtime/status
+curl http://127.0.0.1:8000/api/admin/runtime/status
 ```
 
 如果你改了图谱或搜索，再补：
 
 ```bash
 curl "http://127.0.0.1:8000/api/graph/views/core?strategy=degree&limit=80"
-curl "http://127.0.0.1:8000/api/search?q=blog"
+curl -X POST http://127.0.0.1:8020/internal/search/reindex
+curl "http://127.0.0.1:8020/internal/search?q=blog"
 ```
 
 ## 6. 常见开发场景建议

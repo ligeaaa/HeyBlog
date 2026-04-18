@@ -36,13 +36,6 @@ class GraphService:
         self.snapshot_namespace = snapshot_namespace
         self.age_manager = age_manager
 
-    def graph(self) -> dict[str, Any]:
-        """Return current graph with node and edge lists."""
-        return {
-            "nodes": self.repository.list_blogs(),
-            "edges": self.repository.list_edges(),
-        }
-
     def graph_status(self) -> dict[str, Any]:
         """Return graph-read backend readiness details."""
         if self.age_manager is None:

@@ -86,8 +86,8 @@ class StubSearch:
         return {"ok": True}
 
 
-def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
-    """Persistence service should expose repository operations over HTTP."""
+def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -> None:
+    """Persistence service should expose the supported repository-backed surfaces over HTTP."""
     settings = Settings(
         db_path=tmp_path / "heyblog.sqlite",
         seed_path=tmp_path / "seed.csv",
@@ -118,10 +118,6 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     )
     assert related.status_code == 200
     assert related.json()["inserted"] is True
-
-    blogs = client.get("/internal/blogs")
-    assert blogs.status_code == 200
-    assert blogs.json()[0]["domain"] == "blog.example.com"
 
     catalog = client.get(
         "/internal/blogs/catalog",
@@ -189,11 +185,6 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     )
     assert edge.status_code == 200
 
-    blog = client.get("/internal/blogs/1")
-    assert blog.status_code == 200
-    assert blog.json()["title"] == "Blog Example"
-    assert blog.json()["icon_url"] == "https://blog.example.com/favicon.ico"
-
     detail = client.get("/internal/blogs/1/detail")
     assert detail.status_code == 200
     assert detail.json()["incoming_edges"][0]["neighbor_blog"] == {
@@ -241,9 +232,26 @@ def test_persistence_service_exposes_repository_data(tmp_path: Path) -> None:
     assert reset.json()["ingestion_requests_deleted"] == 1
     assert reset.json()["blog_link_labels_deleted"] == 0
 
-    blogs = client.get("/internal/blogs")
-    assert blogs.status_code == 200
-    assert blogs.json() == []
+    empty_catalog = client.get("/internal/blogs/catalog")
+    assert empty_catalog.status_code == 200
+    assert empty_catalog.json()["items"] == []
+
+
+def test_persistence_service_removes_legacy_read_shortcuts(tmp_path: Path) -> None:
+    """Persistence service should not expose obsolete raw-read shortcut endpoints."""
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    app = create_persistence_app(build_persistence_state(settings))
+    client = TestClient(app)
+
+    assert client.get("/internal/blogs").status_code == 404
+    assert client.get("/internal/blogs/1").status_code == 404
+    assert client.get("/internal/edges").status_code == 405
+    assert client.get("/internal/logs").status_code == 405
+    assert client.get("/internal/graph").status_code == 404
 
 
 def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> None:
@@ -432,8 +440,8 @@ def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch)
     assert settings.decision_model_root == PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
 
 
-def test_backend_service_preserves_public_api_shape() -> None:
-    """Backend service should serve the same public-facing API fields."""
+def test_backend_service_preserves_supported_public_api_shape() -> None:
+    """Backend service should preserve the supported public API fields."""
     persistence = type(
         "PersistenceStub",
         (),
@@ -902,11 +910,6 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
 
-    blogs = client.get("/api/blogs")
-    assert blogs.status_code == 200
-    assert blogs.json()[0]["title"] == "Blog Example"
-    assert blogs.json()[0]["icon_url"] == "https://blog.example.com/favicon.ico"
-
     detail = client.get("/api/blogs/1")
     assert detail.status_code == 200
     assert detail.json()["incoming_edges"][0]["neighbor_blog"]["domain"] == "friend.example.com"
@@ -1005,6 +1008,41 @@ def test_backend_service_preserves_public_api_shape() -> None:
     assert reset.json()["blog_label_tags_deleted"] == 2
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
+
+
+def test_backend_service_removes_legacy_public_routes() -> None:
+    """Backend service should not expose obsolete raw public routes."""
+    persistence = type(
+        "PersistenceStub",
+        (),
+        {
+            "stats": lambda self: {
+                "pending_tasks": 0,
+                "processing_tasks": 0,
+                "finished_tasks": 0,
+                "failed_tasks": 0,
+                "total_blogs": 0,
+                "total_edges": 0,
+                "status_counts": {},
+                "average_friend_links": 0.0,
+            },
+        },
+    )()
+    app = create_backend_app(
+        BackendState(
+            persistence=persistence,
+            crawler=StubCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    assert client.get("/api/blogs").status_code == 404
+    assert client.get("/api/edges").status_code == 404
+    assert client.get("/api/graph").status_code == 404
+    assert client.get("/api/logs").status_code == 404
+    assert client.get("/api/search?q=blog").status_code == 404
 
 
 def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
@@ -1425,22 +1463,26 @@ def test_persistence_service_exposes_blog_dedup_scan_endpoints(tmp_path: Path) -
     )
     assert first.status_code == 200
 
-    run = client.post("/internal/blog-dedup-scans", params={"crawler_was_running": "true"})
+    run = client.post("/internal/blog-dedup-scans/runs", params={"crawler_was_running": "true"})
     assert run.status_code == 200
-    assert run.json()["status"] == "SUCCEEDED"
+    assert run.json()["status"] == "RUNNING"
     assert run.json()["total_count"] == 1
+
+    executed = client.post(f"/internal/blog-dedup-scans/{run.json()['id']}/execute")
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "SUCCEEDED"
+    assert executed.json()["total_count"] == 1
 
     latest = client.get("/internal/blog-dedup-scans/latest")
     assert latest.status_code == 200
     assert latest.json()["id"] == run.json()["id"]
 
-    by_id = client.get(f"/internal/blog-dedup-scans/{run.json()['id']}")
-    assert by_id.status_code == 200
-    assert by_id.json()["ruleset_version"] == run.json()["ruleset_version"]
-
     items = client.get(f"/internal/blog-dedup-scans/{run.json()['id']}/items")
     assert items.status_code == 200
     assert isinstance(items.json(), list)
+
+    legacy_shortcut = client.post("/internal/blog-dedup-scans", params={"crawler_was_running": "true"})
+    assert legacy_shortcut.status_code == 404
 
 
 def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_actions() -> None:
@@ -1535,10 +1577,6 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
             )
             return dict(self.run)
 
-        def run_blog_dedup_scan(self, *, crawler_was_running: bool = False) -> dict[str, object]:
-            self.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-            return self.execute_blog_dedup_scan_run(run_id=7)
-
         def finalize_blog_dedup_scan_run(self, **payload: object) -> dict[str, object]:
             self.finalize_calls.append(payload)
             self.run.update(
@@ -1554,9 +1592,6 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
 
         def latest_blog_dedup_scan_run(self) -> dict[str, object]:
             return dict(self.run)
-
-        def get_blog_dedup_scan_run(self, run_id: int) -> dict[str, object]:
-            return self.latest_blog_dedup_scan_run() | {"id": run_id}
 
         def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, object]]:
             return [

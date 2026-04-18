@@ -185,10 +185,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             "total_edges": stats["total_edges"],
         }
 
-    @app.get("/api/blogs")
-    def get_blogs() -> list[dict[str, Any]]:
-        return get_state().persistence.list_blogs()
-
     @app.get("/api/blogs/catalog")
     def get_blogs_catalog(
         page: int = 1,
@@ -343,14 +339,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Blog not found")
         return blog
 
-    @app.get("/api/edges")
-    def get_edges() -> list[dict[str, Any]]:
-        return get_state().persistence.list_edges()
-
-    @app.get("/api/graph")
-    def get_graph() -> dict[str, Any]:
-        return get_state().persistence.graph()
-
     @app.get("/api/graph/views/core")
     def get_graph_view(
         strategy: str = "degree",
@@ -391,10 +379,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_stats() -> dict[str, Any]:
         return get_state().persistence.stats()
 
-    @app.get("/api/logs")
-    def get_logs() -> list[dict[str, Any]]:
-        return get_state().persistence.list_logs()
-
     @app.post("/api/admin/crawl/bootstrap")
     def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.bootstrap()
@@ -407,18 +391,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             pass
         return result
-
-    @app.get("/api/search")
-    def search(q: str, kind: str = "all", limit: int = 10) -> dict[str, Any]:
-        try:
-            return get_state().search.search(q, kind=kind, limit=limit)
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.post("/api/ingestion-requests")
     def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
@@ -501,21 +473,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         try:
             return get_state().persistence.latest_blog_dedup_scan_run()
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
-
-    @app.get("/api/admin/blog-dedup-scans/{run_id}")
-    def get_blog_dedup_scan_run(
-        run_id: int,
-        _: None = Depends(require_admin_access),
-    ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.get_blog_dedup_scan_run(run_id)
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
             try:
