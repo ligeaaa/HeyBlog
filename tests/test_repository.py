@@ -11,7 +11,6 @@ from persistence_api.db import session_scope
 from persistence_api.models import BlogLabelAssignmentModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
-from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings

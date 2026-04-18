@@ -452,7 +452,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 detail = "upstream_error"
             state.maintenance_in_progress = False
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
-        except HTTPException as exc:
+        except HTTPException:
             state.maintenance_in_progress = False
             raise
         except Exception as exc:  # noqa: BLE001
