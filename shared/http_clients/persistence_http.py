@@ -29,10 +29,20 @@ class PersistenceHttpClient:
         response.raise_for_status()
         return response.json()
 
+    def _put(self, path: str, payload: dict[str, Any]) -> Any:
+        response = self.client.put(path, json=payload)
+        response.raise_for_status()
+        return response.json()
+
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         response = self.client.get(path, params=params)
         response.raise_for_status()
         return response.json()
+
+    def _get_text(self, path: str, params: dict[str, Any] | None = None) -> str:
+        response = self.client.get(path, params=params)
+        response.raise_for_status()
+        return response.text
 
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
@@ -53,6 +63,7 @@ class PersistenceHttpClient:
         url: str,
         normalized_url: str,
         domain: str,
+        email: str | None = None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -60,12 +71,79 @@ class PersistenceHttpClient:
                 "url": url,
                 "normalized_url": normalized_url,
                 "domain": domain,
+                "email": email,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
 
-    def get_next_waiting_blog(self) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next")
+    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
+        return self._post(
+            "/internal/ingestion-requests",
+            {
+                "homepage_url": homepage_url,
+                "email": email,
+            },
+        )
+
+    def get_ingestion_request(
+        self,
+        *,
+        request_id: int,
+        request_token: str,
+    ) -> dict[str, Any] | None:
+        return self._get(
+            f"/internal/ingestion-requests/{request_id}",
+            {"request_token": request_token},
+        )
+
+    def list_priority_ingestion_requests(self) -> list[dict[str, Any]]:
+        return self._get("/internal/ingestion-requests")
+
+    def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
+        return self._get("/internal/blogs/lookup", {"url": url})
+
+    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        return self._post(
+            f"/internal/blog-dedup-scans/runs?crawler_was_running={str(crawler_was_running).lower()}",
+            {},
+        )
+
+    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
+        return self._post(f"/internal/blog-dedup-scans/{run_id}/execute", {})
+
+    def finalize_blog_dedup_scan_run(
+        self,
+        *,
+        run_id: int,
+        crawler_restart_attempted: bool,
+        crawler_restart_succeeded: bool,
+        search_reindexed: bool,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/internal/blog-dedup-scans/{run_id}/finalize",
+            {
+                "crawler_restart_attempted": crawler_restart_attempted,
+                "crawler_restart_succeeded": crawler_restart_succeeded,
+                "search_reindexed": search_reindexed,
+                "error_message": error_message,
+            },
+        )
+
+    def latest_blog_dedup_scan_run(self) -> dict[str, Any]:
+        return self._get("/internal/blog-dedup-scans/latest")
+
+    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
+        return self._get(f"/internal/blog-dedup-scans/{run_id}/items")
+
+    def get_next_priority_blog(self) -> dict[str, Any] | None:
+        return self._get("/internal/queue/priority-next")
+
+    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
+        return self._get("/internal/queue/next", {"include_priority": str(include_priority).lower()})
+
+    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
+        self._post(f"/internal/ingestion-requests/by-blog/{blog_id}/crawling", {})
 
     def mark_blog_result(
         self,
@@ -108,9 +186,6 @@ class PersistenceHttpClient:
             },
         )
 
-    def list_blogs(self) -> list[dict[str, Any]]:
-        return self._get("/internal/blogs")
-
     def list_blogs_catalog(
         self,
         *,
@@ -119,7 +194,12 @@ class PersistenceHttpClient:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
+        sort: str = "id_desc",
+        has_title: bool | None = None,
+        has_icon: bool | None = None,
+        min_connections: int | None = None,
     ) -> dict[str, Any]:
         return self._get(
             "/internal/blogs/catalog",
@@ -129,27 +209,65 @@ class PersistenceHttpClient:
                 "site": site,
                 "url": url,
                 "status": status,
+                "statuses": statuses,
                 "q": q,
+                "sort": sort,
+                "has_title": has_title,
+                "has_icon": has_icon,
+                "min_connections": min_connections,
             },
         )
 
-    def get_blog(self, blog_id: int) -> dict[str, Any] | None:
-        return self._get(f"/internal/blogs/{blog_id}")
+    def list_blog_labeling_candidates(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: bool | None = None,
+        sort: str = "id_desc",
+    ) -> dict[str, Any]:
+        return self._get(
+            "/internal/blog-labeling/candidates",
+            {
+                "page": page,
+                "page_size": page_size,
+                "q": q,
+                "label": label,
+                "labeled": labeled,
+                "sort": sort,
+            },
+        )
+
+    def list_blog_label_tags(self) -> list[dict[str, Any]]:
+        return self._get("/internal/blog-labeling/tags")
+
+    def create_blog_label_tag(self, *, name: str) -> dict[str, Any]:
+        return self._post("/internal/blog-labeling/tags", {"name": name})
+
+    def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]:
+        return self._put(
+            f"/internal/blog-labeling/labels/{blog_id}",
+            {
+                "tag_ids": tag_ids,
+            },
+        )
+
+    def export_blog_label_training_csv(self) -> str:
+        return self._get_text("/internal/blog-labeling/export")
 
     def get_blog_detail(self, blog_id: int) -> dict[str, Any]:
         return self._get(f"/internal/blogs/{blog_id}/detail")
 
-    def list_edges(self) -> list[dict[str, Any]]:
-        return self._get("/internal/edges")
-
-    def list_logs(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self._get("/internal/logs", {"limit": limit})
-
     def stats(self) -> dict[str, Any]:
         return self._get("/internal/stats")
 
-    def graph(self) -> dict[str, Any]:
-        return self._get("/internal/graph")
+    def graph_status(self) -> dict[str, Any]:
+        return self._get("/internal/graph/status")
+
+    def rebuild_graph_shadow(self) -> dict[str, Any]:
+        return self._post("/internal/graph/shadow/rebuild", {})
 
     def graph_view(
         self,

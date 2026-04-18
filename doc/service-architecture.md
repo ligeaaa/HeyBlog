@@ -20,8 +20,8 @@
 
 - [frontend/server.py](../frontend/server.py)
 - [backend/main.py](../backend/main.py)
-- [crawler/runtime.py](../crawler/runtime.py)
-- [crawler/pipeline.py](../crawler/pipeline.py)
+- [crawler/runtime/service.py](../crawler/runtime/service.py)
+- [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
 - [persistence_api/graph_service.py](../persistence_api/graph_service.py)
 
 ## 1. 总体拓扑
@@ -117,7 +117,7 @@ search  -> persistence-api
   -> POST /api/crawl/bootstrap
   -> frontend 代理到 backend
   -> backend -> crawler /internal/crawl/bootstrap
-  -> crawler.pipeline 读取 seed.csv
+  -> crawler.crawling.bootstrap 读取 seed.csv
   -> crawler -> persistence-api /internal/blogs/upsert
   -> crawler -> persistence-api /internal/logs
 ```
@@ -126,7 +126,7 @@ search  -> persistence-api
 
 ```text
 浏览器 / 外部调用方
-  -> POST /api/crawl/run?max_nodes=N
+  -> POST /api/admin/crawl/run?max_nodes=N
   -> backend -> crawler /internal/crawl/run
   -> crawler -> persistence-api /internal/queue/next
   -> crawler 抓取首页并发现友链页
@@ -160,25 +160,24 @@ search  -> persistence-api
   -> backend -> persistence-api 图相关内部接口
   -> persistence-api.graph_service 读取 blogs + edges
   -> 返回节点、边和视图元数据
-  -> 前端用 Cytoscape 渲染
+  -> 前端用 AntV G6 渲染
 ```
 
-### 4.6 搜索
+### 4.6 搜索索引维护
 
 ```text
-浏览器 / SearchPage
-  -> GET /api/search?q=keyword
-  -> backend -> search /internal/search?q=keyword
+backend health / crawl-run / runtime-run-batch / database-reset
+  -> search /internal/search 或 /internal/search/reindex
   -> search 读取本地 search-index.json
   -> 若缓存不存在或为空，则回退到 persistence-api /internal/search-snapshot
-  -> 返回 blogs / edges / logs 匹配结果
+  -> 返回内部索引结果或重建统计
 ```
 
 ### 4.7 重置数据库
 
 ```text
 浏览器 / 控制页
-  -> POST /api/database/reset
+  -> POST /api/admin/database/reset
   -> backend 先读取 crawler /internal/runtime/status
   -> 若 crawler 忙碌则返回 409 crawler_busy
   -> 否则 backend -> persistence-api /internal/database/reset

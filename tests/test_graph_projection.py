@@ -3,6 +3,7 @@
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 from persistence_api.graph_service import GraphService
 from persistence_api.graph_projection import build_core_graph_view
@@ -11,6 +12,8 @@ from persistence_api.graph_projection import build_neighborhood_graph_view
 from persistence_api.graph_projection import load_snapshot_manifest
 from persistence_api.graph_projection import load_snapshot_payload
 from persistence_api.graph_projection import write_snapshot_files
+from persistence_api.graph_projection import latest_snapshot_manifest_filename
+from persistence_api.graph_projection import snapshot_filename
 
 
 def sample_graph() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -167,6 +170,28 @@ def test_snapshot_files_are_written_with_latest_manifest(tmp_path: Path) -> None
     assert payload["nodes"][0]["x"] is not None
 
 
+def test_snapshot_files_support_source_namespaces(tmp_path: Path) -> None:
+    blogs, edges = sample_graph()
+    snapshot = build_graph_snapshot_payload(
+        blogs,
+        edges,
+        version="v1",
+        generated_at="2026-03-31T00:00:00Z",
+        snapshot_namespace="legacy",
+    )
+
+    write_snapshot_files(tmp_path, snapshot, namespace="legacy")
+
+    assert (tmp_path / latest_snapshot_manifest_filename("legacy")).exists()
+    assert (tmp_path / snapshot_filename("v1", "legacy")).exists()
+    manifest = load_snapshot_manifest(tmp_path, namespace="legacy")
+    payload = load_snapshot_payload(tmp_path, "v1", namespace="legacy")
+    assert manifest is not None
+    assert manifest["snapshot_namespace"] == "legacy"
+    assert payload is not None
+    assert payload["meta"]["snapshot_namespace"] == "legacy"
+
+
 def test_snapshot_files_serialize_postgres_style_datetimes(tmp_path: Path) -> None:
     blogs, edges = sample_graph()
     postgres_time = datetime(2026, 3, 31, 0, 0, tzinfo=UTC)
@@ -240,3 +265,47 @@ def test_graph_service_refreshes_snapshot_when_repository_graph_changes(tmp_path
     assert second_view["meta"]["available_nodes"] == 4
     assert first_manifest["graph_fingerprint"] != second_manifest["graph_fingerprint"]
     assert first_manifest["version"] != second_manifest["version"]
+
+
+def test_graph_service_reports_configured_backend_and_skips_age_reads_when_unconfigured(tmp_path: Path) -> None:
+    """Graph status should preserve the configured backend without forcing repository reads."""
+
+    class ExplodingRepository:
+        def list_blogs(self) -> list[dict[str, object]]:
+            raise AssertionError("repository should not be read when AGE is disabled")
+
+        def list_edges(self) -> list[dict[str, object]]:
+            raise AssertionError("repository should not be read when AGE is disabled")
+
+    service = GraphService(ExplodingRepository(), tmp_path, graph_backend="age")
+
+    assert service.graph_status()["graph_backend"] == "age"
+    assert service.rebuild_shadow_graph()["configured_graph_backend"] == "age"
+
+
+def test_graph_service_rebuilds_shadow_graph_when_age_manager_is_present(tmp_path: Path) -> None:
+    """Shadow graph rebuilds should pass authoritative rows to the AGE manager."""
+
+    class Repository:
+        def list_blogs(self) -> list[dict[str, object]]:
+            return [{"id": 1}]
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return [{"id": 7}]
+
+    age_manager = Mock()
+    age_manager.status.return_value = {
+        "graph_backend": "age",
+        "age_enabled": True,
+        "age_sync_state": "ready",
+        "parity_status": "passing",
+        "latest_snapshot_namespace": "legacy",
+        "age_graph_name": "heyblog_graph",
+        "last_error": None,
+    }
+
+    service = GraphService(Repository(), tmp_path, graph_backend="age", age_manager=age_manager)
+    payload = service.rebuild_shadow_graph()
+
+    age_manager.sync_shadow_graph.assert_called_once_with([{"id": 1}], [{"id": 7}])
+    assert payload["graph_backend"] == "age"

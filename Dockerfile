@@ -3,18 +3,22 @@ FROM node:22-alpine AS frontend-builder
 WORKDIR /frontend
 
 COPY frontend/package.json ./
-RUN npm install
+RUN npm config set registry https://npmreg.proxy.ustclug.org/ \
+    && npm install
 COPY frontend ./
 RUN npm run build
 
 FROM python:3.11-slim
+
+ENV PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-COPY pyproject.toml readme.md ./
+COPY pyproject.toml readme.md alembic.ini ./
+COPY alembic ./alembic
 COPY shared ./shared
 COPY backend ./backend
 COPY crawler ./crawler
@@ -22,10 +26,11 @@ COPY persistence_api ./persistence_api
 COPY search ./search
 COPY frontend ./frontend
 COPY services ./services
+COPY trainer ./trainer
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 COPY seed.csv ./seed.csv
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[runtime-models]"
 
 EXPOSE 8000
 

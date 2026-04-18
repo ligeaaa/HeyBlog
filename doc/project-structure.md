@@ -40,7 +40,7 @@ HeyBlog 现在以“顶层服务包是主线，`services/` 是兼容层”的结
 
 | 路径 | 当前角色 | 说明 |
 | --- | --- | --- |
-| `frontend/` | UI 与前端代理服务 | `frontend/src/` 是 React + Vite 源码，`frontend/server.py` 负责托管构建产物并代理 `/api/*` |
+| `frontend/` | Public/Admin UI 与前端代理服务 | `frontend/src/` 是 React + Vite 源码，`frontend/server.py` 负责托管构建产物并代理 `/api/*`；当前前端已拆为 public/admin 双路由树 |
 | `backend/` | 公共 API 聚合层 | 对外暴露公共 `/api/*`，通过 HTTP client 聚合 `crawler`、`search`、`persistence-api` |
 | `crawler/` | 爬虫执行服务 | 负责种子导入、页面抓取、友链抽取、过滤、导出与运行时控制 |
 | `search/` | 搜索服务 | 从 `persistence-api` 拉取快照并构建可重建缓存 |
@@ -67,11 +67,12 @@ HeyBlog 现在以“顶层服务包是主线，`services/` 是兼容层”的结
 
 ### 3.2 关键实现文件
 
-- `crawler` 主流程： [crawler/pipeline.py](../crawler/pipeline.py)
-- `crawler` 运行时： [crawler/runtime.py](../crawler/runtime.py)
+- `crawler` 主流程： [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
+- `crawler` 运行时： [crawler/runtime/service.py](../crawler/runtime/service.py)
 - `persistence-api` 仓储实现： [persistence_api/repository.py](../persistence_api/repository.py)
 - `persistence-api` 图聚合： [persistence_api/graph_service.py](../persistence_api/graph_service.py)
 - 前端路由： [frontend/src/router.tsx](../frontend/src/router.tsx)
+- Public/Admin 边界： [public-admin-boundary.md](./public-admin-boundary.md)
 - 前端 API 封装： [frontend/src/lib/api.ts](../frontend/src/lib/api.ts)
 
 ### 3.3 兼容层入口

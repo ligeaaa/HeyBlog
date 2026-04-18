@@ -20,6 +20,7 @@ class BlogCreate(ContractModel):
     url: str
     normalized_url: str
     domain: str
+    email: str | None = None
 
 
 class BlogUpsertResult(ContractModel):
@@ -41,6 +42,7 @@ class BlogRecord(ContractModel):
     url: str
     normalized_url: str
     domain: str
+    email: str | None
     title: str | None
     icon_url: str | None
     status_code: int | None

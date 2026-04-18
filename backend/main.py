@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import sleep
+from threading import Thread
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from shared.config import Settings
@@ -22,10 +25,31 @@ class BackendState:
     persistence: Any
     crawler: Any
     search: Any
+    maintenance_in_progress: bool = False
+    admin_token: str | None = None
+    admin_dev_bypass: bool = False
 
 
 class RunBatchRequest(BaseModel):
     max_nodes: int
+
+
+class CreateIngestionRequest(BaseModel):
+    homepage_url: str
+    email: str
+
+
+class ReplaceBlogLabelsRequest(BaseModel):
+    tag_ids: list[int]
+
+
+class CreateBlogLabelTagRequest(BaseModel):
+    name: str
+
+
+def _raise_for_maintenance(state: BackendState) -> None:
+    if state.maintenance_in_progress:
+        raise HTTPException(status_code=409, detail="maintenance_in_progress")
 
 
 def build_backend_state(settings: Settings | None = None) -> BackendState:
@@ -44,7 +68,54 @@ def build_backend_state(settings: Settings | None = None) -> BackendState:
             resolved.search_base_url,
             timeout_seconds=resolved.request_timeout_seconds,
         ),
+        admin_token=resolved.admin_token,
+        admin_dev_bypass=resolved.admin_dev_bypass,
     )
+
+
+def _execute_blog_dedup_scan_in_background(
+    state: BackendState,
+    *,
+    run_id: int,
+    crawler_was_running: bool,
+) -> None:
+    restart_attempted = False
+    restart_succeeded = False
+    search_reindexed = False
+    error_message: str | None = None
+    try:
+        state.persistence.execute_blog_dedup_scan_run(run_id=run_id)
+        try:
+            state.search.reindex()
+            search_reindexed = True
+        except Exception:  # noqa: BLE001
+            search_reindexed = False
+    except httpx.HTTPStatusError as exc:
+        try:
+            error_message = exc.response.json().get("detail", "upstream_error")
+        except Exception:  # noqa: BLE001
+            error_message = "upstream_error"
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)
+    finally:
+        if crawler_was_running:
+            restart_attempted = True
+            try:
+                state.crawler.start()
+                restart_succeeded = True
+            except Exception:  # noqa: BLE001
+                restart_succeeded = False
+        try:
+            state.persistence.finalize_blog_dedup_scan_run(
+                run_id=run_id,
+                crawler_restart_attempted=restart_attempted,
+                crawler_restart_succeeded=restart_succeeded,
+                search_reindexed=search_reindexed,
+                error_message=error_message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        state.maintenance_in_progress = False
 
 
 def create_app(state: BackendState | None = None) -> FastAPI:
@@ -54,6 +125,30 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     def get_state() -> BackendState:
         return app.state.backend_state
+
+    def require_admin_access(request: Request) -> None:
+        state = get_state()
+        if state.admin_dev_bypass:
+            return
+        if not state.admin_token:
+            raise HTTPException(status_code=503, detail="admin_auth_not_configured")
+        authorization = request.headers.get("authorization", "").strip()
+        if not authorization:
+            raise HTTPException(status_code=401, detail="admin_auth_required")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="admin_auth_required")
+        if token != state.admin_token:
+            raise HTTPException(status_code=403, detail="admin_auth_invalid")
+
+    def ensure_runtime_idle(*, retries: int = 20, delay_seconds: float = 0.1) -> dict[str, Any]:
+        last_runtime = get_state().crawler.runtime_status()
+        for _ in range(retries):
+            if last_runtime.get("runner_status") == "idle":
+                return last_runtime
+            sleep(delay_seconds)
+            last_runtime = get_state().crawler.runtime_status()
+        raise HTTPException(status_code=409, detail="crawler_stop_timeout")
 
     @app.get("/")
     def root() -> dict[str, str]:
@@ -90,10 +185,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             "total_edges": stats["total_edges"],
         }
 
-    @app.get("/api/blogs")
-    def get_blogs() -> list[dict[str, Any]]:
-        return get_state().persistence.list_blogs()
-
     @app.get("/api/blogs/catalog")
     def get_blogs_catalog(
         page: int = 1,
@@ -101,7 +192,12 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
+        sort: str = "id_desc",
+        has_title: str | None = None,
+        has_icon: str | None = None,
+        min_connections: str | None = None,
     ) -> dict[str, Any]:
         try:
             return get_state().persistence.list_blogs_catalog(
@@ -110,7 +206,12 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 site=site,
                 url=url,
                 status=status,
+                statuses=statuses,
                 q=q,
+                sort=sort,
+                has_title=has_title,
+                has_icon=has_icon,
+                min_connections=min_connections,
             )
         except httpx.HTTPStatusError as exc:
             detail: Any = "upstream_error"
@@ -119,6 +220,107 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             except Exception:  # noqa: BLE001
                 pass
             raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/blogs/lookup")
+    def lookup_blog_candidates(url: str) -> dict[str, Any]:
+        try:
+            return get_state().persistence.lookup_blog_candidates(url=url)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-labeling/candidates")
+    def get_blog_labeling_candidates(
+        page: int = 1,
+        page_size: int = 50,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: str | None = None,
+        sort: str = "id_desc",
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        try:
+            return get_state().persistence.list_blog_labeling_candidates(
+                page=page,
+                page_size=page_size,
+                q=q,
+                label=label,
+                labeled=labeled,
+                sort=sort,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-labeling/tags")
+    def get_blog_label_tags(_: None = Depends(require_admin_access)) -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_blog_label_tags()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.post("/api/admin/blog-labeling/tags")
+    def post_blog_label_tag(
+        payload: CreateBlogLabelTagRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        try:
+            return get_state().persistence.create_blog_label_tag(name=payload.name)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.put("/api/admin/blog-labeling/labels/{blog_id}")
+    def put_blog_labels(
+        blog_id: int,
+        payload: ReplaceBlogLabelsRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        try:
+            return get_state().persistence.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-labeling/export")
+    def export_blog_label_training_csv(_: None = Depends(require_admin_access)) -> Response:
+        try:
+            csv_payload = get_state().persistence.export_blog_label_training_csv()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return Response(
+            content=csv_payload,
+            media_type="text/csv",
+            headers={
+                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+            },
+        )
 
     @app.get("/api/blogs/{blog_id}")
     def get_blog(blog_id: int) -> dict[str, Any]:
@@ -136,14 +338,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         if blog is None:
             raise HTTPException(status_code=404, detail="Blog not found")
         return blog
-
-    @app.get("/api/edges")
-    def get_edges() -> list[dict[str, Any]]:
-        return get_state().persistence.list_edges()
-
-    @app.get("/api/graph")
-    def get_graph() -> dict[str, Any]:
-        return get_state().persistence.graph()
 
     @app.get("/api/graph/views/core")
     def get_graph_view(
@@ -163,7 +357,15 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.get("/api/graph/nodes/{blog_id}/neighbors")
     def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
-        return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+        try:
+            return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/graph/snapshots/latest")
     def get_latest_graph_snapshot() -> dict[str, Any]:
@@ -177,16 +379,12 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_stats() -> dict[str, Any]:
         return get_state().persistence.stats()
 
-    @app.get("/api/logs")
-    def get_logs() -> list[dict[str, Any]]:
-        return get_state().persistence.list_logs()
-
-    @app.post("/api/crawl/bootstrap")
-    def bootstrap() -> dict[str, Any]:
+    @app.post("/api/admin/crawl/bootstrap")
+    def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.bootstrap()
 
-    @app.post("/api/crawl/run")
-    def run_crawl(max_nodes: int | None = None) -> dict[str, Any]:
+    @app.post("/api/admin/crawl/run")
+    def run_crawl(max_nodes: int | None = None, _: None = Depends(require_admin_access)) -> dict[str, Any]:
         result = get_state().crawler.run(max_nodes=max_nodes)
         try:
             get_state().search.reindex()
@@ -194,28 +392,135 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             pass
         return result
 
-    @app.get("/api/search")
-    def search(q: str) -> dict[str, Any]:
-        return get_state().search.search(q)
+    @app.post("/api/ingestion-requests")
+    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
+        try:
+            return get_state().persistence.create_ingestion_request(**payload.model_dump())
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.get("/api/runtime/status")
-    def runtime_status() -> dict[str, Any]:
-        return get_state().crawler.runtime_status()
+    @app.get("/api/ingestion-requests")
+    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_priority_ingestion_requests()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @app.get("/api/runtime/current")
-    def runtime_current() -> dict[str, Any]:
+    @app.get("/api/ingestion-requests/{request_id}")
+    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
+        try:
+            return get_state().persistence.get_ingestion_request(
+                request_id=request_id,
+                request_token=request_token,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.post("/api/admin/blog-dedup-scans")
+    def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        state = get_state()
+        if state.maintenance_in_progress:
+            raise HTTPException(status_code=409, detail="maintenance_in_progress")
+
+        runtime_before = state.crawler.runtime_status()
+        crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
+        state.maintenance_in_progress = True
+        try:
+            if crawler_was_running:
+                state.crawler.stop()
+                ensure_runtime_idle()
+            payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", "upstream_error")
+            except Exception:  # noqa: BLE001
+                detail = "upstream_error"
+            state.maintenance_in_progress = False
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        except HTTPException:
+            state.maintenance_in_progress = False
+            raise
+        except Exception as exc:  # noqa: BLE001
+            state.maintenance_in_progress = False
+            raise HTTPException(status_code=500, detail="blog_dedup_scan_failed") from exc
+        Thread(
+            target=_execute_blog_dedup_scan_in_background,
+            kwargs={
+                "state": state,
+                "run_id": int(payload["id"]),
+                "crawler_was_running": crawler_was_running,
+            },
+            daemon=True,
+        ).start()
+        return payload
+
+    @app.get("/api/admin/blog-dedup-scans/latest")
+    def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        try:
+            return get_state().persistence.latest_blog_dedup_scan_run()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
+    def get_blog_dedup_scan_run_items(
+        run_id: int,
+        _: None = Depends(require_admin_access),
+    ) -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_blog_dedup_scan_run_items(run_id)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/runtime/status")
+    def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        payload = get_state().crawler.runtime_status()
+        payload["maintenance_in_progress"] = bool(get_state().maintenance_in_progress)
+        return payload
+
+    @app.get("/api/admin/runtime/current")
+    def runtime_current(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.current()
 
-    @app.post("/api/runtime/start")
-    def runtime_start() -> dict[str, Any]:
+    @app.post("/api/admin/runtime/start")
+    def runtime_start(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        _raise_for_maintenance(get_state())
         return get_state().crawler.start()
 
-    @app.post("/api/runtime/stop")
-    def runtime_stop() -> dict[str, Any]:
+    @app.post("/api/admin/runtime/stop")
+    def runtime_stop(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.stop()
 
-    @app.post("/api/runtime/run-batch")
-    def runtime_run_batch(payload: RunBatchRequest) -> dict[str, Any]:
+    @app.post("/api/admin/runtime/run-batch")
+    def runtime_run_batch(
+        payload: RunBatchRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        _raise_for_maintenance(get_state())
         result = get_state().crawler.run_batch(payload.max_nodes)
         try:
             get_state().search.reindex()
@@ -223,8 +528,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             pass
         return result
 
-    @app.post("/api/database/reset")
-    def reset_database() -> dict[str, Any]:
+    @app.post("/api/admin/database/reset")
+    def reset_database(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         runtime = get_state().crawler.runtime_status()
         if runtime.get("runner_status") in {"starting", "running", "stopping"}:
             raise HTTPException(status_code=409, detail="crawler_busy")

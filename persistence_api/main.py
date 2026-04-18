@@ -7,10 +7,16 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
+from persistence_api.repository import BLOG_LABELING_DEFAULT_PAGE_SIZE
+from persistence_api.age_graph import AgeGraphManager
+from persistence_api.repository import BlogLabelingConflictError
+from persistence_api.repository import BlogLabelingNotFoundError
 from persistence_api.graph_service import GraphService
+from persistence_api.migrations import run_postgres_migrations
 from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
 from persistence_api.stats_service import StatsService
@@ -30,6 +36,12 @@ class UpsertBlogRequest(BaseModel):
     url: str
     normalized_url: str
     domain: str
+    email: str | None = None
+
+
+class CreateIngestionRequest(BaseModel):
+    homepage_url: str
+    email: str
 
 
 class BlogResultRequest(BaseModel):
@@ -55,15 +67,43 @@ class AddLogRequest(BaseModel):
     message: str
 
 
+class ReplaceBlogLabelsRequest(BaseModel):
+    tag_ids: list[int]
+
+
+class CreateBlogLabelTagRequest(BaseModel):
+    name: str
+
+
+class FinalizeBlogDedupScanRunRequest(BaseModel):
+    crawler_restart_attempted: bool
+    crawler_restart_succeeded: bool
+    search_reindexed: bool
+    error_message: str | None = None
+
+
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
     """Construct the persistence service state."""
     resolved = settings or Settings.from_env()
-    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn)
+    if resolved.db_dsn:
+        run_postgres_migrations(resolved.db_dsn)
+    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn, settings=resolved)
+    age_manager = AgeGraphManager(
+        getattr(repository, "engine", None),
+        enabled=resolved.age_enabled and resolved.age_shadow_reads,
+        graph_name=resolved.age_graph_name,
+    )
     return PersistenceState(
         repository=repository,
         # Keep graph/stats assembly owned by persistence so this service does not
         # depend on backend-only modules for its own read models.
-        graph_service=GraphService(repository, resolved.export_dir),
+        graph_service=GraphService(
+            repository,
+            resolved.export_dir,
+            graph_backend=resolved.graph_backend,
+            snapshot_namespace=resolved.graph_snapshot_namespace,
+            age_manager=age_manager,
+        ),
         stats_service=StatsService(repository),
     )
 
@@ -71,18 +111,16 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
 def create_app(state: PersistenceState | None = None) -> FastAPI:
     """Create the persistence API app."""
     app = FastAPI(title="HeyBlog Persistence Service", version="0.1.0")
-    app.state.persistence_state = state or build_persistence_state()
+    app.state.persistence_state = state
 
     def get_state() -> PersistenceState:
+        if app.state.persistence_state is None:
+            app.state.persistence_state = build_persistence_state()
         return app.state.persistence_state
 
     @app.get("/internal/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.get("/internal/blogs")
-    def list_blogs() -> list[dict[str, Any]]:
-        return get_state().repository.list_blogs()
+    def health() -> dict[str, Any]:
+        return {"status": "ok"} | get_state().graph_service.graph_status()
 
     @app.get("/internal/blogs/catalog")
     def list_blogs_catalog(
@@ -91,7 +129,12 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         site: str | None = None,
         url: str | None = None,
         status: str | None = None,
+        statuses: str | None = None,
         q: str | None = None,
+        sort: str = "id_desc",
+        has_title: str | None = None,
+        has_icon: str | None = None,
+        min_connections: str | None = None,
     ) -> dict[str, Any]:
         try:
             return get_state().repository.list_blogs_catalog(
@@ -100,19 +143,89 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 site=site,
                 url=url,
                 status=status,
+                statuses=statuses,
                 q=q,
+                sort=sort,
+                has_title=has_title,
+                has_icon=has_icon,
+                min_connections=min_connections,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.get("/internal/blogs/lookup")
+    def lookup_blog_candidates(url: str) -> dict[str, Any]:
+        try:
+            return get_state().repository.lookup_blog_candidates(url=url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/ingestion-requests")
+    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
+        return get_state().repository.list_priority_ingestion_requests()
+
+    @app.get("/internal/blog-labeling/candidates")
+    def list_blog_labeling_candidates(
+        page: int = 1,
+        page_size: int = BLOG_LABELING_DEFAULT_PAGE_SIZE,
+        q: str | None = None,
+        label: str | None = None,
+        labeled: str | None = None,
+        sort: str = "id_desc",
+    ) -> dict[str, Any]:
+        try:
+            return get_state().repository.list_blog_labeling_candidates(
+                page=page,
+                page_size=page_size,
+                q=q,
+                label=label,
+                labeled=labeled,
+                sort=sort,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-labeling/tags")
+    def list_blog_label_tags() -> list[dict[str, Any]]:
+        return get_state().repository.list_blog_label_tags()
+
+    @app.post("/internal/blog-labeling/tags")
+    def create_blog_label_tag(payload: CreateBlogLabelTagRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.create_blog_label_tag(name=payload.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/internal/blog-labeling/labels/{blog_id}")
+    def replace_blog_labels(blog_id: int, payload: ReplaceBlogLabelsRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except BlogLabelingNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BlogLabelingConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-labeling/export")
+    def export_blog_label_training_csv() -> Response:
+        return Response(
+            content=get_state().repository.export_blog_label_training_csv(),
+            media_type="text/csv",
+            headers={
+                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+            },
+        )
+
     @app.get("/internal/queue/next")
-    def next_waiting() -> dict[str, Any] | None:
-        row = get_state().repository.get_next_waiting_blog()
+    def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:
+        row = get_state().repository.get_next_waiting_blog(include_priority=include_priority)
         return dict(row) if row else None
 
-    @app.get("/internal/blogs/{blog_id}")
-    def get_blog(blog_id: int) -> dict[str, Any] | None:
-        return get_state().repository.get_blog(blog_id)
+    @app.get("/internal/queue/priority-next")
+    def next_priority_waiting() -> dict[str, Any] | None:
+        row = get_state().repository.get_next_priority_blog()
+        return dict(row) if row else None
 
     @app.get("/internal/blogs/{blog_id}/detail")
     def get_blog_detail(blog_id: int) -> dict[str, Any]:
@@ -120,6 +233,57 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         if payload is None:
             raise HTTPException(status_code=404, detail="blog_not_found")
         return payload
+
+    @app.post("/internal/ingestion-requests")
+    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.create_ingestion_request(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/internal/ingestion-requests/{request_id}")
+    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
+        payload = get_state().repository.get_ingestion_request(
+            request_id=request_id,
+            request_token=request_token,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="ingestion_request_not_found")
+        return payload
+
+    @app.post("/internal/blog-dedup-scans/runs")
+    def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
+        return get_state().repository.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+
+    @app.post("/internal/blog-dedup-scans/{run_id}/execute")
+    def execute_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
+        try:
+            return get_state().repository.execute_blog_dedup_scan_run(run_id=run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/internal/blog-dedup-scans/{run_id}/finalize")
+    def finalize_blog_dedup_scan_run(run_id: int, payload: FinalizeBlogDedupScanRunRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.finalize_blog_dedup_scan_run(run_id=run_id, **payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/internal/blog-dedup-scans/latest")
+    def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
+        payload = get_state().repository.get_latest_blog_dedup_scan_run()
+        if payload is None:
+            raise HTTPException(status_code=404, detail="blog_dedup_scan_run_not_found")
+        return payload
+
+    @app.get("/internal/blog-dedup-scans/{run_id}/items")
+    def list_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
+        return get_state().repository.list_blog_dedup_scan_run_items(run_id)
+
+    @app.post("/internal/ingestion-requests/by-blog/{blog_id}/crawling")
+    def mark_ingestion_request_crawling(blog_id: int) -> dict[str, bool]:
+        get_state().repository.mark_ingestion_request_crawling(blog_id=blog_id)
+        return {"ok": True}
 
     @app.post("/internal/blogs/upsert")
     def upsert_blog(payload: UpsertBlogRequest) -> dict[str, Any]:
@@ -131,18 +295,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         get_state().repository.mark_blog_result(blog_id=blog_id, **payload.model_dump())
         return {"ok": True}
 
-    @app.get("/internal/edges")
-    def list_edges() -> list[dict[str, Any]]:
-        return get_state().repository.list_edges()
-
     @app.post("/internal/edges")
     def add_edge(payload: AddEdgeRequest) -> dict[str, bool]:
         get_state().repository.add_edge(**payload.model_dump())
         return {"ok": True}
-
-    @app.get("/internal/logs")
-    def list_logs(limit: int = 100) -> list[dict[str, Any]]:
-        return get_state().repository.list_logs(limit=limit)
 
     @app.post("/internal/logs")
     def add_log(payload: AddLogRequest) -> dict[str, bool]:
@@ -153,9 +309,13 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def get_stats() -> dict[str, Any]:
         return get_state().stats_service.stats()
 
-    @app.get("/internal/graph")
-    def get_graph() -> dict[str, Any]:
-        return get_state().graph_service.graph()
+    @app.get("/internal/graph/status")
+    def get_graph_status() -> dict[str, Any]:
+        return get_state().graph_service.graph_status()
+
+    @app.post("/internal/graph/shadow/rebuild")
+    def rebuild_graph_shadow() -> dict[str, Any]:
+        return get_state().graph_service.rebuild_shadow_graph()
 
     @app.get("/internal/graph/views/core")
     def get_graph_view(

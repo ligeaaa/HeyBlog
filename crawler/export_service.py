@@ -13,15 +13,34 @@ from persistence_api.repository import RepositoryProtocol
 
 
 class ExportService:
-    """Persist graph snapshots for downstream analysis tools."""
+    """Write crawler graph exports for downstream analysis tools.
+
+    Attributes:
+        repository: Repository used to read the current blogs and edges.
+        export_dir: Directory where CSV, JSON, and snapshot projection files
+            should be written.
+    """
 
     def __init__(self, repository: RepositoryProtocol, export_dir: Path) -> None:
-        """Create an exporter bound to a repository and output folder."""
+        """Create an exporter bound to a repository and output directory.
+
+        Args:
+            repository: Repository used to read graph data for export.
+            export_dir: Directory where exported files should be created.
+
+        Returns:
+            ``None``. The exporter stores the repository and output directory
+            for later export writes.
+        """
         self.repository = repository
         self.export_dir = export_dir
 
     def write_exports(self) -> dict[str, str]:
-        """Write nodes/edges CSV and combined graph JSON files."""
+        """Write the current graph snapshot to the configured export directory.
+
+        Returns:
+            A mapping of logical export names to their written file paths.
+        """
         self.export_dir.mkdir(parents=True, exist_ok=True)
         nodes_path = self.export_dir / "nodes.csv"
         edges_path = self.export_dir / "edges.csv"

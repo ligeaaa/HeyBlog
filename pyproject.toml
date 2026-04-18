@@ -9,22 +9,36 @@ description = "MVP blog friend-link crawler and graph API"
 readme = "readme.md"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.14,<2",
   "beautifulsoup4>=4.12,<5",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
+  "pydantic>=2.7,<3",
   "psycopg[binary]>=3.2,<4",
   "sqlalchemy>=2.0,<3",
   "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]
+runtime-models = [
+  "numpy>=1.26,<3",
+  "scikit-learn>=1.5,<2",
+  "scipy>=1.11,<2",
+]
+trainer = [
+  "numpy>=1.26,<3",
+  "scikit-learn>=1.5,<2",
+  "scipy>=1.11,<2",
+  "torch>=2.2,<3",
+  "transformers>=4.40,<5",
+]
 dev = [
   "pytest>=8.3,<9",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "trainer/tests"]
 pythonpath = ["."]
 
 [tool.setuptools.packages.find]
-include = ["services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*"]
+include = ["services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*", "trainer*"]

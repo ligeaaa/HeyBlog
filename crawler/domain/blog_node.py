@@ -8,7 +8,15 @@ from typing import Any
 
 @dataclass(slots=True, frozen=True)
 class BlogNode:
-    """Typed view over one repository blog row used during crawling."""
+    """Typed view over one repository blog row used during crawling.
+
+    Attributes:
+        raw: Original repository row preserved for callbacks and compatibility
+            callers.
+        id: Blog identifier used by persistence operations.
+        url: Canonical blog URL to crawl.
+        domain: Domain portion associated with the blog URL.
+    """
 
     raw: dict[str, Any]
     id: int
@@ -17,7 +25,16 @@ class BlogNode:
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "BlogNode":
-        """Normalize one repository row into the fields used by the crawler."""
+        """Build a typed blog node from a repository row.
+
+        Args:
+            row: Repository row containing at least ``id``, ``url``, and
+                ``domain`` fields.
+
+        Returns:
+            A ``BlogNode`` snapshot with a copied raw payload and normalized
+            scalar fields.
+        """
         snapshot = dict(row)
         return cls(
             raw=snapshot,
@@ -27,6 +44,9 @@ class BlogNode:
         )
 
     def callback_payload(self) -> dict[str, Any]:
-        """Return a fresh callback payload that preserves the dict contract."""
-        return dict(self.raw)
+        """Return a fresh dictionary payload for legacy callback consumers.
 
+        Returns:
+            A shallow copy of the original repository row.
+        """
+        return dict(self.raw)

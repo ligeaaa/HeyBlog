@@ -51,7 +51,15 @@ CONTEXT_TAGS = {"nav", "aside", "footer", "section", "li", "div", "ul", "ol"}
 
 
 def _anchor_context(anchor: Tag) -> str:
-    """Collect nearby context text for an anchor."""
+    """Collect short nearby context text for one homepage anchor.
+
+    Args:
+        anchor: Anchor tag being evaluated as a possible friend-link page entry.
+
+    Returns:
+        A normalized string built from up to two nearby structural parents so
+        keyword matching can use more than the anchor text alone.
+    """
     fragments: list[str] = []
     current: Tag | None = anchor
     seen: set[str] = set()
@@ -72,7 +80,15 @@ def _anchor_context(anchor: Tag) -> str:
 
 
 def _looks_like_friend_links_page(anchor: Tag) -> bool:
-    """Return True when an anchor looks like a friend-link page entry."""
+    """Decide whether one homepage anchor likely points to a friend-link page.
+
+    Args:
+        anchor: Anchor tag discovered on the blog homepage.
+
+    Returns:
+        ``True`` when the anchor text, nearby context, or path shape indicates a
+        likely friend-link directory page.
+    """
     href = anchor["href"].strip()
     anchor_text = clean_text(anchor.get_text(" ", strip=True))
     context_text = _anchor_context(anchor)
@@ -91,7 +107,17 @@ def _looks_like_friend_links_page(anchor: Tag) -> bool:
 
 
 def _candidate_page_urls(base_url: str, soup: BeautifulSoup) -> list[str]:
-    """Return homepage-discovered friend-link page URLs."""
+    """Collect candidate friend-link page URLs directly from homepage anchors.
+
+    Args:
+        base_url: Homepage URL used to resolve relative links.
+        soup: Parsed homepage HTML tree.
+
+    Returns:
+        A de-duplicated list of absolute candidate page URLs in discovery order.
+    """
+    # Discovery deliberately stays homepage-only: it guesses which pages are
+    # likely to contain friend links, but does not inspect their contents here.
     urls = [
         urljoin(base_url, anchor["href"].strip())
         for anchor in soup.find_all("a", href=True)
@@ -101,15 +127,34 @@ def _candidate_page_urls(base_url: str, soup: BeautifulSoup) -> list[str]:
 
 
 def _fallback_page_urls(base_url: str) -> list[str]:
-    """Return deterministic fallback paths for blogs without clear homepage clues."""
+    """Generate deterministic fallback friend-link paths for one homepage.
+
+    Args:
+        base_url: Homepage URL used to resolve common friend-link path hints.
+
+    Returns:
+        A de-duplicated list of absolute fallback URLs derived from known common
+        friend-link path patterns.
+    """
     return unique_in_order(urljoin(base_url, hint) for hint in PATH_HINTS)
 
 
 def discover_friend_links_pages(base_url: str, html: str) -> list[str]:
-    """Infer friend-link page URLs from homepage anchors and fallback paths."""
+    """Infer friend-link directory pages from homepage HTML.
+
+    Args:
+        base_url: Homepage URL used to resolve relative anchors and fallback
+            path hints.
+        html: Homepage HTML source to inspect.
+
+    Returns:
+        A list of candidate friend-link page URLs, either discovered from page
+        markup or synthesized from fallback path conventions.
+    """
     soup = BeautifulSoup(html, "html.parser")
     candidates = _candidate_page_urls(base_url, soup)
     if candidates:
         return candidates
+    # Fallback paths keep the crawler useful for blogs whose homepage exposes no
+    # explicit friend-link anchor but follows common URL conventions.
     return _fallback_page_urls(base_url)
-

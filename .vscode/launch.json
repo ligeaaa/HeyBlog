@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "HEYBLOG_DECISION_MODEL_ROOT": "${workspaceFolder}/runtime_resources/models/url_decision/current"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug crawler run_once",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/debug/debug_run_once.py",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "HEYBLOG_DB_PATH": "${workspaceFolder}/data/debug/run-once.sqlite",
+        "HEYBLOG_SEED_PATH": "${workspaceFolder}/seed.csv",
+        "HEYBLOG_EXPORT_DIR": "${workspaceFolder}/data/debug/exports",
+        "HEYBLOG_DECISION_MODEL_ROOT": "${workspaceFolder}/runtime_resources/models/url_decision/current",
+        "HEYBLOG_MAX_NODES_PER_RUN": "1",
+        "HEYBLOG_REQUEST_TIMEOUT_SECONDS": "10",
+        "HEYBLOG_BLOG_CRAWL_TIMEOUT_SECONDS": "60",
+        "HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY": "1"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

@@ -11,7 +11,15 @@ from crawler.filters import decide_blog_candidate
 
 @dataclass(slots=True)
 class RuleBasedDecider:
-    """Apply the existing deterministic crawler rules through a strategy seam."""
+    """Adapt the legacy deterministic crawler filters into a decision step.
+
+    Attributes:
+        domain_blocklist: Extra domains rejected by crawler configuration.
+        blocked_tlds: TLD suffixes that should be rejected outright.
+        exact_url_blocklist: Explicit absolute URLs that should be rejected.
+        prefix_blocklist: URL prefixes that should be rejected before other
+            evaluation takes place.
+    """
 
     domain_blocklist: tuple[str, ...] = ()
     blocked_tlds: tuple[str, ...] = ()
@@ -26,7 +34,18 @@ class RuleBasedDecider:
         link_text: str = "",
         context_text: str = "",
     ) -> DecisionOutcome:
-        """Return the existing deterministic filtering outcome."""
+        """Evaluate one URL with the legacy hard filter rules.
+
+        Args:
+            url: Absolute extracted URL being evaluated.
+            source_domain: Domain of the page from which the URL was extracted.
+            link_text: Visible anchor text associated with the URL.
+            context_text: Nearby context text associated with the URL.
+
+        Returns:
+            A strategy-friendly ``DecisionOutcome`` converted from the legacy
+            ``LinkDecision`` structure.
+        """
         kwargs = {
             "link_text": link_text,
             "context_text": context_text,
@@ -44,4 +63,3 @@ class RuleBasedDecider:
             reasons=decision.reasons,
             hard_blocked=decision.hard_blocked,
         )
-

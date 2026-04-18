@@ -1,6 +1,6 @@
 """Unit tests for homepage title/icon extraction."""
 
-from crawler.site_metadata import extract_site_metadata
+from crawler.crawling.metadata import extract_site_metadata
 
 
 def test_extract_site_metadata_ignores_non_http_icon_urls() -> None:

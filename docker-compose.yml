@@ -2,16 +2,16 @@ services:
   frontend:
     build: .
     ports:
-      - "3000:3000"
+      - "${HEYBLOG_FRONTEND_PORT:-3000}:${HEYBLOG_FRONTEND_PORT:-3000}"
     environment:
-      HEYBLOG_BACKEND_BASE_URL: http://backend:8000
-    command: ["uvicorn", "frontend.server:app", "--host", "0.0.0.0", "--port", "3000"]
+      HEYBLOG_BACKEND_BASE_URL: ${HEYBLOG_DOCKER_BACKEND_BASE_URL:-http://backend:8000}
+    command: ["uvicorn", "frontend.server:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_FRONTEND_PORT:-3000}"]
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/internal/health')
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HEYBLOG_FRONTEND_PORT:-3000}/internal/health')
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,18 +25,21 @@ services:
   backend:
     build: .
     ports:
-      - "8000:8000"
+      - "${HEYBLOG_BACKEND_PORT:-8000}:${HEYBLOG_BACKEND_PORT:-8000}"
     environment:
-      HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
-      HEYBLOG_CRAWLER_BASE_URL: http://crawler:8010
-      HEYBLOG_SEARCH_BASE_URL: http://search:8020
-    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+      HEYBLOG_PERSISTENCE_BASE_URL: ${HEYBLOG_DOCKER_PERSISTENCE_BASE_URL:-http://persistence-api:8030}
+      HEYBLOG_CRAWLER_BASE_URL: ${HEYBLOG_DOCKER_CRAWLER_BASE_URL:-http://crawler:8010}
+      HEYBLOG_SEARCH_BASE_URL: ${HEYBLOG_DOCKER_SEARCH_BASE_URL:-http://search:8020}
+      HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
+      HEYBLOG_ADMIN_TOKEN: ${HEYBLOG_ADMIN_TOKEN:-}
+      HEYBLOG_ADMIN_DEV_BYPASS: ${HEYBLOG_ADMIN_DEV_BYPASS:-}
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_BACKEND_PORT:-8000}"]
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/internal/health')
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HEYBLOG_BACKEND_PORT:-8000}/internal/health')
       interval: 10s
       timeout: 5s
       retries: 5
@@ -53,17 +56,30 @@ services:
 
   crawler:
     build: .
+    ports:
+      - "${HEYBLOG_CRAWLER_PORT:-8010}:${HEYBLOG_CRAWLER_PORT:-8010}"
     environment:
-      HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
-      HEYBLOG_SEED_PATH: /data/seeds/seed.csv
-      HEYBLOG_EXPORT_DIR: /data/exports
-    command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "8010"]
+      HEYBLOG_PERSISTENCE_BASE_URL: ${HEYBLOG_DOCKER_PERSISTENCE_BASE_URL:-http://persistence-api:8030}
+      HEYBLOG_SEED_PATH: ${HEYBLOG_DOCKER_SEED_PATH:-/data/seeds/seed.csv}
+      HEYBLOG_EXPORT_DIR: ${HEYBLOG_DOCKER_EXPORT_DIR:-/data/exports}
+      HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
+      HEYBLOG_MAX_NODES_PER_RUN: ${HEYBLOG_MAX_NODES_PER_RUN:-10}
+      HEYBLOG_MAX_PATH_PROBES_PER_BLOG: ${HEYBLOG_MAX_PATH_PROBES_PER_BLOG:-50}
+      HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY: ${HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY:-4}
+      HEYBLOG_RUNTIME_WORKER_COUNT: ${HEYBLOG_RUNTIME_WORKER_COUNT:-3}
+      HEYBLOG_USER_AGENT: ${HEYBLOG_USER_AGENT:-HeyBlogBot/0.1 (+https://example.invalid/heyblog)}
+      HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST:-}
+      HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST:-}
+      HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST:-}
+      HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST:-}
+      HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
+    command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_CRAWLER_PORT:-8010}"]
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/internal/health')
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HEYBLOG_CRAWLER_PORT:-8010}/internal/health')
       interval: 10s
       timeout: 5s
       retries: 5
@@ -74,21 +90,25 @@ services:
     volumes:
       - ./volumes/exports:/data/exports
       - ./seed.csv:/data/seeds/seed.csv:ro
+      - ./runtime_resources:/app/runtime_resources:ro
     networks:
       - heyblog_net
 
   search:
     build: .
+    ports:
+      - "${HEYBLOG_SEARCH_PORT:-8020}:${HEYBLOG_SEARCH_PORT:-8020}"
     environment:
-      HEYBLOG_PERSISTENCE_BASE_URL: http://persistence-api:8030
-      HEYBLOG_SEARCH_CACHE_DIR: /data/search-cache
-    command: ["uvicorn", "search.main:app", "--host", "0.0.0.0", "--port", "8020"]
+      HEYBLOG_PERSISTENCE_BASE_URL: ${HEYBLOG_DOCKER_PERSISTENCE_BASE_URL:-http://persistence-api:8030}
+      HEYBLOG_SEARCH_CACHE_DIR: ${HEYBLOG_DOCKER_SEARCH_CACHE_DIR:-/data/search-cache}
+      HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
+    command: ["uvicorn", "search.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_SEARCH_PORT:-8020}"]
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/internal/health')
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HEYBLOG_SEARCH_PORT:-8020}/internal/health')
       interval: 10s
       timeout: 5s
       retries: 5
@@ -104,16 +124,18 @@ services:
   persistence-api:
     build: .
     ports:
-      - "8030:8030"
+      - "${HEYBLOG_PERSISTENCE_API_PORT:-8030}:${HEYBLOG_PERSISTENCE_API_PORT:-8030}"
     environment:
-      HEYBLOG_DB_DSN: postgresql+psycopg://heyblog:heyblog@persistence-db:5432/heyblog
-    command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "8030"]
+      HEYBLOG_DB_DSN: ${HEYBLOG_DB_DSN:-postgresql+psycopg://heyblog:heyblog@persistence-db:5432/heyblog}
+      HEYBLOG_EXPORT_DIR: ${HEYBLOG_DOCKER_EXPORT_DIR:-/data/exports}
+      HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
+    command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_PERSISTENCE_API_PORT:-8030}"]
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8030/internal/health')
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:${HEYBLOG_PERSISTENCE_API_PORT:-8030}/internal/health')
       interval: 10s
       timeout: 5s
       retries: 5
@@ -121,21 +143,26 @@ services:
     depends_on:
       persistence-db:
         condition: service_healthy
+    volumes:
+      - ./runtime_resources:/app/runtime_resources:ro
     networks:
       - heyblog_net
 
   persistence-db:
-    image: postgres:16
+    build:
+      context: .
+      dockerfile: docker/persistence-db/Dockerfile
     environment:
-      POSTGRES_DB: heyblog
-      POSTGRES_USER: heyblog
-      POSTGRES_PASSWORD: heyblog
+      POSTGRES_DB: ${POSTGRES_DB:-heyblog}
+      POSTGRES_USER: ${POSTGRES_USER:-heyblog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-heyblog}
     ports:
-      - "5432:5432"
+      - "${HEYBLOG_PERSISTENCE_DB_PORT:-5432}:${HEYBLOG_PERSISTENCE_DB_PORT:-5432}"
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
+      - ./docker/persistence-db/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U heyblog -d heyblog"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-heyblog} -d ${POSTGRES_DB:-heyblog}"]
       interval: 10s
       timeout: 5s
       retries: 5

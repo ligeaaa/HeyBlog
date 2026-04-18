@@ -33,8 +33,17 @@ def snapshot_version(now: datetime | None = None) -> str:
     return resolved.strftime("%Y%m%dT%H%M%S%fZ")
 
 
-def snapshot_filename(version: str) -> str:
+def latest_snapshot_manifest_filename(namespace: str | None = None) -> str:
+    """Return the latest manifest filename for one optional source namespace."""
+    if namespace:
+        return f"graph-layout-latest.{namespace}.json"
+    return LATEST_SNAPSHOT_MANIFEST
+
+
+def snapshot_filename(version: str, namespace: str | None = None) -> str:
     """Return the snapshot filename for one version."""
+    if namespace:
+        return f"graph-layout-{version}.{namespace}.json"
     return f"graph-layout-{version}.json"
 
 
@@ -52,9 +61,9 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
-def load_snapshot_manifest(export_dir: Path) -> dict[str, Any] | None:
+def load_snapshot_manifest(export_dir: Path, *, namespace: str | None = None) -> dict[str, Any] | None:
     """Return the latest snapshot manifest when available."""
-    path = export_dir / LATEST_SNAPSHOT_MANIFEST
+    path = export_dir / latest_snapshot_manifest_filename(namespace)
     if not path.exists():
         return None
     with path.open("r", encoding="utf-8") as handle:
@@ -62,9 +71,9 @@ def load_snapshot_manifest(export_dir: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def load_snapshot_payload(export_dir: Path, version: str) -> dict[str, Any] | None:
+def load_snapshot_payload(export_dir: Path, version: str, *, namespace: str | None = None) -> dict[str, Any] | None:
     """Return one snapshot payload by version when present."""
-    path = export_dir / snapshot_filename(version)
+    path = export_dir / snapshot_filename(version, namespace)
     if not path.exists():
         return None
     with path.open("r", encoding="utf-8") as handle:
@@ -72,15 +81,21 @@ def load_snapshot_payload(export_dir: Path, version: str) -> dict[str, Any] | No
     return payload if isinstance(payload, dict) else None
 
 
-def write_snapshot_files(export_dir: Path, payload: dict[str, Any]) -> dict[str, str]:
+def write_snapshot_files(
+    export_dir: Path,
+    payload: dict[str, Any],
+    *,
+    namespace: str | None = None,
+) -> dict[str, str]:
     """Persist a versioned snapshot plus the latest manifest."""
     version = str(payload["version"])
-    snapshot_path = export_dir / snapshot_filename(version)
-    manifest_path = export_dir / LATEST_SNAPSHOT_MANIFEST
+    snapshot_path = export_dir / snapshot_filename(version, namespace)
+    manifest_path = export_dir / latest_snapshot_manifest_filename(namespace)
     manifest = {
         "version": version,
         "generated_at": payload["generated_at"],
         "source": payload["meta"]["source"],
+        "snapshot_namespace": namespace or payload["meta"].get("snapshot_namespace", "default"),
         "has_stable_positions": payload["meta"]["has_stable_positions"],
         "total_nodes": payload["meta"]["total_nodes"],
         "total_edges": payload["meta"]["total_edges"],
@@ -234,6 +249,7 @@ def build_graph_snapshot_payload(
     version: str | None = None,
     generated_at: str | None = None,
     source: str = "snapshot",
+    snapshot_namespace: str | None = None,
 ) -> dict[str, Any]:
     """Create a stable-position snapshot payload for graph views."""
     resolved_fingerprint = graph_fingerprint(blogs, edges)
@@ -284,6 +300,7 @@ def build_graph_snapshot_payload(
         "edges": available_edges,
         "meta": {
             "source": source,
+            "snapshot_namespace": snapshot_namespace or "default",
             "has_stable_positions": True,
             "graph_fingerprint": resolved_fingerprint,
             "total_nodes": len(blogs),
@@ -363,6 +380,7 @@ def _build_view_payload(
             "available_edges": snapshot["meta"]["available_edges"],
             "selected_nodes": len(selected_nodes),
             "selected_edges": len(selected_edges),
+            "snapshot_namespace": snapshot["meta"].get("snapshot_namespace", "default"),
         },
     }
 
