@@ -18,7 +18,6 @@ import {
   fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
-  fetchBlogsCatalog,
   fetchStats,
   postAdminBootstrap,
   postAdminResetDatabase,
@@ -30,7 +29,6 @@ import type {
   AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
-  BlogCatalogItem,
   StatsData,
 } from "../types/graph";
 
@@ -79,7 +77,6 @@ export function AdminPage() {
   const [adminTokenInput, setAdminTokenInput] = useState(readStoredAdminToken());
   const [activeAdminToken, setActiveAdminToken] = useState(readStoredAdminToken());
   const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
-  const [topBlogs, setTopBlogs] = useState<BlogCatalogItem[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<AdminRuntimeStatus | null>(null);
   const [runtimeCurrent, setRuntimeCurrent] = useState<AdminRuntimeCurrent | null>(null);
   const [latestDedup, setLatestDedup] = useState<AdminDedupSummary | null>(null);
@@ -101,16 +98,8 @@ export function AdminPage() {
   async function loadAdminPage(adminToken: string) {
     try {
       setIsLoading(true);
-      const [statsResponse, topBlogsResponse] = await Promise.all([
-        fetchStats(),
-        fetchBlogsCatalog({
-          page: 1,
-          pageSize: 5,
-          sort: "connections",
-        }),
-      ]);
+      const statsResponse = await fetchStats();
       setStats(statsResponse);
-      setTopBlogs(topBlogsResponse.items);
 
       if (!adminToken.trim()) {
         setRuntimeStatus(null);
@@ -201,8 +190,8 @@ export function AdminPage() {
             <div className="inline-flex rounded-full bg-slate-900 px-4 py-2 text-sm text-white">Admin Console</div>
             <h1 className="mt-5 text-5xl text-slate-950">管理控制台</h1>
             <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-500">
-              当前页面参考 `archive/frontend` 的 admin 信息结构，同时改成直接调用现有 `/api/admin/*`。你可以在这里查看 runtime、
-              触发 crawl 维护操作，并快速浏览连接度最高的博客节点。
+              当前页面参考 `archive/frontend` 的 admin 信息结构，同时改成直接调用现有 `/api/admin/*`。你可以在这里查看 runtime
+              并触发 crawl 维护操作。
             </p>
           </div>
 
@@ -409,46 +398,6 @@ export function AdminPage() {
                 </div>
               </div>
             )}
-          </div>
-        </section>
-
-        <section className="rounded-[32px] border border-slate-200 bg-white/95 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
-          <h2 className="text-2xl text-slate-950">连接度最高的博客</h2>
-          <p className="mt-2 text-sm text-slate-500">
-            这里沿用 archive 前端里“高连接节点”概念，但数据来源改为真实 `/api/blogs/catalog?sort=connections`。
-          </p>
-          <div className="mt-6 overflow-x-auto">
-            <table className="min-w-full">
-              <thead>
-                <tr className="border-b border-slate-200 text-left text-sm text-slate-500">
-                  <th className="px-4 py-3">排名</th>
-                  <th className="px-4 py-3">博客</th>
-                  <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">入链</th>
-                  <th className="px-4 py-3">出链</th>
-                  <th className="px-4 py-3">总连接</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topBlogs.map((blog, index) => (
-                  <tr key={blog.id} className="border-b border-slate-100 text-sm text-slate-700">
-                    <td className="px-4 py-4">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-100 text-sky-700">
-                        {index + 1}
-                      </div>
-                    </td>
-                    <td className="px-4 py-4">
-                      <div className="text-slate-900">{blog.title || blog.domain}</div>
-                      <div className="mt-1 text-xs text-slate-500">{blog.domain}</div>
-                    </td>
-                    <td className="px-4 py-4">{blog.crawlStatus}</td>
-                    <td className="px-4 py-4">{blog.incomingCount}</td>
-                    <td className="px-4 py-4">{blog.outgoingCount}</td>
-                    <td className="px-4 py-4">{blog.connectionCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         </section>
       </main>

@@ -28,15 +28,22 @@ export function AboutPage() {
             </div>
 
             <div>
-              <h2 className="text-2xl text-slate-950">GitHub</h2>
-              <a
-                href="https://github.com/ligeaaa/HeyBlog"
-                target="_blank"
-                rel="noreferrer"
-                className="mt-4 inline-flex text-base text-sky-600 transition-colors hover:text-sky-700"
-              >
-                https://github.com/ligeaaa/HeyBlog
-              </a>
+              <h2 className="text-2xl text-slate-950">联系方式</h2>
+              <div className="mt-4 space-y-3 text-base leading-8">
+                <div>
+                  Github:
+                  {" "}
+                  <a
+                    href="https://github.com/ligeaaa/HeyBlog"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sky-600 transition-colors hover:text-sky-700"
+                  >
+                    https://github.com/ligeaaa/HeyBlog
+                  </a>
+                </div>
+                <p>Q群：如果你对该项目感兴趣，欢迎加Q群：399523190</p>
+              </div>
             </div>
           </div>
         </section>
