@@ -3,6 +3,7 @@
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 from persistence_api.graph_service import GraphService
 from persistence_api.graph_projection import build_core_graph_view
@@ -264,3 +265,47 @@ def test_graph_service_refreshes_snapshot_when_repository_graph_changes(tmp_path
     assert second_view["meta"]["available_nodes"] == 4
     assert first_manifest["graph_fingerprint"] != second_manifest["graph_fingerprint"]
     assert first_manifest["version"] != second_manifest["version"]
+
+
+def test_graph_service_reports_configured_backend_and_skips_age_reads_when_unconfigured(tmp_path: Path) -> None:
+    """Graph status should preserve the configured backend without forcing repository reads."""
+
+    class ExplodingRepository:
+        def list_blogs(self) -> list[dict[str, object]]:
+            raise AssertionError("repository should not be read when AGE is disabled")
+
+        def list_edges(self) -> list[dict[str, object]]:
+            raise AssertionError("repository should not be read when AGE is disabled")
+
+    service = GraphService(ExplodingRepository(), tmp_path, graph_backend="age")
+
+    assert service.graph_status()["graph_backend"] == "age"
+    assert service.rebuild_shadow_graph()["configured_graph_backend"] == "age"
+
+
+def test_graph_service_rebuilds_shadow_graph_when_age_manager_is_present(tmp_path: Path) -> None:
+    """Shadow graph rebuilds should pass authoritative rows to the AGE manager."""
+
+    class Repository:
+        def list_blogs(self) -> list[dict[str, object]]:
+            return [{"id": 1}]
+
+        def list_edges(self) -> list[dict[str, object]]:
+            return [{"id": 7}]
+
+    age_manager = Mock()
+    age_manager.status.return_value = {
+        "graph_backend": "age",
+        "age_enabled": True,
+        "age_sync_state": "ready",
+        "parity_status": "passing",
+        "latest_snapshot_namespace": "legacy",
+        "age_graph_name": "heyblog_graph",
+        "last_error": None,
+    }
+
+    service = GraphService(Repository(), tmp_path, graph_backend="age", age_manager=age_manager)
+    payload = service.rebuild_shadow_graph()
+
+    age_manager.sync_shadow_graph.assert_called_once_with([{"id": 1}], [{"id": 7}])
+    assert payload["graph_backend"] == "age"

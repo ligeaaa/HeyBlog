@@ -808,6 +808,47 @@ def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows
     assert icon_filtered["items"][0]["icon_url"] == "https://legacy.example/favicon.ico"
 
 
+def test_repository_blog_catalog_has_title_filters_on_stored_title_only(tmp_path: Path) -> None:
+    """Title filtering should keep rows whose rendered display title is non-empty."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    titled_blog_id, inserted = repository.upsert_blog(
+        url="https://titled.example/",
+        normalized_url="https://titled.example/",
+        domain="titled.example",
+    )
+    assert inserted is True
+    untitled_blog_id, inserted = repository.upsert_blog(
+        url="https://untitled.example/",
+        normalized_url="https://untitled.example/",
+        domain="untitled.example",
+    )
+    assert inserted is True
+
+    repository.mark_blog_result(
+        blog_id=titled_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+        metadata_captured=True,
+        title="Titled Blog",
+        icon_url="https://titled.example/favicon.ico",
+    )
+    repository.mark_blog_result(
+        blog_id=untitled_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=0,
+        metadata_captured=True,
+        title="",
+        icon_url="https://untitled.example/favicon.ico",
+    )
+
+    payload = repository.list_blogs_catalog(has_title=True)
+
+    assert [row["id"] for row in payload["items"]] == [untitled_blog_id, titled_blog_id]
+    assert payload["items"][0]["title"] == "untitled.example"
+
+
 def test_repository_priority_ingestion_list_hides_private_fields_and_orders_active_first(tmp_path: Path) -> None:
     """Public priority list should expose queue state without leaking request secrets."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")

@@ -1754,6 +1754,33 @@ def test_frontend_service_serves_built_app_when_dist_exists(tmp_path: Path, monk
     assert "Frontend build is not ready" not in response.text
 
 
+def test_frontend_service_serves_spa_entry_for_deep_links_but_not_missing_assets(tmp_path: Path, monkeypatch) -> None:
+    """SPA deep links should resolve to index while unknown asset paths still 404."""
+    dist_dir = tmp_path / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<!DOCTYPE html><title>Built App</title>", encoding="utf-8")
+
+    monkeypatch.setattr("frontend.server.FRONTEND_DIST_DIR", dist_dir)
+    monkeypatch.setattr("frontend.server.FRONTEND_ASSETS_DIR", assets_dir)
+
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    deep_link = client.get("/about")
+    missing_asset = client.get("/favicon.ico")
+
+    assert deep_link.status_code == 200
+    assert "Built App" in deep_link.text
+    assert missing_asset.status_code == 404
+
+
 def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) -> None:
     """Frontend API proxy should forward PUT requests to the backend service."""
 
@@ -1816,3 +1843,56 @@ def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) 
             "authorization": "Bearer secret-token",
         },
     }
+
+
+def test_frontend_service_does_not_forward_empty_authorization_headers(tmp_path: Path, monkeypatch) -> None:
+    """Frontend proxy should omit authorization when the caller did not provide one."""
+
+    captured: dict[str, object] = {}
+
+    class StubAsyncResponse:
+        def __init__(self) -> None:
+            self.content = b'{"ok":true}'
+            self.status_code = 200
+            self.headers = {"content-type": "application/json"}
+
+    class StubAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self) -> "StubAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            params: object,
+            content: bytes,
+            headers: dict[str, str],
+        ) -> StubAsyncResponse:
+            captured["method"] = method
+            captured["url"] = url
+            captured["params"] = dict(params)
+            captured["content"] = content
+            captured["headers"] = headers
+            return StubAsyncResponse()
+
+    monkeypatch.setattr("frontend.server.httpx.AsyncClient", StubAsyncClient)
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    response = client.post("/api/ingestion-requests", json={"homepage_url": "https://blog.example.com"})
+
+    assert response.status_code == 200
+    assert captured["headers"] == {"content-type": "application/json"}

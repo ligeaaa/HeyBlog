@@ -171,6 +171,22 @@ describe("GraphVisualization", () => {
     expect(graphInstances[0].setOptions).toHaveBeenCalledTimes(2);
   });
 
+  test("uses G6 item ids for node click callbacks", () => {
+    const handleNodeClick = vi.fn();
+    render(<GraphVisualization data={forceGraphData} onNodeClick={handleNodeClick} />);
+
+    expect(graphInstances).toHaveLength(1);
+    const nodeClickHandler = graphInstances[0].on.mock.calls.find(([eventName]) => eventName === "node:click")?.[1];
+
+    expect(nodeClickHandler).toBeTypeOf("function");
+
+    nodeClickHandler?.({ itemId: "2" });
+    nodeClickHandler?.({ item: { getID: () => "1" } });
+
+    expect(handleNodeClick).toHaveBeenNthCalledWith(1, forceGraphData.nodes[1]);
+    expect(handleNodeClick).toHaveBeenNthCalledWith(2, forceGraphData.nodes[0]);
+  });
+
   test("keeps preset graphs on ordinary drag-element behavior", () => {
     const presetGraphData: GraphData = {
       ...forceGraphData,

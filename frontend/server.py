@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +31,30 @@ FALLBACK_HTML = """<!DOCTYPE html>
   </body>
 </html>
 """
+
+
+def _dist_file_for_path(path: str) -> Path | None:
+    """Return one safe built-asset path inside the dist directory when it exists."""
+    if not FRONTEND_DIST_DIR.exists():
+        return None
+    candidate = (FRONTEND_DIST_DIR / path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_DIST_DIR.resolve())
+    except ValueError:
+        return None
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _should_serve_spa_entry(path: str) -> bool:
+    """Decide whether one unknown request path should fall back to the SPA entry."""
+    normalized = path.strip("/")
+    if not normalized:
+        return True
+    if normalized.startswith(("api/", "assets/", "internal/")):
+        return False
+    return "." not in normalized.rsplit("/", maxsplit=1)[-1]
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -57,16 +82,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy_api(path: str, request: Request) -> Response:
         target = f"{app.state.backend_base_url}/api/{path}"
+        headers = {
+            "content-type": request.headers.get("content-type", "application/json"),
+        }
+        authorization = request.headers.get("authorization")
+        if authorization:
+            headers["authorization"] = authorization
         async with httpx.AsyncClient(timeout=60.0) as client:
             forwarded = await client.request(
                 request.method,
                 target,
                 params=request.query_params,
                 content=await request.body(),
-                headers={
-                    "content-type": request.headers.get("content-type", "application/json"),
-                    "authorization": request.headers.get("authorization", ""),
-                },
+                headers=headers,
             )
         return Response(
             content=forwarded.content,
@@ -75,7 +103,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/{path:path}", include_in_schema=False)
-    def app_entry(path: str) -> HTMLResponse:
+    def app_entry(path: str) -> Response:
+        direct_file = _dist_file_for_path(path)
+        if direct_file is not None:
+            return FileResponse(direct_file)
+        if not _should_serve_spa_entry(path):
+            raise HTTPException(status_code=404, detail="not_found")
         if FRONTEND_DIST_DIR.exists():
             return HTMLResponse((FRONTEND_DIST_DIR / "index.html").read_text(encoding="utf-8"))
         return HTMLResponse(FALLBACK_HTML)

@@ -169,6 +169,15 @@ function buildBehaviors() {
   ];
 }
 
+function resolveClickedNodeId(event: {
+  itemId?: string | number;
+  item?: { getID?: () => string | number };
+}) {
+  const rawId = event.itemId ?? event.item?.getID?.();
+  const nodeId = Number(rawId);
+  return Number.isFinite(nodeId) ? nodeId : null;
+}
+
 /**
  * Render the graph canvas with AntV G6.
  *
@@ -229,7 +238,10 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
     });
 
     graph.on("node:click", (event: any) => {
-      const targetId = Number(event?.target?.id);
+      const targetId = resolveClickedNodeId(event);
+      if (targetId === null) {
+        return;
+      }
       const node = latestDataRef.current.nodes.find((item) => item.id === targetId);
       if (node) {
         latestOnNodeClickRef.current?.(node);

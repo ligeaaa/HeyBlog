@@ -1558,7 +1558,9 @@ class SQLAlchemyRepository:
                     )
                 )
             if query["has_title"] is True:
-                statement = statement.where(BlogModel.domain != "")
+                statement = statement.where(
+                    func.coalesce(func.nullif(BlogModel.title, ""), func.nullif(BlogModel.domain, "")).is_not(None)
+                )
             if query["has_icon"] is True:
                 statement = statement.where(
                     or_(

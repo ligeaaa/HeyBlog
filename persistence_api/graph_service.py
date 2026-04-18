@@ -32,7 +32,7 @@ class GraphService:
         self.repository = repository
         self.export_dir = export_dir
         self.configured_graph_backend = graph_backend
-        self.graph_backend = "legacy"
+        self.graph_backend = graph_backend
         self.snapshot_namespace = snapshot_namespace
         self.age_manager = age_manager
 
@@ -59,10 +59,10 @@ class GraphService:
 
     def rebuild_shadow_graph(self) -> dict[str, Any]:
         """Rebuild the optional AGE shadow graph out of band from read requests."""
-        blogs = self.repository.list_blogs()
-        edges = self.repository.list_edges()
         if self.age_manager is None:
             return self.graph_status()
+        blogs = self.repository.list_blogs()
+        edges = self.repository.list_edges()
         self.age_manager.sync_shadow_graph(blogs, edges)
         return self.graph_status()
 
