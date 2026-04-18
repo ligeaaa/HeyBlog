@@ -322,9 +322,11 @@ def _catalog_response(
 def ensure_legacy_compat_schema(engine: Any) -> None:
     """Apply additive compatibility fixes needed by existing persistence databases."""
     inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if "blogs" not in existing_tables or "ingestion_requests" not in existing_tables:
+        return
     blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
     ingestion_columns = {column["name"] for column in inspector.get_columns("ingestion_requests")}
-    existing_tables = set(inspector.get_table_names())
     with engine.begin() as connection:
         if "email" not in blog_columns:
             connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))

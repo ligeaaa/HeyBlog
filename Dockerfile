@@ -3,11 +3,14 @@ FROM node:22-alpine AS frontend-builder
 WORKDIR /frontend
 
 COPY frontend/package.json ./
-RUN npm install
+RUN npm config set registry https://npmreg.proxy.ustclug.org/ \
+    && npm install
 COPY frontend ./
 RUN npm run build
 
 FROM python:3.11-slim
+
+ENV PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 
 WORKDIR /app
 
