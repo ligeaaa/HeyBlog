@@ -72,3 +72,77 @@ export interface StatsData {
   totalNodes: number;
   totalEdges: number;
 }
+
+export interface StatusData {
+  isRunning: boolean;
+  pendingTasks: number;
+  processingTasks: number;
+  finishedTasks: number;
+  failedTasks: number;
+  totalNodes: number;
+  totalEdges: number;
+}
+
+export interface BlogCatalogItem extends GraphNode {
+  normalizedUrl: string;
+  identityKey: string;
+  identityReasonCodes: string[];
+  identityRulesetVersion: string;
+  email: string | null;
+  statusCode: number | null;
+  crawlStatus: string;
+  friendLinksCount: number;
+  lastCrawledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  incomingCount: number;
+  outgoingCount: number;
+  connectionCount: number;
+  activityAt: string | null;
+  identityComplete: boolean;
+}
+
+export interface BlogCatalogPage {
+  items: BlogCatalogItem[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+  sort: string;
+}
+
+export interface AdminRuntimeStatus {
+  runnerStatus: string;
+  activeRunId: string | null;
+  workerCount: number;
+  activeWorkers: number;
+  currentBlogId: number | null;
+  currentUrl: string | null;
+  currentStage: string | null;
+  elapsedSeconds: number | null;
+  maintenanceInProgress: boolean;
+}
+
+export interface AdminRuntimeCurrent {
+  runnerStatus: string;
+  activeRunId: string | null;
+  workerCount: number;
+  activeWorkers: number;
+  currentBlogId: number | null;
+  currentUrl: string | null;
+  currentStage: string | null;
+  elapsedSeconds: number | null;
+}
+
+export interface AdminDedupSummary {
+  id: number;
+  status: string;
+  totalCount: number;
+  scannedCount: number;
+  removedCount: number;
+  keptCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
