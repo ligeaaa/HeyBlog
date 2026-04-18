@@ -1,4 +1,4 @@
-import { Dices, Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { BlogCard } from "../components/BlogCard";
@@ -75,13 +75,8 @@ export function RandomBlogPage() {
 
       <main className="mx-auto max-w-7xl px-6 pb-16 pt-24 sm:px-8">
         <section className="mx-auto mb-10 max-w-3xl text-center">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white/90 px-4 py-2 text-sm text-sky-700 shadow-sm">
-            <Dices className="h-4 w-4" />
-            Random Finished Blogs
-          </div>
-          <h1 className="text-4xl leading-tight text-slate-950 sm:text-5xl">随机发现 9 个已完成抓取的博客</h1>
           <p className="mt-4 text-lg leading-8 text-slate-600">
-            每次刷新都会从状态为 <code>FINISHED</code> 的博客中重新抽取 9 个，帮你快速逛到不一样的站点。
+            由于技术原因，目前仍然可能爬取到大量非博客节点
           </p>
           <div className="mt-8 flex items-center justify-center">
             <button

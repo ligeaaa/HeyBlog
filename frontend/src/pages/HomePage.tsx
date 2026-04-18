@@ -233,14 +233,11 @@ export function HomePage() {
 
       <main className="mx-auto max-w-7xl px-6 pb-16 pt-24 sm:px-8">
         <section className="mb-14">
-          <div className="mb-8 inline-flex rounded-full border border-sky-200 bg-white/80 px-4 py-2 text-sm text-sky-700 shadow-sm">
-            HeyBlog Public Surface
-          </div>
           <h1 className="max-w-4xl text-5xl leading-tight text-slate-950 sm:text-6xl">
-            用统一首页浏览博客生态，再切到图谱深入关系网络。
+            HeyBlog!
           </h1>
           <p className="mt-5 max-w-3xl text-lg leading-8 text-slate-600">
-            当前首页对齐 `frontend_example` 的展示风格，同时接入真实的博客统计、抓取队列状态和 catalog 卡片信息。
+            基于友链爬取所有博客！
           </p>
           <div className="mt-8">
             <SearchBar onSearch={handleSearch} isLoading={isSearching} />

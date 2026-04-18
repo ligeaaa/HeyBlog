@@ -140,6 +140,28 @@ beforeEach(() => {
     if (url.pathname === "/api/stats") {
       return new Response(JSON.stringify({ total_blogs: 34, total_edges: 10 }));
     }
+    if (url.pathname === "/api/graph/views/core") {
+      return new Response(
+        JSON.stringify({
+          nodes: [
+            {
+              id: 1,
+              url: "https://graph.example.com/",
+              domain: "graph.example.com",
+              title: "Graph Example",
+              icon_url: null,
+              incoming_count: 0,
+              outgoing_count: 0,
+            },
+          ],
+          edges: [],
+          meta: {
+            strategy: "degree",
+            limit: 200,
+          },
+        }),
+      );
+    }
     throw new Error(`Unhandled fetch: ${url.toString()}`);
   });
 
@@ -154,8 +176,9 @@ test("renders paginated home cards, reloads from server for filters, and refresh
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: /用统一首页浏览博客生态/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "HeyBlog!" })).toBeInTheDocument();
   });
+  expect(screen.getByText("基于友链爬取所有博客！")).toBeInTheDocument();
 
   expect(fetch).toHaveBeenCalledWith(
     expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=PROCESSING"),
@@ -295,7 +318,7 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: /随机发现 9 个已完成抓取的博客/i })).toBeInTheDocument();
+    expect(screen.getByText("由于技术原因，目前仍然可能爬取到大量非博客节点")).toBeInTheDocument();
   });
 
   expect(fetch).toHaveBeenCalledWith(
@@ -314,5 +337,32 @@ test("adds a random blog route that loads nine finished cards and refreshes them
         String(input).includes("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
       );
     expect(randomCalls).toHaveLength(2);
+  });
+});
+
+test("locks visualization graph size at 200 and shows a maturity notice dialog", async () => {
+  window.history.replaceState({}, "", "/visualization");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "博客关系图谱" })).toBeInTheDocument();
+  });
+
+  expect(fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/api/graph/views/core?strategy=degree&limit=200"),
+    expect.anything(),
+  );
+  expect(screen.getByText("当前仅展示200个节点，功能待完善qwq")).toBeInTheDocument();
+  expect(screen.queryByText("全图最大节点数")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /刷新全图|返回全图/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /搜索博客/i })).not.toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  expect(screen.getByText("该功能仍不成熟！")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "我知道了" }));
+
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
