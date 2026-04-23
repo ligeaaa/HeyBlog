@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from time import sleep
 from threading import Thread
+from time import sleep
 from typing import Any
 
 import httpx
@@ -52,6 +52,40 @@ def _raise_for_maintenance(state: BackendState) -> None:
         raise HTTPException(status_code=409, detail="maintenance_in_progress")
 
 
+def _upstream_error_detail(exc: httpx.HTTPStatusError, default: Any = "upstream_error") -> Any:
+    """Extract a stable detail payload from an upstream HTTP failure."""
+    try:
+        return exc.response.json().get("detail", default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _raise_upstream_http_error(
+    exc: httpx.HTTPStatusError,
+    *,
+    default: Any = "upstream_error",
+    detail_override: Any | None = None,
+) -> None:
+    """Re-raise an upstream HTTP failure with FastAPI-compatible semantics."""
+    detail = detail_override if detail_override is not None else _upstream_error_detail(exc, default)
+    raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+
+def _mark_url_refilter_run_failed(
+    state: BackendState,
+    *,
+    run_id: int | None,
+    error_message: str,
+) -> None:
+    """Best-effort persistence of a failed URL refilter run."""
+    if run_id is None:
+        return
+    try:
+        state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def build_backend_state(settings: Settings | None = None) -> BackendState:
     """Build the backend service state."""
     resolved = settings or Settings.from_env()
@@ -91,10 +125,7 @@ def _execute_blog_dedup_scan_in_background(
         except Exception:  # noqa: BLE001
             search_reindexed = False
     except httpx.HTTPStatusError as exc:
-        try:
-            error_message = exc.response.json().get("detail", "upstream_error")
-        except Exception:  # noqa: BLE001
-            error_message = "upstream_error"
+        error_message = str(_upstream_error_detail(exc))
     except Exception as exc:  # noqa: BLE001
         error_message = str(exc)
     finally:
@@ -126,19 +157,9 @@ def _execute_url_refilter_in_background(
     try:
         state.persistence.execute_url_refilter_run(run_id=run_id)
     except httpx.HTTPStatusError as exc:
-        try:
-            detail = exc.response.json().get("detail", "upstream_error")
-        except Exception:  # noqa: BLE001
-            detail = "upstream_error"
-        try:
-            state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(detail))
-        except Exception:  # noqa: BLE001
-            pass
+        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(_upstream_error_detail(exc)))
     except Exception as exc:  # noqa: BLE001
-        try:
-            state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
-        except Exception:  # noqa: BLE001
-            pass
+        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc))
     finally:
         state.maintenance_in_progress = False
 
@@ -239,24 +260,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 min_connections=min_connections,
             )
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/blogs/lookup")
     def lookup_blog_candidates(url: str) -> dict[str, Any]:
         try:
             return get_state().persistence.lookup_blog_candidates(url=url)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/blog-labeling/candidates")
     def get_blog_labeling_candidates(
@@ -278,24 +289,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 sort=sort,
             )
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/blog-labeling/tags")
     def get_blog_label_tags(_: None = Depends(require_admin_access)) -> list[dict[str, Any]]:
         try:
             return get_state().persistence.list_blog_label_tags()
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.post("/api/admin/blog-labeling/tags")
     def post_blog_label_tag(
@@ -305,12 +306,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.create_blog_label_tag(name=payload.name)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.put("/api/admin/blog-labeling/labels/{blog_id}")
     def put_blog_labels(
@@ -321,24 +317,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/blog-labeling/export")
     def export_blog_label_training_csv(_: None = Depends(require_admin_access)) -> Response:
         try:
             csv_payload = get_state().persistence.export_blog_label_training_csv()
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
         return Response(
             content=csv_payload,
             media_type="text/csv",
@@ -352,14 +338,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             blog = get_state().persistence.get_blog_detail(blog_id)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            if exc.response.status_code == 404:
-                detail = "Blog not found"
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            detail_override = "Blog not found" if exc.response.status_code == 404 else None
+            _raise_upstream_http_error(exc, detail_override=detail_override)
         if blog is None:
             raise HTTPException(status_code=404, detail="Blog not found")
         return blog
@@ -385,12 +365,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/graph/snapshots/latest")
     def get_latest_graph_snapshot() -> dict[str, Any]:
@@ -409,12 +384,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.get_filter_stats_by_chain_order()
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.post("/api/admin/crawl/bootstrap")
     def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
@@ -434,24 +404,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.create_ingestion_request(**payload.model_dump())
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/ingestion-requests")
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
         try:
             return get_state().persistence.list_priority_ingestion_requests()
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/ingestion-requests/{request_id}")
     def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
@@ -461,12 +421,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 request_token=request_token,
             )
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.post("/api/admin/blog-dedup-scans")
     def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
@@ -483,12 +438,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 ensure_runtime_idle()
             payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
         except httpx.HTTPStatusError as exc:
-            try:
-                detail = exc.response.json().get("detail", "upstream_error")
-            except Exception:  # noqa: BLE001
-                detail = "upstream_error"
             state.maintenance_in_progress = False
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
         except HTTPException:
             state.maintenance_in_progress = False
             raise
@@ -515,6 +466,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         runtime_before = state.crawler.runtime_status()
         crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
         state.maintenance_in_progress = True
+        run_id: int | None = None
         try:
             payload = state.persistence.create_url_refilter_run(crawler_was_running=crawler_was_running)
             run_id = int(payload["id"])
@@ -526,31 +478,16 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             else:
                 state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已处于停止状态")
         except httpx.HTTPStatusError as exc:
-            try:
-                detail = exc.response.json().get("detail", "upstream_error")
-            except Exception:  # noqa: BLE001
-                detail = "upstream_error"
-            if "run_id" in locals():
-                try:
-                    state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(detail))
-                except Exception:  # noqa: BLE001
-                    pass
+            detail = _upstream_error_detail(exc)
+            _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(detail))
             state.maintenance_in_progress = False
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc, detail_override=detail)
         except HTTPException as exc:
-            if "run_id" in locals():
-                try:
-                    state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc.detail))
-                except Exception:  # noqa: BLE001
-                    pass
+            _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc.detail))
             state.maintenance_in_progress = False
             raise
         except Exception as exc:  # noqa: BLE001
-            if "run_id" in locals():
-                try:
-                    state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
-                except Exception:  # noqa: BLE001
-                    pass
+            _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc))
             state.maintenance_in_progress = False
             raise HTTPException(status_code=500, detail="url_refilter_run_failed") from exc
 
@@ -569,12 +506,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.latest_url_refilter_run()
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/url-refilter-runs/{run_id}/events")
     def get_url_refilter_run_events(
@@ -584,24 +516,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.list_url_refilter_run_events(run_id)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/blog-dedup-scans/latest")
     def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         try:
             return get_state().persistence.latest_blog_dedup_scan_run()
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
     def get_blog_dedup_scan_run_items(
@@ -611,12 +533,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             return get_state().persistence.list_blog_dedup_scan_run_items(run_id)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            _raise_upstream_http_error(exc)
 
     @app.get("/api/admin/runtime/status")
     def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
