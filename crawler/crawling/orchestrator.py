@@ -5,7 +5,8 @@ from __future__ import annotations
 from time import monotonic
 
 from crawler.contracts.results import BlogCrawlResult
-from crawler.crawling.decisions.chain import UrlDecisionChain
+from crawler.crawling.decisions.base import UrlCandidateContext
+from crawler.crawling.decisions.chain import ConfiguredUrlFilterChain
 from crawler.crawling.discovery import discover_friend_links_pages
 from crawler.crawling.extraction import ExtractedLink
 from crawler.crawling.extraction import extract_candidate_links
@@ -30,7 +31,7 @@ class CrawlOrchestrator:
     Attributes:
         settings: Shared crawler settings controlling timeouts and concurrency.
         repository: Persistence boundary used to store discovered blogs and
-            edges.
+        edges.
         fetcher: HTTP fetcher used for homepage and candidate-page requests.
         decision_chain: URL filtering chain that decides which extracted links
             represent blogs.
@@ -43,7 +44,7 @@ class CrawlOrchestrator:
         settings: Settings,
         repository: RepositoryProtocol,
         fetcher: Fetcher,
-        decision_chain: UrlDecisionChain,
+        decision_chain: ConfiguredUrlFilterChain,
         logger: CrawlerLogger,
     ) -> None:
         """Store the strategy and infrastructure dependencies for blog crawling.
@@ -202,10 +203,17 @@ class CrawlOrchestrator:
         stored_count = 0
 
         for link in extract_candidate_links(page.url, page.text):
-            if not self._should_store_link(blog, link):
+            normalized = normalize_url(link.url)
+            raw_record_id = self.repository.create_raw_discovered_url(
+                source_blog_id=blog.id,
+                normalized_url=normalized.normalized_url,
+                status="pending",
+            )
+            status = self._evaluate_link_status(blog, normalized.normalized_url)
+            self.repository.update_raw_discovered_url_status(record_id=raw_record_id, status=status)
+            if status != "success":
                 continue
 
-            normalized = normalize_url(link.url)
             # Multiple friend-link pages often repeat the same target blog, so
             # de-duplicate on normalized URL before creating blogs or edges.
             if normalized.normalized_url in seen_normalized:
@@ -233,26 +241,24 @@ class CrawlOrchestrator:
 
         return stored_count
 
-    def _should_store_link(self, blog: BlogNode, link: ExtractedLink) -> bool:
-        """Return whether an extracted link survives the configured decisions.
+    def _evaluate_link_status(self, blog: BlogNode, normalized_url: str) -> str:
+        """Return the final filter-chain status for one normalized candidate URL.
 
         Args:
             blog: Source blog currently being crawled.
-            link: Extracted link candidate from a friend-link page.
+            normalized_url: Normalized candidate URL extracted from a friend-link page.
 
         Returns:
-            ``True`` when the decision chain accepts the extracted link as a
-            blog candidate.
+            The final status emitted by the configured filter chain.
         """
-        # The chain boundary keeps extraction focused on "what links exist" and
-        # filtering focused on "which of those links represent blogs".
-        decision = self.decision_chain.decide(
-            link.url,
-            blog.domain,
-            link_text=link.text,
-            context_text=link.context_text,
+        decision = self.decision_chain.evaluate(
+            UrlCandidateContext(
+                source_blog_id=blog.id,
+                source_domain=blog.domain,
+                normalized_url=normalized_url,
+            )
         )
-        return decision.accepted
+        return str(decision.status or "success")
 
     def _mark_blog_finished(self, blog: BlogNode, result: BlogCrawlResult) -> None:
         """Persist the final crawl result for one processed blog.

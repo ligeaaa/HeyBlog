@@ -45,10 +45,11 @@ crawler/
 │   ├── pipeline.py                   # 单次 batch 级别的同步抓取入口
 │   ├── decisions/                    # 链接决策链，负责把过滤规则组织成可扩展步骤
 │   │   ├── __init__.py               # decisions 子包标记文件
-│   │   ├── base.py                   # 决策步骤协议 UrlDecisionStep
-│   │   ├── chain.py                  # 决策链 UrlDecisionChain
-│   │   ├── consensus.py              # 基于最新 trainer 模型的多模型交叉验证决策器
-│   │   └── rules.py                  # 基于现有 filters 的规则决策器
+│   │   ├── base.py                   # 过滤器公共接口与候选上下文类型
+│   │   ├── chain.py                  # TOML 驱动的配置化过滤链
+│   │   ├── consensus.py              # 基于最新 trainer 模型的多模型交叉验证过滤器
+│   │   ├── filters.py                # 拆分后的独立规则过滤器类
+│   │   └── rules.py                  # 旧规则决策包装层（兼容面）
 │   └── fetching/                     # 网络抓取抽象与 HTTPX 实现
 │       ├── __init__.py               # fetching 子包标记文件
 │       ├── base.py                   # FetchResult / FetchAttempt / 协议 / 异常
@@ -223,29 +224,32 @@ crawler/
 
 #### `filters.py`
 
-这个文件定义了硬规则过滤器，用来判断一个链接是否像“博客主页”。
-
-当前策略偏保守，主要拦掉：
-
-- 同域链接
-- 非 HTTP(S)
-- 已知平台域名，如社交平台、视频平台等
-- 被配置 blocklist 命中的域名 / URL / 前缀
-- 明显不是主页的 path，如 `/feed`、`/archive`
-- 带 query / fragment 的非纯主页 URL
-- 静态资源文件
-
-当前版本已经移除了软评分逻辑，链接接受依赖硬规则通过与否。
+这个文件现在主要保留旧兼容包装和共享常量；新的主过滤实现已经迁移到
+`crawling/decisions/filters.py` 中的独立过滤器类。
 
 #### `crawling/decisions/base.py`
 
-定义决策接口 `UrlDecisionStep`。
+定义配置化过滤链需要的公共类型：
 
-它的价值在于把“链接决策”抽象成可插拔步骤，让未来可以加入更多规则或模型决策器。
+- `UrlCandidateContext`
+- `FilterDecision`
+- `BaseUrlFilter`
 
-#### `crawling/decisions/rules.py`
+#### `crawling/decisions/filters.py`
 
-把 `filters.py` 的硬规则包装成一个决策步骤 `RuleBasedDecider`。
+把原本散落在旧规则函数中的逻辑拆成独立过滤器类，例如：
+
+- `SameDomainFilter`
+- `PlatformDomainFilter`
+- `BlockedTldFilter`
+- `ModelConsensusFilter`
+
+每个过滤器都拥有固定的：
+
+- `filter_kind`
+- `filter_reason`
+
+并在拒绝时产出 `{filter_kind}:{filter_reason}` 状态。
 
 #### `crawling/decisions/consensus.py`
 
@@ -265,14 +269,17 @@ Docker 服务都能走同一条运行时资源链路。
 
 #### `crawling/decisions/chain.py`
 
-把多个决策步骤串起来，形成 `UrlDecisionChain`。
+这里定义新的 `ConfiguredUrlFilterChain`。
 
-当前实现顺序是：
+它会：
 
-1. `RuleBasedDecider` 先执行确定性的硬规则拦截
-2. `ModelConsensusDecider` 再对剩余候选做多模型交叉验证
+- 从 `runtime_resources/filter_chain.toml` 读取启用的过滤器顺序
+- 按顺序实例化过滤器
+- 第一处拒绝即终止
+- 返回最终状态
 
-也就是说，模型共识是附加过滤层，不会覆盖前面的硬规则。
+同时，crawler 会把每个进入过滤链的标准化 URL 写入
+`raw_discovered_urls`，用于后续 `/api/filter-stats` 聚合。
 
 ### 7. 抓取基础设施
 

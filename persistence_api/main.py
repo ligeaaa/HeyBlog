@@ -60,6 +60,16 @@ class AddEdgeRequest(BaseModel):
     link_text: str | None
 
 
+class CreateRawDiscoveredUrlRequest(BaseModel):
+    source_blog_id: int
+    normalized_url: str
+    status: str
+
+
+class UpdateRawDiscoveredUrlStatusRequest(BaseModel):
+    status: str
+
+
 class AddLogRequest(BaseModel):
     blog_id: int | None = None
     stage: str
@@ -80,6 +90,14 @@ class FinalizeBlogDedupScanRunRequest(BaseModel):
     crawler_restart_succeeded: bool
     search_reindexed: bool
     error_message: str | None = None
+
+
+class UrlRefilterRunEventRequest(BaseModel):
+    message: str
+
+
+class UrlRefilterRunFailureRequest(BaseModel):
+    error_message: str
 
 
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
@@ -251,6 +269,45 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="ingestion_request_not_found")
         return payload
 
+    @app.post("/internal/url-refilter-runs")
+    def create_url_refilter_run(crawler_was_running: bool = False) -> dict[str, Any]:
+        return get_state().repository.create_url_refilter_run(crawler_was_running=crawler_was_running)
+
+    @app.post("/internal/url-refilter-runs/{run_id}/events")
+    def append_url_refilter_run_event(run_id: int, payload: UrlRefilterRunEventRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.append_url_refilter_run_event(run_id=run_id, message=payload.message)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/internal/url-refilter-runs/{run_id}/failed")
+    def mark_url_refilter_run_failed(run_id: int, payload: UrlRefilterRunFailureRequest) -> dict[str, Any]:
+        try:
+            return get_state().repository.mark_url_refilter_run_failed(
+                run_id=run_id,
+                error_message=payload.error_message,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/internal/url-refilter-runs/{run_id}/execute")
+    def execute_url_refilter_run(run_id: int) -> dict[str, Any]:
+        try:
+            return get_state().repository.execute_url_refilter_run(run_id=run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/internal/url-refilter-runs/latest")
+    def get_latest_url_refilter_run() -> dict[str, Any]:
+        payload = get_state().repository.get_latest_url_refilter_run()
+        if payload is None:
+            raise HTTPException(status_code=404, detail="url_refilter_run_not_found")
+        return payload
+
+    @app.get("/internal/url-refilter-runs/{run_id}/events")
+    def list_url_refilter_run_events(run_id: int) -> list[dict[str, Any]]:
+        return get_state().repository.list_url_refilter_run_events(run_id)
+
     @app.post("/internal/blog-dedup-scans/runs")
     def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
         return get_state().repository.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
@@ -300,6 +357,22 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         get_state().repository.add_edge(**payload.model_dump())
         return {"ok": True}
 
+    @app.post("/internal/raw-discovered-urls")
+    def create_raw_discovered_url(payload: CreateRawDiscoveredUrlRequest) -> dict[str, int]:
+        record_id = get_state().repository.create_raw_discovered_url(**payload.model_dump())
+        return {"id": record_id}
+
+    @app.put("/internal/raw-discovered-urls/{record_id}/status")
+    def update_raw_discovered_url_status(
+        record_id: int,
+        payload: UpdateRawDiscoveredUrlStatusRequest,
+    ) -> dict[str, bool]:
+        try:
+            get_state().repository.update_raw_discovered_url_status(record_id=record_id, status=payload.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True}
+
     @app.post("/internal/logs")
     def add_log(payload: AddLogRequest) -> dict[str, bool]:
         get_state().repository.add_log(**payload.model_dump())
@@ -308,6 +381,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.get("/internal/stats")
     def get_stats() -> dict[str, Any]:
         return get_state().stats_service.stats()
+
+    @app.get("/internal/filter-stats")
+    def get_filter_stats() -> dict[str, Any]:
+        return get_state().repository.get_filter_stats_by_chain_order()
 
     @app.get("/internal/graph/status")
     def get_graph_status() -> dict[str, Any]:

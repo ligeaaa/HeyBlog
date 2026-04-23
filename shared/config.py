@@ -21,6 +21,7 @@ DEFAULT_SEED_PATH = PROJECT_ROOT / "seed.csv"
 DEFAULT_EXPORT_DIR = PROJECT_ROOT / "data" / "exports"
 DEFAULT_SEARCH_CACHE_DIR = PROJECT_ROOT / "data" / "search-cache"
 DEFAULT_DECISION_MODEL_ROOT = PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
+DEFAULT_FILTER_CHAIN_CONFIG_PATH = PROJECT_ROOT / "runtime_resources" / "filter_chain.toml"
 DEFAULT_PERSISTENCE_BASE_URL = "http://127.0.0.1:8030"
 DEFAULT_CRAWLER_BASE_URL = "http://127.0.0.1:8010"
 DEFAULT_SEARCH_BASE_URL = "http://127.0.0.1:8020"
@@ -108,6 +109,7 @@ class Settings:
     admin_token: str | None = None
     admin_dev_bypass: bool = False
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
+    filter_chain_config_path: Path = DEFAULT_FILTER_CHAIN_CONFIG_PATH
     decision_model_consensus_enabled: bool = True
     graph_backend: str = DEFAULT_GRAPH_BACKEND
     graph_snapshot_namespace: str = DEFAULT_GRAPH_SNAPSHOT_NAMESPACE
@@ -201,6 +203,9 @@ class Settings:
             admin_dev_bypass=_parse_bool_env("HEYBLOG_ADMIN_DEV_BYPASS"),
             decision_model_root=Path(
                 os.getenv("HEYBLOG_DECISION_MODEL_ROOT", str(DEFAULT_DECISION_MODEL_ROOT))
+            ),
+            filter_chain_config_path=Path(
+                os.getenv("HEYBLOG_FILTER_CHAIN_CONFIG_PATH", str(DEFAULT_FILTER_CHAIN_CONFIG_PATH))
             ),
             decision_model_consensus_enabled=_parse_bool_env(
                 "HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED",

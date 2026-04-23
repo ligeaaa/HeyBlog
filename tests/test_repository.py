@@ -12,6 +12,7 @@ from persistence_api.models import BlogLabelAssignmentModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
 from persistence_api.models import IngestionRequestModel
+from persistence_api.models import RawDiscoveredUrlModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
 
@@ -26,7 +27,10 @@ def test_build_repository_roundtrip_works_with_path_backed_repository(tmp_path: 
     )
 
     assert inserted is True
-    assert repository.get_blog(blog_id)["domain"] == "blog.example.com"
+    fetched = repository.get_blog(blog_id)
+    assert fetched is not None
+    assert fetched["domain"] == "blog.example.com"
+    assert fetched["blog_id"] == blog_id
 
 
 def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
@@ -145,6 +149,7 @@ def test_repository_creates_ingestion_request_and_persists_blog_email(tmp_path: 
     assert fetched is not None
     assert fetched["normalized_url"] == "https://blog.example.com/"
     assert fetched["seed_blog_id"] == created["seed_blog_id"]
+    assert fetched["seed_blog"]["blog_id"] == created["seed_blog_id"]
 
 
 def test_repository_dedupes_ingestion_request_by_normalized_url(tmp_path: Path) -> None:
@@ -188,6 +193,38 @@ def test_repository_dedupes_existing_finished_blog_before_creating_request(tmp_p
     assert response["status"] == "DEDUPED_EXISTING"
     assert response["blog_id"] == blog_id
     assert response["request_id"] is None
+
+
+def test_repository_filter_stats_follow_configured_chain_order(tmp_path: Path) -> None:
+    """Filter stats should report remaining counts in configured filter order."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend-a.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://blog.example.com/",
+        status="rule:same_domain",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://github.com/example",
+        status="rule:platform_blocked",
+    )
+
+    stats = repository.get_filter_stats_by_chain_order()
+
+    assert stats["by_filter_reason"]["raw"] == 3
+    assert stats["by_filter_reason"]["rule:same_domain"] == 2
+    assert stats["by_filter_reason"]["rule:platform_blocked"] == 1
 
 
 def test_repository_dedupes_ingestion_request_by_identity_key_but_keeps_history(tmp_path: Path) -> None:
@@ -405,6 +442,7 @@ def test_repository_ingestion_request_reuses_tenant_like_root_identity(tmp_path:
 
     blog = repository.get_blog(int(first["seed_blog_id"]))
     assert blog is not None
+    assert blog["blog_id"] == first["seed_blog_id"]
     assert blog["url"] == "https://66law.cn/"
     assert blog["normalized_url"] == "https://66law.cn/"
     assert blog["domain"] == "66law.cn"
@@ -522,6 +560,119 @@ def test_repository_dedup_scan_uses_model_consensus_when_enabled(tmp_path: Path,
     assert items[0]["reason_code"] == "model_consensus_all_non_blog"
 
 
+def test_repository_url_refilter_run_reapplies_chain_and_updates_rows(tmp_path: Path) -> None:
+    """URL refilter should backup the database, rewrite statuses, and sync blog/edge rows."""
+    config_path = tmp_path / "filter_chain.toml"
+    config_path.write_text(
+        """
+[[filters]]
+kind = "same_domain"
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        filter_chain_config_path=config_path,
+        friend_link_exact_url_blocklist=("https://blocked.example/",),
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    blocked_id, _ = repository.upsert_blog(
+        url="https://blocked.example/",
+        normalized_url="https://blocked.example/",
+        domain="blocked.example",
+    )
+    repository.add_edge(
+        from_blog_id=source_id,
+        to_blog_id=blocked_id,
+        link_url_raw="https://blocked.example/",
+        link_text=None,
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="rule:domain_blocked",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://blocked.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://agency.gov/",
+        status="rule:platform_blocked",
+    )
+
+    config_path.write_text(
+        """
+[[filters]]
+kind = "same_domain"
+enabled = true
+
+[[filters]]
+kind = "exact_url_blocklist"
+enabled = true
+
+[[filters]]
+kind = "blocked_tld"
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    run = repository.create_url_refilter_run(crawler_was_running=False)
+    summary = repository.execute_url_refilter_run(run_id=run["id"])
+    events = repository.list_url_refilter_run_events(run["id"])
+
+    assert summary["status"] == "SUCCEEDED"
+    assert summary["total_count"] == 3
+    assert summary["scanned_count"] == 3
+    assert summary["unchanged_count"] == 0
+    assert summary["activated_count"] == 1
+    assert summary["deactivated_count"] == 1
+    assert summary["retagged_count"] == 1
+    assert summary["backup_path"] is not None
+    assert Path(summary["backup_path"]).exists()
+    assert [event["message"] for event in events[:3]] == [
+        "备份中",
+        f"备份完成，文件保存在 {summary['backup_path']}",
+        "开始按过滤链重新扫描原始URL表",
+    ]
+
+    with session_scope(repository.session_factory) as session:
+        raw_rows = session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
+        assert [row.status for row in raw_rows] == [
+            "success",
+            "rule:exact_url_blocked",
+            "rule:blocked_tld",
+        ]
+
+    blogs = repository.list_blogs()
+    assert {row["normalized_url"] for row in blogs} == {
+        "https://source.example/",
+        "https://friend.example/",
+    }
+    edges = repository.list_edges()
+    assert edges == [
+        {
+            "id": edges[0]["id"],
+            "from_blog_id": source_id,
+            "to_blog_id": next(row["id"] for row in blogs if row["normalized_url"] == "https://friend.example/"),
+            "link_url_raw": "https://friend.example/",
+            "link_text": None,
+            "discovered_at": edges[0]["discovered_at"],
+        }
+    ]
+
+
 def test_repository_startup_migrates_legacy_tenant_like_rows_and_merges_to_root_url(tmp_path: Path) -> None:
     """Repository startup should refresh stale ruleset rows without auto-running admin dedup."""
     db_path = tmp_path / "db.sqlite"
@@ -562,6 +713,9 @@ def test_repository_startup_migrates_legacy_tenant_like_rows_and_merges_to_root_
         )
         session.add(first)
         session.add(second)
+        session.flush()
+        first.blog_id = int(first.id)
+        second.blog_id = int(second.id)
 
     migrated = repository_module.build_repository(db_path=db_path)
     blogs = migrated.list_blogs()
@@ -1168,6 +1322,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
             "discovered_at": detail["outgoing_edges"][0]["discovered_at"],
             "neighbor_blog": {
                 "id": beta_id,
+                "blog_id": beta_id,
                 "domain": "beta.example",
                 "title": "beta.example title",
                 "icon_url": "https://beta.example/favicon.ico",
@@ -1184,6 +1339,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
             "discovered_at": detail["incoming_edges"][0]["discovered_at"],
             "neighbor_blog": {
                 "id": gamma_id,
+                "blog_id": gamma_id,
                 "domain": "gamma.example",
                 "title": "gamma.example title",
                 "icon_url": "https://gamma.example/favicon.ico",
@@ -1192,6 +1348,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
     ]
     assert detail["recommended_blogs"][0]["blog"] == {
         "id": delta_id,
+        "blog_id": delta_id,
         "url": "https://delta.example/",
         "normalized_url": "https://delta.example/",
         "identity_key": "site:delta.example/",
@@ -1218,6 +1375,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
     assert detail["recommended_blogs"][0]["via_blogs"] == [
         {
             "id": beta_id,
+            "blog_id": beta_id,
             "domain": "beta.example",
             "title": "beta.example title",
             "icon_url": "https://beta.example/favicon.ico",

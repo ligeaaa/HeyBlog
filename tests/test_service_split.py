@@ -189,6 +189,7 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     assert detail.status_code == 200
     assert detail.json()["incoming_edges"][0]["neighbor_blog"] == {
         "id": 2,
+        "blog_id": 2,
         "domain": "friend.example.com",
         "title": "Friend Example",
         "icon_url": "https://friend.example.com/favicon.ico",
@@ -224,6 +225,10 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     assert lookup.status_code == 200
     assert lookup.json()["match_reason"] == "identity_key"
     assert lookup.json()["items"][0]["id"] == request.json()["seed_blog_id"]
+
+    filter_stats = client.get("/internal/filter-stats")
+    assert filter_stats.status_code == 200
+    assert filter_stats.json()["by_filter_reason"]["raw"] == 0
 
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
@@ -887,6 +892,12 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                 "total_matches": 1,
                 "match_reason": "identity_key",
             },
+            "get_filter_stats_by_chain_order": lambda self: {
+                "by_filter_reason": {
+                    "raw": 3,
+                    "rule:same_domain": 2,
+                }
+            },
             "reset": lambda self: {
                 "ok": True,
                 "blogs_deleted": 3,
@@ -909,6 +920,10 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     status = client.get("/api/status")
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
+
+    filter_stats = client.get("/api/filter-stats")
+    assert filter_stats.status_code == 200
+    assert filter_stats.json()["by_filter_reason"]["rule:same_domain"] == 2
 
     detail = client.get("/api/blogs/1")
     assert detail.status_code == 200
@@ -1655,6 +1670,163 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
     items = client.get("/api/admin/blog-dedup-scans/7/items", headers=admin_headers())
     assert items.status_code == 200
     assert items.json()[0]["reason_code"] == "blog_alias_collapsed"
+
+
+def test_persistence_service_exposes_url_refilter_run_endpoints(tmp_path: Path) -> None:
+    """Persistence service should expose URL refilter run creation and event listing."""
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    app = create_persistence_app(build_persistence_state(settings))
+    client = TestClient(app)
+
+    run = client.post("/internal/url-refilter-runs", params={"crawler_was_running": "false"})
+    assert run.status_code == 200
+    assert run.json()["status"] == "PENDING"
+
+    appended = client.post(
+        f"/internal/url-refilter-runs/{run.json()['id']}/events",
+        json={"message": "停止爬虫中"},
+    )
+    assert appended.status_code == 200
+    assert appended.json()["message"] == "停止爬虫中"
+
+    latest = client.get("/internal/url-refilter-runs/latest")
+    assert latest.status_code == 200
+    assert latest.json()["id"] == run.json()["id"]
+
+    events = client.get(f"/internal/url-refilter-runs/{run.json()['id']}/events")
+    assert events.status_code == 200
+    assert events.json()[0]["message"] == "停止爬虫中"
+
+
+def test_backend_url_refilter_run_stops_crawler_and_persists_progress_events() -> None:
+    """Admin URL refilter should stop crawler first and expose latest run logs."""
+
+    class RefilterPersistenceStub:
+        def __init__(self) -> None:
+            self.run = {
+                "id": 9,
+                "status": "PENDING",
+                "filter_chain_version": "rule:same_domain",
+                "crawler_was_running": True,
+                "backup_path": None,
+                "total_count": 0,
+                "scanned_count": 0,
+                "unchanged_count": 0,
+                "activated_count": 0,
+                "deactivated_count": 0,
+                "retagged_count": 0,
+                "last_raw_url_id": None,
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "created_at": "2026-04-22T00:00:00Z",
+                "updated_at": "2026-04-22T00:00:00Z",
+            }
+            self.events: list[dict[str, object]] = []
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run["crawler_was_running"] = crawler_was_running
+            return dict(self.run)
+
+        def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, object]:
+            event = {
+                "id": len(self.events) + 1,
+                "run_id": run_id,
+                "message": message,
+                "created_at": "2026-04-22T00:00:00Z",
+            }
+            self.events.append(event)
+            return dict(event)
+
+        def execute_url_refilter_run(self, *, run_id: int) -> dict[str, object]:
+            self.append_url_refilter_run_event(run_id=run_id, message="备份中")
+            self.append_url_refilter_run_event(run_id=run_id, message="备份完成，文件保存在 /tmp/backup.sqlite")
+            self.run["status"] = "SUCCEEDED"
+            self.run["backup_path"] = "/tmp/backup.sqlite"
+            self.run["total_count"] = 12
+            self.run["scanned_count"] = 12
+            self.run["unchanged_count"] = 10
+            self.run["activated_count"] = 1
+            self.run["deactivated_count"] = 1
+            self.run["updated_at"] = "2026-04-22T00:00:05Z"
+            return dict(self.run)
+
+        def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, object]:
+            self.run["status"] = "FAILED"
+            self.run["error_message"] = error_message
+            return dict(self.run)
+
+        def latest_url_refilter_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            assert run_id == 9
+            return [dict(event) for event in self.events]
+
+    class ToggleCrawler:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+            self.runner_status = "running"
+
+        def runtime_status(self) -> dict[str, object]:
+            return {
+                "runner_status": self.runner_status,
+                "active_run_id": None,
+                "worker_count": 3,
+                "active_workers": 1 if self.runner_status != "idle" else 0,
+                "current_worker_id": None,
+                "current_blog_id": None,
+                "current_url": None,
+                "current_stage": None,
+                "task_started_at": None,
+                "elapsed_seconds": None,
+                "last_started_at": None,
+                "last_stopped_at": None,
+                "last_error": None,
+                "last_result": None,
+                "workers": [],
+            }
+
+        def current(self) -> dict[str, object]:
+            return self.runtime_status()
+
+        def stop(self) -> dict[str, object]:
+            self.stop_calls += 1
+            self.runner_status = "idle"
+            return self.runtime_status()
+
+    persistence = RefilterPersistenceStub()
+    crawler = ToggleCrawler()
+    app = create_backend_app(
+        BackendState(persistence=persistence, crawler=crawler, search=StubSearch(), admin_token="secret-token")
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/admin/url-refilter-runs", headers=admin_headers())
+    assert response.status_code == 200
+    assert response.json()["id"] == 9
+    assert crawler.stop_calls == 1
+
+    for _ in range(20):
+        latest = client.get("/api/admin/url-refilter-runs/latest", headers=admin_headers())
+        assert latest.status_code == 200
+        if latest.json()["status"] == "SUCCEEDED":
+            break
+        sleep(0.05)
+
+    assert latest.json()["backup_path"] == "/tmp/backup.sqlite"
+    events = client.get("/api/admin/url-refilter-runs/9/events", headers=admin_headers())
+    assert events.status_code == 200
+    assert [event["message"] for event in events.json()[:4]] == [
+        "停止爬虫中",
+        "爬虫已停止",
+        "备份中",
+        "备份完成，文件保存在 /tmp/backup.sqlite",
+    ]
 
 
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:

@@ -1,39 +1,70 @@
-"""Decision interfaces for crawler candidate filtering."""
+"""Shared types and interfaces for configurable crawler URL filters."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
-from crawler.domain.decision_outcome import DecisionOutcome
 
+@dataclass(slots=True, frozen=True)
+class UrlCandidateContext:
+    """Carry the normalized candidate URL and source metadata for filtering.
 
-class UrlDecisionStep(Protocol):
-    """Define one pluggable decision step for discovered crawler URLs.
-
-    Implementations receive one discovered link plus source-context data and
-    return a ``DecisionOutcome`` describing whether the candidate should remain
-    in the pipeline.
+    Attributes:
+        source_blog_id: Identifier of the crawled source blog that exposed this
+            candidate URL.
+        source_domain: Lower-cased domain of the source blog.
+        normalized_url: Normalized candidate URL evaluated by the filter chain.
     """
 
-    def decide(
-        self,
-        url: str,
-        source_domain: str,
-        *,
-        link_text: str = "",
-        context_text: str = "",
-    ) -> DecisionOutcome:
-        """Evaluate whether one discovered URL should remain a crawler candidate.
+    source_blog_id: int
+    source_domain: str
+    normalized_url: str
 
-        Args:
-            url: Extracted absolute URL being evaluated.
-            source_domain: Domain of the blog page from which the URL was
-                discovered.
-            link_text: Visible anchor text associated with the URL.
-            context_text: Nearby container text describing the surrounding page
-                context.
 
-        Returns:
-            A ``DecisionOutcome`` describing acceptance, score, and reason codes.
-        """
+@dataclass(slots=True, frozen=True)
+class FilterDecision:
+    """Represent the outcome of applying one configured URL filter.
+
+    Attributes:
+        accepted: Whether the candidate should continue to the next filter.
+        status: Final status string when the filter rejects the candidate, or
+            ``None`` when the candidate is accepted.
+    """
+
+    accepted: bool
+    status: str | None = None
+
+
+class BaseUrlFilter(Protocol):
+    """Define the shared contract implemented by all URL filters."""
+
+    kind: str
+    filter_kind: str
+    filter_reason: str
+
+    def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
+        """Return whether one normalized candidate survives this filter."""
         ...
+
+
+@dataclass(slots=True)
+class StaticStatusUrlFilter:
+    """Provide shared helpers for filters with a fixed failure status."""
+
+    kind: str = ""
+    filter_kind: str = "rule"
+    filter_reason: str = ""
+
+    @property
+    def status(self) -> str:
+        """Return the public status string emitted when this filter rejects."""
+        return f"{self.filter_kind}:{self.filter_reason}"
+
+    def accept(self) -> FilterDecision:
+        """Return the canonical accepted decision for this filter."""
+        return FilterDecision(accepted=True, status=None)
+
+    def reject(self) -> FilterDecision:
+        """Return the canonical rejected decision for this filter."""
+        return FilterDecision(accepted=False, status=self.status)

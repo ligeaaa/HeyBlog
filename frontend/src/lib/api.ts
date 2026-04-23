@@ -2,9 +2,12 @@ import type {
   AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
+  AdminUrlRefilterRun,
+  AdminUrlRefilterRunEvent,
   BlogCatalogItem,
   BlogCatalogPage,
   BlogDetail,
+  FilterStatsData,
   GraphData,
   GraphEdge,
   GraphMeta,
@@ -17,6 +20,7 @@ import type {
 
 interface BackendGraphNode {
   id: number;
+  blog_id?: number;
   url: string;
   normalized_url?: string;
   identity_key?: string;
@@ -84,6 +88,7 @@ interface BackendBlogLookupPayload {
 
 interface BackendNeighborSummary {
   id: number;
+  blog_id?: number;
   domain: string;
   title: string | null;
   icon_url: string | null;
@@ -121,6 +126,10 @@ interface BackendStatusPayload {
   failed_tasks: number;
   total_blogs: number;
   total_edges: number;
+}
+
+interface BackendFilterStatsPayload {
+  by_filter_reason: Record<string, number>;
 }
 
 interface BackendCatalogPayload {
@@ -163,6 +172,33 @@ interface BackendDedupSummary {
   updated_at: string;
 }
 
+interface BackendUrlRefilterRun {
+  id: number;
+  status: string;
+  filter_chain_version: string;
+  crawler_was_running: boolean;
+  backup_path: string | null;
+  total_count: number;
+  scanned_count: number;
+  unchanged_count: number;
+  activated_count: number;
+  deactivated_count: number;
+  retagged_count: number;
+  last_raw_url_id: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BackendUrlRefilterRunEvent {
+  id: number;
+  run_id: number;
+  message: string;
+  created_at: string | null;
+}
+
 interface BlogCatalogQuery {
   page?: number;
   pageSize?: number;
@@ -184,8 +220,9 @@ interface BlogCatalogQuery {
  * @returns Normalized graph node.
  */
 function toGraphNode(node: BackendGraphNode | BackendNeighborSummary): GraphNode {
+  const resolvedId = "blog_id" in node && typeof node.blog_id === "number" ? node.blog_id : node.id;
   return {
-    id: Number(node.id),
+    id: Number(resolvedId),
     url: "url" in node ? node.url : "",
     domain: node.domain,
     title: node.title ?? null,
@@ -458,6 +495,18 @@ export async function fetchStatus(): Promise<StatusData> {
 }
 
 /**
+ * Fetch the ordered filter-chain stats payload.
+ *
+ * @returns Normalized filter stats data.
+ */
+export async function fetchFilterStats(): Promise<FilterStatsData> {
+  const payload = await apiJson<BackendFilterStatsPayload>("/api/filter-stats");
+  return {
+    byFilterReason: payload.by_filter_reason,
+  };
+}
+
+/**
  * Fetch one page of blog catalog records for the homepage/admin listings.
  *
  * @param query Optional catalog query parameters.
@@ -598,6 +647,50 @@ export async function fetchAdminDedupLatest(adminToken: string): Promise<AdminDe
   }
 }
 
+export async function fetchAdminUrlRefilterLatest(adminToken: string): Promise<AdminUrlRefilterRun | null> {
+  try {
+    const payload = await apiJson<BackendUrlRefilterRun>("/api/admin/url-refilter-runs/latest", {
+      headers: adminHeaders(adminToken),
+    });
+    return {
+      id: payload.id,
+      status: payload.status,
+      filterChainVersion: payload.filter_chain_version,
+      crawlerWasRunning: payload.crawler_was_running,
+      backupPath: payload.backup_path,
+      totalCount: payload.total_count,
+      scannedCount: payload.scanned_count,
+      unchangedCount: payload.unchanged_count,
+      activatedCount: payload.activated_count,
+      deactivatedCount: payload.deactivated_count,
+      retaggedCount: payload.retagged_count,
+      lastRawUrlId: payload.last_raw_url_id,
+      startedAt: payload.started_at,
+      completedAt: payload.completed_at,
+      errorMessage: payload.error_message,
+      createdAt: payload.created_at,
+      updatedAt: payload.updated_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAdminUrlRefilterEvents(
+  adminToken: string,
+  runId: number,
+): Promise<AdminUrlRefilterRunEvent[]> {
+  const payload = await apiJson<BackendUrlRefilterRunEvent[]>(`/api/admin/url-refilter-runs/${runId}/events`, {
+    headers: adminHeaders(adminToken),
+  });
+  return payload.map((event) => ({
+    id: event.id,
+    runId: event.run_id,
+    message: event.message,
+    createdAt: event.created_at,
+  }));
+}
+
 /**
  * Trigger seed import from the admin crawl bootstrap endpoint.
  *
@@ -662,6 +755,13 @@ export async function postAdminRunBatch(adminToken: string, maxNodes: number): P
  */
 export async function postAdminResetDatabase(adminToken: string): Promise<unknown> {
   return apiJson("/api/admin/database/reset", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+}
+
+export async function postAdminRunUrlRefilter(adminToken: string): Promise<unknown> {
+  return apiJson("/api/admin/url-refilter-runs", {
     method: "POST",
     headers: adminHeaders(adminToken),
   });

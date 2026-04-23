@@ -146,3 +146,34 @@ export interface AdminDedupSummary {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface AdminUrlRefilterRun {
+  id: number;
+  status: string;
+  filterChainVersion: string;
+  crawlerWasRunning: boolean;
+  backupPath: string | null;
+  totalCount: number;
+  scannedCount: number;
+  unchangedCount: number;
+  activatedCount: number;
+  deactivatedCount: number;
+  retaggedCount: number;
+  lastRawUrlId: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminUrlRefilterRunEvent {
+  id: number;
+  runId: number;
+  message: string;
+  createdAt: string | null;
+}
+
+export interface FilterStatsData {
+  byFilterReason: Record<string, number>;
+}

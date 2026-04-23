@@ -136,5 +136,5 @@ def test_pipeline_appends_model_consensus_step_when_enabled(tmp_path: Path) -> N
 
     pipeline = CrawlPipeline(settings, Repository(settings.db_path))
 
-    assert len(pipeline.orchestrator.decision_chain.steps) == 2
-    assert pipeline.orchestrator.decision_chain.steps[1].__class__.__name__ == "ModelConsensusDecider"
+    assert len(pipeline.orchestrator.decision_chain.steps) >= 2
+    assert pipeline.orchestrator.decision_chain.steps[-1].__class__.__name__ == "ModelConsensusFilter"

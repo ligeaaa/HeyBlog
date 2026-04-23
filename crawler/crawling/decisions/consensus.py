@@ -1,4 +1,4 @@
-"""Model-consensus URL decision step for crawler candidate filtering."""
+"""Model-consensus URL filter implementation and compatibility wrapper."""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ from pathlib import Path
 import pickle
 from typing import Any
 
+from crawler.crawling.decisions.base import FilterDecision
+from crawler.crawling.decisions.base import StaticStatusUrlFilter
+from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
 
@@ -140,7 +143,7 @@ def _read_threshold(run_dir: Path, predictor: Any) -> float:
 
 
 @dataclass(slots=True)
-class ModelConsensusDecider:
+class ModelConsensusFilter(StaticStatusUrlFilter):
     """Vote across the latest trainer models before keeping crawler candidates.
 
     Attributes:
@@ -149,6 +152,9 @@ class ModelConsensusDecider:
     """
 
     model_root: Path
+    kind: str = field(init=False, default="model_consensus")
+    filter_kind: str = field(init=False, default="model")
+    filter_reason: str = field(init=False, default="model_consensus_all_non_blog")
     loaded_models: tuple[LoadedConsensusModel, ...] | None = field(default=None, init=False, repr=False)
 
     def _ensure_models_loaded(self) -> tuple[LoadedConsensusModel, ...]:
@@ -234,6 +240,43 @@ class ModelConsensusDecider:
             split="crawler",
         )
 
+    def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
+        """Keep a URL unless every available model votes ``non_blog``."""
+        models = self._ensure_models_loaded()
+        if not models:
+            return self.accept()
+
+        sample = self._build_sample(candidate.normalized_url, link_text="", context_text="")
+        blog_votes = 0
+        usable_models = 0
+        for loaded in models:
+            try:
+                probability = float(loaded.predictor.predict_proba([sample])[0])
+            except Exception:  # noqa: BLE001
+                continue
+            usable_models += 1
+            if probability >= loaded.threshold:
+                blog_votes += 1
+
+        if usable_models == 0:
+            return self.accept()
+
+        if blog_votes == 0:
+            return self.reject()
+
+        return self.accept()
+
+
+@dataclass(slots=True)
+class ModelConsensusDecider:
+    """Expose the legacy decision-step interface on top of the new filter."""
+
+    model_root: Path
+    _filter: ModelConsensusFilter = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._filter = ModelConsensusFilter(model_root=self.model_root)
+
     def decide(
         self,
         url: str,
@@ -242,60 +285,18 @@ class ModelConsensusDecider:
         link_text: str = "",
         context_text: str = "",
     ) -> DecisionOutcome:
-        """Keep a URL unless every available model votes ``non_blog``.
-
-        Args:
-            url: Absolute extracted URL being evaluated.
-            source_domain: Domain of the page from which the URL was extracted.
-                The current consensus models do not use this field directly,
-                but it remains part of the decision interface.
-            link_text: Visible anchor text associated with the URL.
-            context_text: Nearby context text associated with the URL.
-
-        Returns:
-            A ``DecisionOutcome`` that rejects only when every loaded model
-            predicts ``non_blog``. When no models are available, the URL is
-            allowed through unchanged.
-        """
-        del source_domain
-        models = self._ensure_models_loaded()
-        if not models:
-            return DecisionOutcome(
-                accepted=True,
-                score=0.0,
-                reasons=("model_consensus_skipped_no_models",),
+        """Return a compatibility decision payload for older call sites."""
+        del link_text
+        del context_text
+        decision = self._filter.apply(
+            UrlCandidateContext(
+                source_blog_id=0,
+                source_domain=source_domain,
+                normalized_url=normalize_url(url).normalized_url,
             )
-
-        sample = self._build_sample(url, link_text=link_text, context_text=context_text)
-        blog_votes = 0
-        max_probability = 0.0
-        usable_models = 0
-        for loaded in models:
-            try:
-                probability = float(loaded.predictor.predict_proba([sample])[0])
-            except Exception:  # noqa: BLE001
-                continue
-            usable_models += 1
-            max_probability = max(max_probability, probability)
-            if probability >= loaded.threshold:
-                blog_votes += 1
-
-        if usable_models == 0:
-            return DecisionOutcome(
-                accepted=True,
-                score=0.0,
-                reasons=("model_consensus_skipped_no_models",),
-            )
-
-        if blog_votes == 0:
-            return DecisionOutcome(
-                accepted=False,
-                score=max_probability,
-                reasons=("model_consensus_all_non_blog",),
-            )
-
-        return DecisionOutcome(
-            accepted=True,
-            score=max_probability,
-            reasons=("model_consensus_kept",),
         )
+        if not decision.accepted:
+            return DecisionOutcome(accepted=False, score=0.0, reasons=(self._filter.filter_reason,))
+        if not self._filter._ensure_models_loaded():
+            return DecisionOutcome(accepted=True, score=0.0, reasons=("model_consensus_skipped_no_models",))
+        return DecisionOutcome(accepted=True, score=0.0, reasons=("model_consensus_kept",))

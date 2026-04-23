@@ -29,6 +29,7 @@ class BlogModel(Base):
     __tablename__ = "blogs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    blog_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     identity_key: Mapped[str] = mapped_column(Text, nullable=False, index=True, default="")
@@ -64,8 +65,8 @@ class IngestionRequestModel(Base):
     requester_email: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    seed_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.id", ondelete="SET NULL"), nullable=True)
-    matched_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.id", ondelete="SET NULL"), nullable=True)
+    seed_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
+    matched_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
     request_token: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -93,7 +94,7 @@ class BlogLabelAssignmentModel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.id", ondelete="CASCADE"),
+        ForeignKey("blogs.blog_id", ondelete="CASCADE"),
         nullable=False,
     )
     tag_id: Mapped[int] = mapped_column(
@@ -112,11 +113,28 @@ class EdgeModel(Base):
     __table_args__ = (UniqueConstraint("from_blog_id", "to_blog_id", name="uq_edges_from_to"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    from_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
-    to_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
+    from_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False)
+    to_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False)
     link_url_raw: Mapped[str] = mapped_column(Text, nullable=False)
     link_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RawDiscoveredUrlModel(Base):
+    """One normalized URL observed by crawler candidate extraction."""
+
+    __tablename__ = "raw_discovered_urls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_blog_id: Mapped[int] = mapped_column(
+        ForeignKey("blogs.blog_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class BlogDedupScanRunModel(Base):
@@ -154,7 +172,7 @@ class BlogDedupScanRunItemModel(Base):
         nullable=False,
     )
     survivor_blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.id", ondelete="SET NULL"),
+        ForeignKey("blogs.blog_id", ondelete="SET NULL"),
         nullable=True,
     )
     removed_blog_id: Mapped[int | None] = mapped_column(nullable=True)
@@ -165,4 +183,43 @@ class BlogDedupScanRunItemModel(Base):
     reason_code: Mapped[str] = mapped_column(Text, nullable=False)
     reason_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     survivor_selection_basis: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UrlRefilterRunModel(Base):
+    """Administrative URL refilter run summary."""
+
+    __tablename__ = "url_refilter_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    filter_chain_version: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    crawler_was_running: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backup_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    activated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deactivated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retagged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_raw_url_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UrlRefilterRunEventModel(Base):
+    """Timestamped event log for one URL refilter run."""
+
+    __tablename__ = "url_refilter_run_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("url_refilter_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

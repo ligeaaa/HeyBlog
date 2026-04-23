@@ -108,6 +108,27 @@ class PersistenceHttpClient:
             {},
         )
 
+    def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        return self._post(
+            f"/internal/url-refilter-runs?crawler_was_running={str(crawler_was_running).lower()}",
+            {},
+        )
+
+    def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]:
+        return self._post(f"/internal/url-refilter-runs/{run_id}/events", {"message": message})
+
+    def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]:
+        return self._post(f"/internal/url-refilter-runs/{run_id}/failed", {"error_message": error_message})
+
+    def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]:
+        return self._post(f"/internal/url-refilter-runs/{run_id}/execute", {})
+
+    def latest_url_refilter_run(self) -> dict[str, Any]:
+        return self._get("/internal/url-refilter-runs/latest")
+
+    def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]:
+        return self._get(f"/internal/url-refilter-runs/{run_id}/events")
+
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
         return self._post(f"/internal/blog-dedup-scans/{run_id}/execute", {})
 
@@ -186,6 +207,26 @@ class PersistenceHttpClient:
             },
         )
 
+    def create_raw_discovered_url(
+        self,
+        *,
+        source_blog_id: int,
+        normalized_url: str,
+        status: str,
+    ) -> int:
+        payload = self._post(
+            "/internal/raw-discovered-urls",
+            {
+                "source_blog_id": source_blog_id,
+                "normalized_url": normalized_url,
+                "status": status,
+            },
+        )
+        return int(payload["id"])
+
+    def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None:
+        self._put(f"/internal/raw-discovered-urls/{record_id}/status", {"status": status})
+
     def list_blogs_catalog(
         self,
         *,
@@ -262,6 +303,12 @@ class PersistenceHttpClient:
 
     def stats(self) -> dict[str, Any]:
         return self._get("/internal/stats")
+
+    def filter_stats(self) -> dict[str, Any]:
+        return self._get("/internal/filter-stats")
+
+    def get_filter_stats_by_chain_order(self) -> dict[str, Any]:
+        return self.filter_stats()
 
     def graph_status(self) -> dict[str, Any]:
         return self._get("/internal/graph/status")

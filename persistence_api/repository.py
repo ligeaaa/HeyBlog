@@ -10,6 +10,7 @@ from io import StringIO
 import json
 from math import ceil
 from pathlib import Path
+import sqlite3
 from secrets import token_urlsafe
 import re
 from typing import Any
@@ -38,8 +39,12 @@ from persistence_api.models import BlogDedupScanRunItemModel
 from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
+from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import UrlRefilterRunEventModel
+from persistence_api.models import UrlRefilterRunModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.decisions.chain import build_url_decision_chain
+from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
 from crawler.crawling.normalization import BlogIdentityResolution
 from crawler.crawling.normalization import normalize_url
@@ -110,6 +115,15 @@ def _sortable_datetime(value: datetime | None) -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _business_blog_id(model: BlogModel | None) -> int | None:
+    """Return the stable business blog identifier for one blog row."""
+    if model is None:
+        return None
+    if model.blog_id is None:
+        raise ValueError("blog_id_not_initialized")
+    return int(model.blog_id)
 
 
 def _dump_reason_codes(values: list[str]) -> str:
@@ -423,7 +437,7 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                         )
         blog_rows = connection.execute(
             text(
-                "SELECT id, url, normalized_url, domain, identity_key, identity_ruleset_version "
+                "SELECT id, blog_id, url, normalized_url, domain, identity_key, identity_ruleset_version "
                 "FROM blogs"
             )
         ).mappings().all()
@@ -497,8 +511,10 @@ def _blog_payload(
     resolved_outgoing_count = int(outgoing_count)
     resolved_title = _resolved_blog_title(model)
     resolved_icon_url = _resolved_blog_icon_url(model)
+    resolved_blog_id = _business_blog_id(model)
     return {
-        "id": int(model.id),
+        "id": int(resolved_blog_id),
+        "blog_id": int(resolved_blog_id),
         "url": model.url,
         "normalized_url": model.normalized_url,
         "identity_key": model.identity_key,
@@ -559,7 +575,8 @@ def _neighbor_payload(model: BlogModel | None) -> dict[str, Any] | None:
     if model is None:
         return None
     return {
-        "id": int(model.id),
+        "id": int(_business_blog_id(model)),
+        "blog_id": int(_business_blog_id(model)),
         "domain": model.domain,
         "title": _resolved_blog_title(model),
         "icon_url": _resolved_blog_icon_url(model),
@@ -570,7 +587,8 @@ def _public_blog_summary_payload(model: BlogModel | None) -> dict[str, Any] | No
     if model is None:
         return None
     return {
-        "id": int(model.id),
+        "id": int(_business_blog_id(model)),
+        "blog_id": int(_business_blog_id(model)),
         "url": model.url,
         "normalized_url": model.normalized_url,
         "domain": model.domain,
@@ -589,9 +607,9 @@ def _ingestion_request_payload(
     resolved_blog = matched_blog or seed_blog
     resolved_blog_id = None
     if matched_blog is not None:
-        resolved_blog_id = int(matched_blog.id)
+        resolved_blog_id = _business_blog_id(matched_blog)
     elif seed_blog is not None:
-        resolved_blog_id = int(seed_blog.id)
+        resolved_blog_id = _business_blog_id(seed_blog)
     return {
         "id": int(model.id),
         "request_id": int(model.id),
@@ -707,6 +725,37 @@ def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[
     }
 
 
+def _url_refilter_run_payload(model: UrlRefilterRunModel) -> dict[str, Any]:
+    return {
+        "id": int(model.id),
+        "status": model.status,
+        "filter_chain_version": model.filter_chain_version,
+        "crawler_was_running": bool(model.crawler_was_running),
+        "backup_path": model.backup_path,
+        "total_count": int(model.total_count),
+        "scanned_count": int(model.scanned_count),
+        "unchanged_count": int(model.unchanged_count),
+        "activated_count": int(model.activated_count),
+        "deactivated_count": int(model.deactivated_count),
+        "retagged_count": int(model.retagged_count),
+        "last_raw_url_id": int(model.last_raw_url_id) if model.last_raw_url_id is not None else None,
+        "started_at": _iso(model.started_at),
+        "completed_at": _iso(model.completed_at),
+        "error_message": model.error_message,
+        "created_at": _iso(model.created_at),
+        "updated_at": _iso(model.updated_at),
+    }
+
+
+def _url_refilter_run_event_payload(model: UrlRefilterRunEventModel) -> dict[str, Any]:
+    return {
+        "id": int(model.id),
+        "run_id": int(model.run_id),
+        "message": model.message,
+        "created_at": _iso(model.created_at),
+    }
+
+
 def _decision_scan_ruleset_version(settings: Settings) -> str:
     """Describe the current URL decision-chain configuration in one string.
 
@@ -720,6 +769,11 @@ def _decision_scan_ruleset_version(settings: Settings) -> str:
     if settings.decision_model_consensus_enabled:
         return "url_decision_chain:rule_based+model_consensus"
     return "url_decision_chain:rule_based"
+
+
+def _filter_chain_version(settings: Settings) -> str:
+    """Return one stable string describing the configured URL filter chain."""
+    return "|".join(build_url_decision_chain(settings).ordered_statuses())
 
 
 def _blog_labeling_payload(
@@ -823,6 +877,16 @@ class RepositoryProtocol(Protocol):
         link_text: str | None,
     ) -> None: ...
 
+    def create_raw_discovered_url(
+        self,
+        *,
+        source_blog_id: int,
+        normalized_url: str,
+        status: str,
+    ) -> int: ...
+
+    def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None: ...
+
     def list_blogs(self) -> list[dict[str, Any]]: ...
 
     def list_blogs_catalog(
@@ -870,6 +934,20 @@ class RepositoryProtocol(Protocol):
 
     def stats(self) -> dict[str, Any]: ...
 
+    def get_filter_stats_by_chain_order(self) -> dict[str, Any]: ...
+
+    def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
+
+    def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]: ...
+
+    def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]: ...
+
+    def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]: ...
+
+    def get_latest_url_refilter_run(self) -> dict[str, Any] | None: ...
+
+    def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]: ...
+
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
 
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]: ...
@@ -908,6 +986,7 @@ class SQLAlchemyRepository:
             Base.metadata.create_all(self.engine)
             ensure_legacy_compat_schema(self.engine)
         with session_scope(self.session_factory) as session:
+            self._fail_orphaned_url_refilter_runs(session)
             self._fail_orphaned_dedup_scan_runs(session)
             self._requeue_processing(session)
 
@@ -946,6 +1025,28 @@ class SQLAlchemyRepository:
             run.error_message = "orphaned_dedup_scan_run_cleaned_on_startup"
             run.updated_at = failed_at
 
+    def _fail_orphaned_url_refilter_runs(self, session: Session) -> None:
+        orphaned_runs = session.scalars(
+            select(UrlRefilterRunModel).where(UrlRefilterRunModel.status == "RUNNING")
+        ).all()
+        if not orphaned_runs:
+            return
+        failed_at = now_utc()
+        for run in orphaned_runs:
+            run.status = "FAILED"
+            run.completed_at = failed_at
+            run.error_message = "orphaned_url_refilter_run_cleaned_on_startup"
+            run.updated_at = failed_at
+            self._append_url_refilter_run_event_in_session(
+                session,
+                run_id=int(run.id),
+                message="重新过滤任务在服务重启后被标记为失败",
+            )
+
+    def _get_blog_by_business_id(self, session: Session, blog_id: int) -> BlogModel | None:
+        """Return one blog row by business ``blog_id``."""
+        return session.scalar(select(BlogModel).where(BlogModel.blog_id == blog_id))
+
     def _ensure_schema(self) -> None:
         ensure_legacy_compat_schema(self.engine)
 
@@ -959,9 +1060,10 @@ class SQLAlchemyRepository:
             .group_by(BlogLabelAssignmentModel.blog_id)
             .subquery()
         )
-        statement = statement.outerjoin(latest_labeled_at, latest_labeled_at.c.blog_id == BlogModel.id).add_columns(
-            latest_labeled_at.c.last_labeled_at.label("last_labeled_at"),
-        )
+        statement = statement.outerjoin(
+            latest_labeled_at,
+            latest_labeled_at.c.blog_id == BlogModel.blog_id,
+        ).add_columns(latest_labeled_at.c.last_labeled_at.label("last_labeled_at"))
         metrics["latest_labeled_at"] = latest_labeled_at.c.last_labeled_at
         return statement, metrics
 
@@ -1019,8 +1121,8 @@ class SQLAlchemyRepository:
                 metrics["activity_at"].label("activity_at"),
                 metrics["identity_complete"].label("identity_complete"),
             )
-            .outerjoin(metrics["incoming_counts"], metrics["incoming_counts"].c.blog_id == BlogModel.id)
-            .outerjoin(metrics["outgoing_counts"], metrics["outgoing_counts"].c.blog_id == BlogModel.id)
+            .outerjoin(metrics["incoming_counts"], metrics["incoming_counts"].c.blog_id == BlogModel.blog_id)
+            .outerjoin(metrics["outgoing_counts"], metrics["outgoing_counts"].c.blog_id == BlogModel.blog_id)
         )
         return statement, metrics
 
@@ -1038,9 +1140,15 @@ class SQLAlchemyRepository:
         session: Session,
         request: IngestionRequestModel,
     ) -> dict[str, Any]:
-        seed_blog = session.get(BlogModel, request.seed_blog_id) if request.seed_blog_id is not None else None
+        seed_blog = (
+            self._get_blog_by_business_id(session, request.seed_blog_id)
+            if request.seed_blog_id is not None
+            else None
+        )
         matched_blog = (
-            session.get(BlogModel, request.matched_blog_id) if request.matched_blog_id is not None else None
+            self._get_blog_by_business_id(session, request.matched_blog_id)
+            if request.matched_blog_id is not None
+            else None
         )
         return _ingestion_request_payload(request, seed_blog=seed_blog, matched_blog=matched_blog)
 
@@ -1085,6 +1193,187 @@ class SQLAlchemyRepository:
             decision_model_consensus_enabled=False,
         )
 
+    def _append_url_refilter_run_event_in_session(
+        self,
+        session: Session,
+        *,
+        run_id: int,
+        message: str,
+    ) -> UrlRefilterRunEventModel:
+        event = UrlRefilterRunEventModel(
+            run_id=run_id,
+            message=message,
+            created_at=now_utc(),
+        )
+        session.add(event)
+        session.flush()
+        return event
+
+    def _backup_sqlite_database(self) -> str:
+        """Create one timestamped SQLite backup and return the written path."""
+        database_path = Path(str(self.engine.url.database)).resolve()
+        backup_dir = self._decision_scan_settings().export_dir / "db-backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"heyblog-refilter-backup-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.sqlite"
+        self.engine.dispose()
+        source = sqlite3.connect(str(database_path))
+        target = sqlite3.connect(str(backup_path))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        return str(backup_path)
+
+    def _upsert_blog_in_session(
+        self,
+        session: Session,
+        *,
+        url: str,
+        normalized_url: str,
+        domain: str,
+        email: str | None = None,
+    ) -> BlogModel:
+        identity = self._resolve_identity_from_blog_fields(url=url, normalized_url=normalized_url)
+        stored_url, stored_domain = _storage_url_and_domain(
+            input_url=url,
+            input_normalized_url=normalized_url,
+            input_domain=domain,
+            identity=identity,
+        )
+        existing = session.scalar(
+            select(BlogModel).where(
+                or_(
+                    BlogModel.normalized_url == stored_url,
+                    BlogModel.identity_key == identity.identity_key,
+                )
+            )
+        )
+        if existing is not None:
+            if _uses_tenant_root_canonicalization(identity.reason_codes):
+                existing.url = stored_url
+                existing.normalized_url = stored_url
+                existing.domain = stored_domain
+            if email is not None and not (existing.email or "").strip():
+                existing.email = email
+            existing.identity_key = identity.identity_key
+            existing.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
+            existing.identity_ruleset_version = identity.ruleset_version
+            existing.updated_at = now_utc()
+            return existing
+
+        blog = BlogModel(
+            blog_id=None,
+            url=stored_url,
+            normalized_url=stored_url,
+            identity_key=identity.identity_key,
+            identity_reason_codes=_dump_reason_codes(identity.reason_codes),
+            identity_ruleset_version=identity.ruleset_version,
+            domain=stored_domain,
+            email=email,
+            crawl_status=CrawlStatus.WAITING,
+            friend_links_count=0,
+            created_at=now_utc(),
+            updated_at=now_utc(),
+        )
+        session.add(blog)
+        session.flush()
+        blog.blog_id = int(blog.id)
+        session.flush()
+        return blog
+
+    def _ensure_edge_in_session(
+        self,
+        session: Session,
+        *,
+        from_blog_id: int,
+        to_blog_id: int,
+        link_url_raw: str,
+        link_text: str | None,
+    ) -> None:
+        existing = session.scalar(
+            select(EdgeModel).where(
+                EdgeModel.from_blog_id == from_blog_id,
+                EdgeModel.to_blog_id == to_blog_id,
+            )
+        )
+        if existing is not None:
+            return
+        session.add(
+            EdgeModel(
+                from_blog_id=from_blog_id,
+                to_blog_id=to_blog_id,
+                link_url_raw=link_url_raw,
+                link_text=link_text,
+                discovered_at=now_utc(),
+            )
+        )
+
+    def _handle_refilter_activated_success(
+        self,
+        session: Session,
+        *,
+        raw: RawDiscoveredUrlModel,
+    ) -> None:
+        normalized = normalize_url(raw.normalized_url)
+        target_blog = self._upsert_blog_in_session(
+            session,
+            url=raw.normalized_url,
+            normalized_url=normalized.normalized_url,
+            domain=normalized.domain,
+        )
+        self._ensure_edge_in_session(
+            session,
+            from_blog_id=int(raw.source_blog_id),
+            to_blog_id=int(_business_blog_id(target_blog)),
+            link_url_raw=raw.normalized_url,
+            link_text=None,
+        )
+
+    def _handle_refilter_deactivated_success(
+        self,
+        session: Session,
+        *,
+        raw: RawDiscoveredUrlModel,
+    ) -> None:
+        session.flush()
+        identity = self._resolve_identity_from_blog_fields(url=raw.normalized_url, normalized_url=raw.normalized_url)
+        normalized = normalize_url(raw.normalized_url)
+        stored_url, _ = _storage_url_and_domain(
+            input_url=raw.normalized_url,
+            input_normalized_url=normalized.normalized_url,
+            input_domain=normalized.domain,
+            identity=identity,
+        )
+        target_blog = session.scalar(
+            select(BlogModel).where(
+                or_(
+                    BlogModel.normalized_url == stored_url,
+                    BlogModel.identity_key == identity.identity_key,
+                )
+            )
+        )
+        if target_blog is None:
+            return
+        session.query(EdgeModel).filter(
+            EdgeModel.from_blog_id == int(raw.source_blog_id),
+            EdgeModel.to_blog_id == int(_business_blog_id(target_blog)),
+        ).delete(synchronize_session=False)
+        remaining_success = int(
+            session.scalar(
+                select(func.count())
+                .select_from(RawDiscoveredUrlModel)
+                .where(
+                    RawDiscoveredUrlModel.normalized_url == raw.normalized_url,
+                    RawDiscoveredUrlModel.status == "success",
+                )
+            )
+            or 0
+        )
+        if remaining_success == 0:
+            self._delete_blog_graph(session, blog_id=int(_business_blog_id(target_blog)))
+            session.flush()
+
     def _delete_blog_graph(self, session: Session, *, blog_id: int) -> None:
         """Delete one blog and its direct graph attachments safely.
 
@@ -1111,7 +1400,7 @@ class SQLAlchemyRepository:
         session.query(IngestionRequestModel).filter(
             IngestionRequestModel.matched_blog_id == blog_id
         ).update({IngestionRequestModel.matched_blog_id: None})
-        blog = session.get(BlogModel, blog_id)
+        blog = self._get_blog_by_business_id(session, blog_id)
         if blog is not None:
             session.delete(blog)
 
@@ -1162,9 +1451,10 @@ class SQLAlchemyRepository:
                 existing.identity_reason_codes = _dump_reason_codes(reason_codes)
                 existing.identity_ruleset_version = ruleset_version
                 existing.updated_at = now_utc()
-                return int(existing.id), False
+                return int(_business_blog_id(existing)), False
 
             blog = BlogModel(
+                blog_id=None,
                 url=stored_url,
                 normalized_url=stored_url,
                 identity_key=identity_key,
@@ -1179,7 +1469,9 @@ class SQLAlchemyRepository:
             )
             session.add(blog)
             session.flush()
-            return int(blog.id), True
+            blog.blog_id = int(blog.id)
+            session.flush()
+            return int(_business_blog_id(blog)), True
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
         requested_url, normalized_url, domain, identity_key, reason_codes, ruleset_version = normalize_homepage_url(
@@ -1205,8 +1497,8 @@ class SQLAlchemyRepository:
             if existing_blog is not None and existing_blog.crawl_status == CrawlStatus.FINISHED:
                 return {
                     "status": INGESTION_REQUEST_STATUS_DEDUPED_EXISTING,
-                    "blog_id": int(existing_blog.id),
-                    "matched_blog_id": int(existing_blog.id),
+                    "blog_id": int(_business_blog_id(existing_blog)),
+                    "matched_blog_id": int(_business_blog_id(existing_blog)),
                     "request_id": None,
                     "request_token": None,
                     "blog": _blog_payload(existing_blog),
@@ -1233,6 +1525,7 @@ class SQLAlchemyRepository:
 
             if existing_blog is None:
                 existing_blog = BlogModel(
+                    blog_id=None,
                     url=normalized_url,
                     normalized_url=normalized_url,
                     identity_key=identity_key,
@@ -1246,6 +1539,8 @@ class SQLAlchemyRepository:
                     updated_at=now_utc(),
                 )
                 session.add(existing_blog)
+                session.flush()
+                existing_blog.blog_id = int(existing_blog.id)
                 session.flush()
             elif existing_blog.crawl_status == CrawlStatus.FAILED:
                 existing_blog.crawl_status = CrawlStatus.WAITING
@@ -1265,7 +1560,7 @@ class SQLAlchemyRepository:
                 requester_email=normalized_email,
                 status=request_status,
                 priority=100,
-                seed_blog_id=int(existing_blog.id),
+                seed_blog_id=int(_business_blog_id(existing_blog)),
                 matched_blog_id=None,
                 request_token=token_urlsafe(18),
                 expires_at=None,
@@ -1306,9 +1601,15 @@ class SQLAlchemyRepository:
             ).all()
             payload: list[dict[str, Any]] = []
             for request in requests:
-                seed_blog = session.get(BlogModel, request.seed_blog_id) if request.seed_blog_id is not None else None
+                seed_blog = (
+                    self._get_blog_by_business_id(session, request.seed_blog_id)
+                    if request.seed_blog_id is not None
+                    else None
+                )
                 matched_blog = (
-                    session.get(BlogModel, request.matched_blog_id) if request.matched_blog_id is not None else None
+                    self._get_blog_by_business_id(session, request.matched_blog_id)
+                    if request.matched_blog_id is not None
+                    else None
                 )
                 payload.append(
                     _priority_ingestion_request_payload(
@@ -1332,7 +1633,7 @@ class SQLAlchemyRepository:
             identity_matches = session.scalars(
                 select(BlogModel)
                 .where(BlogModel.identity_key == identity_key)
-                .order_by(BlogModel.id.asc())
+                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
             ).all()
             if identity_matches:
                 return _blog_lookup_payload(
@@ -1345,7 +1646,7 @@ class SQLAlchemyRepository:
             normalized_matches = session.scalars(
                 select(BlogModel)
                 .where(BlogModel.normalized_url == normalized_query_url)
-                .order_by(BlogModel.id.asc())
+                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
             ).all()
             if normalized_matches:
                 return _blog_lookup_payload(
@@ -1392,7 +1693,7 @@ class SQLAlchemyRepository:
                 select(BlogModel)
                 .join(
                     IngestionRequestModel,
-                    IngestionRequestModel.seed_blog_id == BlogModel.id,
+                    IngestionRequestModel.seed_blog_id == BlogModel.blog_id,
                 )
                 .where(
                     BlogModel.crawl_status == CrawlStatus.WAITING,
@@ -1401,6 +1702,7 @@ class SQLAlchemyRepository:
                 .order_by(
                     IngestionRequestModel.priority.desc(),
                     IngestionRequestModel.created_at.asc(),
+                    BlogModel.blog_id.asc(),
                     BlogModel.id.asc(),
                 )
                 .limit(1)
@@ -1421,8 +1723,8 @@ class SQLAlchemyRepository:
                     )
                     .subquery()
                 )
-                statement = statement.where(BlogModel.id.not_in(select(priority_seed_ids.c.seed_blog_id)))
-            statement = statement.order_by(BlogModel.id.asc()).limit(1)
+                statement = statement.where(BlogModel.blog_id.not_in(select(priority_seed_ids.c.seed_blog_id)))
+            statement = statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc()).limit(1)
             if self.dialect_name == "postgresql":
                 statement = statement.with_for_update(skip_locked=True)
             return self._claim_blog_for_statement(session, statement)
@@ -1439,7 +1741,7 @@ class SQLAlchemyRepository:
         icon_url: str | None = None,
     ) -> None:
         with session_scope(self.session_factory) as session:
-            blog = session.get(BlogModel, blog_id)
+            blog = self._get_blog_by_business_id(session, blog_id)
             if blog is None:
                 return
             blog.crawl_status = CrawlStatus(crawl_status)
@@ -1461,7 +1763,7 @@ class SQLAlchemyRepository:
             if request is not None:
                 if blog.crawl_status == CrawlStatus.FINISHED:
                     request.status = INGESTION_REQUEST_STATUS_COMPLETED
-                    request.matched_blog_id = blog_id
+                    request.matched_blog_id = int(_business_blog_id(blog))
                     request.error_message = None
                 elif blog.crawl_status == CrawlStatus.FAILED:
                     request.status = INGESTION_REQUEST_STATUS_FAILED
@@ -1494,10 +1796,37 @@ class SQLAlchemyRepository:
             )
             session.add(edge)
 
+    def create_raw_discovered_url(
+        self,
+        *,
+        source_blog_id: int,
+        normalized_url: str,
+        status: str,
+    ) -> int:
+        with session_scope(self.session_factory) as session:
+            record = RawDiscoveredUrlModel(
+                source_blog_id=source_blog_id,
+                normalized_url=normalized_url,
+                status=status,
+                discovered_at=now_utc(),
+                updated_at=now_utc(),
+            )
+            session.add(record)
+            session.flush()
+            return int(record.id)
+
+    def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None:
+        with session_scope(self.session_factory) as session:
+            record = session.get(RawDiscoveredUrlModel, record_id)
+            if record is None:
+                raise ValueError("raw_discovered_url_not_found")
+            record.status = status
+            record.updated_at = now_utc()
+
     def list_blogs(self) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
             statement, _ = self._blog_select()
-            rows = session.execute(statement.order_by(BlogModel.id.asc())).all()
+            rows = session.execute(statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())).all()
             return [self._row_blog_payload(row) for row in rows]
 
     def list_blogs_catalog(
@@ -1574,20 +1903,26 @@ class SQLAlchemyRepository:
 
             if query["sort"] == "recent_activity":
                 statement = statement.order_by(
-                    metrics["activity_at"].desc(), metrics["connection_count"].desc(), BlogModel.id.desc()
+                    metrics["activity_at"].desc(),
+                    metrics["connection_count"].desc(),
+                    BlogModel.blog_id.desc(),
+                    BlogModel.id.desc(),
                 )
             elif query["sort"] == "connections":
                 statement = statement.order_by(
-                    metrics["connection_count"].desc(), metrics["activity_at"].desc(), BlogModel.id.desc()
+                    metrics["connection_count"].desc(),
+                    metrics["activity_at"].desc(),
+                    BlogModel.blog_id.desc(),
+                    BlogModel.id.desc(),
                 )
             elif query["sort"] == "recently_discovered":
-                statement = statement.order_by(BlogModel.created_at.desc(), BlogModel.id.desc())
+                statement = statement.order_by(BlogModel.created_at.desc(), BlogModel.blog_id.desc(), BlogModel.id.desc())
             elif query["sort"] == "id_asc":
-                statement = statement.order_by(BlogModel.id.asc())
+                statement = statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
             elif query["sort"] == "random":
                 statement = statement.order_by(func.random())
             else:
-                statement = statement.order_by(BlogModel.id.desc())
+                statement = statement.order_by(BlogModel.blog_id.desc(), BlogModel.id.desc())
 
             total_items = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
             total_pages = ceil(total_items / query["page_size"]) if total_items else 0
@@ -1645,7 +1980,7 @@ class SQLAlchemyRepository:
                 )
             if query["label"] is not None:
                 statement = statement.where(
-                    BlogModel.id.in_(
+                    BlogModel.blog_id.in_(
                         select(BlogLabelAssignmentModel.blog_id)
                         .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
                         .where(BlogLabelTagModel.slug == query["label"])
@@ -1659,22 +1994,24 @@ class SQLAlchemyRepository:
             if query["sort"] == "recent_activity":
                 statement = statement.order_by(
                     metrics["activity_at"].desc(),
+                    BlogModel.blog_id.desc(),
                     BlogModel.id.desc(),
                 )
             elif query["sort"] == "recently_labeled":
                 statement = statement.order_by(
                     metrics["latest_labeled_at"].desc().nullslast(),
+                    BlogModel.blog_id.desc(),
                     BlogModel.id.desc(),
                 )
             else:
-                statement = statement.order_by(BlogModel.id.desc())
+                statement = statement.order_by(BlogModel.blog_id.desc(), BlogModel.id.desc())
 
             total_items = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
             total_pages = ceil(total_items / query["page_size"]) if total_items else 0
             effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
             offset = (effective_page - 1) * query["page_size"]
             rows = session.execute(statement.limit(query["page_size"]).offset(offset)).all()
-            blog_ids = [int(row[0].id) for row in rows]
+            blog_ids = [int(_business_blog_id(row[0])) for row in rows]
             label_rows = []
             if blog_ids:
                 label_rows = session.execute(
@@ -1699,7 +2036,7 @@ class SQLAlchemyRepository:
                 items=[
                     _blog_labeling_payload(
                         row,
-                        labels=labels_by_blog.get(int(row[0].id), []),
+                        labels=labels_by_blog.get(int(_business_blog_id(row[0])), []),
                         last_labeled_at=row.last_labeled_at,
                     )
                     for row in rows
@@ -1728,10 +2065,10 @@ class SQLAlchemyRepository:
                     BlogModel.title,
                     BlogLabelTagModel.name.label("label_name"),
                 )
-                .join(BlogLabelAssignmentModel, BlogLabelAssignmentModel.blog_id == BlogModel.id)
+                .join(BlogLabelAssignmentModel, BlogLabelAssignmentModel.blog_id == BlogModel.blog_id)
                 .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
                 .where(BlogModel.crawl_status == CrawlStatus.FINISHED)
-                .order_by(BlogModel.id.asc(), BlogLabelTagModel.name.asc())
+                .order_by(BlogModel.blog_id.asc(), BlogLabelTagModel.name.asc())
             ).all()
 
         output = StringIO(newline="")
@@ -1764,11 +2101,12 @@ class SQLAlchemyRepository:
     def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]:
         unique_tag_ids = sorted({int(tag_id) for tag_id in tag_ids})
         with session_scope(self.session_factory) as session:
-            blog = session.get(BlogModel, blog_id)
+            blog = self._get_blog_by_business_id(session, blog_id)
             if blog is None:
                 raise BlogLabelingNotFoundError("blog_not_found")
             if blog.crawl_status != CrawlStatus.FINISHED:
                 raise BlogLabelingConflictError("blog_labeling_requires_finished_blog")
+            resolved_blog_id = int(_business_blog_id(blog))
             tags = []
             if unique_tag_ids:
                 tags = session.scalars(
@@ -1777,7 +2115,7 @@ class SQLAlchemyRepository:
                 if len(tags) != len(unique_tag_ids):
                     raise ValueError("blog_label_tag_not_found")
             existing_rows = session.scalars(
-                select(BlogLabelAssignmentModel).where(BlogLabelAssignmentModel.blog_id == blog_id)
+                select(BlogLabelAssignmentModel).where(BlogLabelAssignmentModel.blog_id == resolved_blog_id)
             )
             timestamp = now_utc()
             existing_by_tag = {int(row.tag_id): row for row in existing_rows}
@@ -1792,7 +2130,7 @@ class SQLAlchemyRepository:
                     continue
                 session.add(
                     BlogLabelAssignmentModel(
-                        blog_id=blog_id,
+                        blog_id=resolved_blog_id,
                         tag_id=int(tag.id),
                         labeled_at=timestamp,
                         created_at=timestamp,
@@ -1803,7 +2141,7 @@ class SQLAlchemyRepository:
             refreshed = session.execute(
                 select(BlogLabelAssignmentModel, BlogLabelTagModel)
                 .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
-                .where(BlogLabelAssignmentModel.blog_id == blog_id)
+                .where(BlogLabelAssignmentModel.blog_id == resolved_blog_id)
                 .order_by(BlogLabelTagModel.name.asc())
             ).all()
             labels = [
@@ -1814,7 +2152,7 @@ class SQLAlchemyRepository:
                 for assignment, tag in refreshed
             ]
             return {
-                "blog_id": int(blog.id),
+                "blog_id": resolved_blog_id,
                 "labels": labels,
                 "label_slugs": [label["slug"] for label in labels],
                 "last_labeled_at": _iso(timestamp if labels else None),
@@ -1824,13 +2162,13 @@ class SQLAlchemyRepository:
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
             statement, _ = self._blog_select()
-            row = session.execute(statement.where(BlogModel.id == blog_id)).first()
+            row = session.execute(statement.where(BlogModel.blog_id == blog_id)).first()
             return self._row_blog_payload(row) if row is not None else None
 
     def get_blog_detail(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
             statement, _ = self._blog_select()
-            blog_row = session.execute(statement.where(BlogModel.id == blog_id)).first()
+            blog_row = session.execute(statement.where(BlogModel.blog_id == blog_id)).first()
             if blog_row is None:
                 return None
             outgoing_edges = session.scalars(
@@ -1841,7 +2179,7 @@ class SQLAlchemyRepository:
             ).all()
 
             def relation_payload(edge: EdgeModel, *, neighbor_id: int) -> dict[str, Any]:
-                neighbor = session.get(BlogModel, neighbor_id)
+                neighbor = self._get_blog_by_business_id(session, neighbor_id)
                 return {
                     **_edge_payload(edge),
                     "neighbor_blog": _neighbor_payload(neighbor),
@@ -1862,14 +2200,16 @@ class SQLAlchemyRepository:
             if recommendation_map:
                 recommended_statement, _ = self._blog_select()
                 recommended_blog_rows = session.execute(
-                    recommended_statement.where(BlogModel.id.in_(recommendation_map.keys()))
+                    recommended_statement.where(BlogModel.blog_id.in_(recommendation_map.keys()))
                 ).all()
-                recommended_by_id = {int(row[0].id): row for row in recommended_blog_rows}
+                recommended_by_id = {
+                    int(_business_blog_id(row[0])): row for row in recommended_blog_rows
+                }
                 via_blog_ids = {via_id for via_ids in recommendation_map.values() for via_id in via_ids}
                 via_blogs = {
-                    int(blog_model.id): blog_model
+                    int(_business_blog_id(blog_model)): blog_model
                     for blog_model in session.scalars(
-                        select(BlogModel).where(BlogModel.id.in_(via_blog_ids))
+                        select(BlogModel).where(BlogModel.blog_id.in_(via_blog_ids))
                     ).all()
                 }
                 for candidate_id, via_ids in sorted(
@@ -1929,6 +2269,227 @@ class SQLAlchemyRepository:
                 "finished_tasks": int(status_counts.get(CrawlStatus.FINISHED.value, 0)),
             }
 
+    def get_filter_stats_by_chain_order(self) -> dict[str, Any]:
+        settings = self._decision_scan_settings()
+        decision_chain = build_url_decision_chain(settings)
+        with session_scope(self.session_factory) as session:
+            total_raw = int(session.scalar(select(func.count()).select_from(RawDiscoveredUrlModel)) or 0)
+            grouped_rows = session.execute(
+                select(RawDiscoveredUrlModel.status, func.count()).group_by(RawDiscoveredUrlModel.status)
+            ).all()
+        counts_by_status = {str(status): int(count) for status, count in grouped_rows}
+        remaining = total_raw
+        by_filter_reason: dict[str, int] = {"raw": total_raw}
+        for status in decision_chain.ordered_statuses():
+            remaining -= counts_by_status.get(status, 0)
+            by_filter_reason[status] = max(remaining, 0)
+        return {"by_filter_reason": by_filter_reason}
+
+    def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
+        with session_scope(self.session_factory) as session:
+            run = UrlRefilterRunModel(
+                status="PENDING",
+                filter_chain_version=_filter_chain_version(self._decision_scan_settings()),
+                crawler_was_running=crawler_was_running,
+                backup_path=None,
+                total_count=0,
+                scanned_count=0,
+                unchanged_count=0,
+                activated_count=0,
+                deactivated_count=0,
+                retagged_count=0,
+                last_raw_url_id=None,
+                started_at=None,
+                completed_at=None,
+                error_message=None,
+                created_at=now_utc(),
+                updated_at=now_utc(),
+            )
+            session.add(run)
+            session.flush()
+            return _url_refilter_run_payload(run)
+
+    def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]:
+        with session_scope(self.session_factory) as session:
+            run = session.get(UrlRefilterRunModel, run_id)
+            if run is None:
+                raise ValueError("url_refilter_run_not_found")
+            event = self._append_url_refilter_run_event_in_session(session, run_id=run_id, message=message)
+            run.updated_at = now_utc()
+            return _url_refilter_run_event_payload(event)
+
+    def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]:
+        with session_scope(self.session_factory) as session:
+            run = session.get(UrlRefilterRunModel, run_id)
+            if run is None:
+                raise ValueError("url_refilter_run_not_found")
+            completed_at = now_utc()
+            run.status = "FAILED"
+            run.error_message = error_message
+            run.completed_at = completed_at
+            run.updated_at = completed_at
+            self._append_url_refilter_run_event_in_session(
+                session,
+                run_id=run_id,
+                message=f"重新过滤失败：{error_message}",
+            )
+            return _url_refilter_run_payload(run)
+
+    def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]:
+        settings = self._decision_scan_settings()
+        decision_chain = build_url_decision_chain(settings)
+        started_at = now_utc()
+        try:
+            with session_scope(self.session_factory) as session:
+                run = session.get(UrlRefilterRunModel, run_id)
+                if run is None:
+                    raise ValueError("url_refilter_run_not_found")
+                run.status = "RUNNING"
+                run.started_at = started_at
+                run.completed_at = None
+                run.error_message = None
+                run.filter_chain_version = _filter_chain_version(settings)
+                run.total_count = int(session.scalar(select(func.count()).select_from(RawDiscoveredUrlModel)) or 0)
+                run.scanned_count = 0
+                run.unchanged_count = 0
+                run.activated_count = 0
+                run.deactivated_count = 0
+                run.retagged_count = 0
+                run.last_raw_url_id = None
+                run.updated_at = started_at
+                self._append_url_refilter_run_event_in_session(session, run_id=run_id, message="备份中")
+
+            backup_path = self._backup_sqlite_database()
+
+            with session_scope(self.session_factory) as session:
+                run = session.get(UrlRefilterRunModel, run_id)
+                if run is None:
+                    raise ValueError("url_refilter_run_not_found")
+                run.backup_path = backup_path
+                run.updated_at = now_utc()
+                self._append_url_refilter_run_event_in_session(
+                    session,
+                    run_id=run_id,
+                    message=f"备份完成，文件保存在 {backup_path}",
+                )
+                self._append_url_refilter_run_event_in_session(
+                    session,
+                    run_id=run_id,
+                    message="开始按过滤链重新扫描原始URL表",
+                )
+
+            scanned_count = 0
+            unchanged_count = 0
+            activated_count = 0
+            deactivated_count = 0
+            retagged_count = 0
+            last_raw_url_id = 0
+            source_domain_cache: dict[int, str] = {}
+            cursor = 0
+            batch_size = 1000
+
+            while True:
+                with session_scope(self.session_factory) as session:
+                    run = session.get(UrlRefilterRunModel, run_id)
+                    if run is None:
+                        raise ValueError("url_refilter_run_not_found")
+                    raws = session.scalars(
+                        select(RawDiscoveredUrlModel)
+                        .where(RawDiscoveredUrlModel.id > cursor)
+                        .order_by(RawDiscoveredUrlModel.id.asc())
+                        .limit(batch_size)
+                    ).all()
+                    if not raws:
+                        completed_at = now_utc()
+                        run.status = "SUCCEEDED"
+                        run.scanned_count = scanned_count
+                        run.unchanged_count = unchanged_count
+                        run.activated_count = activated_count
+                        run.deactivated_count = deactivated_count
+                        run.retagged_count = retagged_count
+                        run.last_raw_url_id = last_raw_url_id or None
+                        run.completed_at = completed_at
+                        run.updated_at = completed_at
+                        self._append_url_refilter_run_event_in_session(
+                            session,
+                            run_id=run_id,
+                            message=(
+                                "重新过滤完成："
+                                f"scanned={scanned_count}, unchanged={unchanged_count}, "
+                                f"activated={activated_count}, deactivated={deactivated_count}, "
+                                f"retagged={retagged_count}"
+                            ),
+                        )
+                        return _url_refilter_run_payload(run)
+
+                    for raw in raws:
+                        last_raw_url_id = int(raw.id)
+                        source_blog_id = int(raw.source_blog_id)
+                        source_domain = source_domain_cache.get(source_blog_id)
+                        if source_domain is None:
+                            source_blog = self._get_blog_by_business_id(session, source_blog_id)
+                            source_domain = source_blog.domain if source_blog is not None else ""
+                            source_domain_cache[source_blog_id] = source_domain
+
+                        decision = decision_chain.evaluate(
+                            UrlCandidateContext(
+                                source_blog_id=source_blog_id,
+                                source_domain=source_domain,
+                                normalized_url=raw.normalized_url,
+                            )
+                        )
+                        new_status = decision.status or "success"
+                        old_status = str(raw.status)
+                        if new_status == old_status:
+                            unchanged_count += 1
+                        else:
+                            raw.status = new_status
+                            raw.updated_at = now_utc()
+                            if old_status != "success" and new_status == "success":
+                                self._handle_refilter_activated_success(session, raw=raw)
+                                activated_count += 1
+                            elif old_status == "success" and new_status != "success":
+                                self._handle_refilter_deactivated_success(session, raw=raw)
+                                deactivated_count += 1
+                            else:
+                                retagged_count += 1
+                        scanned_count += 1
+                        cursor = int(raw.id)
+
+                    run.scanned_count = scanned_count
+                    run.unchanged_count = unchanged_count
+                    run.activated_count = activated_count
+                    run.deactivated_count = deactivated_count
+                    run.retagged_count = retagged_count
+                    run.last_raw_url_id = last_raw_url_id
+                    run.updated_at = now_utc()
+                    if scanned_count % 10_000 == 0 or scanned_count == int(run.total_count):
+                        self._append_url_refilter_run_event_in_session(
+                            session,
+                            run_id=run_id,
+                            message=(
+                                f"当前扫描原始URL进度 {scanned_count}/{int(run.total_count)}，"
+                                f"当前记录id={last_raw_url_id}"
+                            ),
+                        )
+        except Exception as exc:
+            self.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
+            raise
+
+    def get_latest_url_refilter_run(self) -> dict[str, Any] | None:
+        with session_scope(self.session_factory) as session:
+            run = session.scalar(select(UrlRefilterRunModel).order_by(UrlRefilterRunModel.id.desc()).limit(1))
+            return _url_refilter_run_payload(run) if run is not None else None
+
+    def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]:
+        with session_scope(self.session_factory) as session:
+            rows = session.scalars(
+                select(UrlRefilterRunEventModel)
+                .where(UrlRefilterRunEventModel.run_id == run_id)
+                .order_by(UrlRefilterRunEventModel.id.asc())
+            ).all()
+            return [_url_refilter_run_event_payload(row) for row in rows]
+
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         started_at = now_utc()
         settings = self._decision_scan_settings()
@@ -1976,12 +2537,12 @@ class SQLAlchemyRepository:
                 run.updated_at = started_at
                 blog_rows = session.execute(
                     select(
-                        BlogModel.id,
+                        BlogModel.blog_id,
                         BlogModel.url,
                         BlogModel.domain,
                         BlogModel.identity_key,
                     )
-                    .order_by(BlogModel.id.asc())
+                    .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
                 ).all()
                 run.total_count = len(blog_rows)
 
@@ -1992,7 +2553,7 @@ class SQLAlchemyRepository:
                     run = session.get(BlogDedupScanRunModel, run_id)
                     if run is None:
                         raise ValueError("blog_dedup_scan_run_not_found")
-                    blog = session.get(BlogModel, int(blog_row.id))
+                    blog = self._get_blog_by_business_id(session, int(blog_row.blog_id))
                     if blog is None:
                         continue
                     decision = decision_chain.decide(
@@ -2006,7 +2567,7 @@ class SQLAlchemyRepository:
                             BlogDedupScanRunItemModel(
                                 run_id=int(run.id),
                                 survivor_blog_id=None,
-                                removed_blog_id=int(blog.id),
+                                removed_blog_id=int(_business_blog_id(blog)),
                                 survivor_identity_key=str(blog.identity_key or ""),
                                 removed_url=str(blog.url or ""),
                                 removed_normalized_url=str(blog.normalized_url or blog.url or ""),
@@ -2014,13 +2575,13 @@ class SQLAlchemyRepository:
                                 reason_code=decision.reasons[0] if decision.reasons else "decision_rejected",
                                 reason_codes=_dump_reason_codes(list(decision.reasons)),
                                 survivor_selection_basis=(
-                                    f"scanned_blog_id={int(blog.id)}, "
+                                    f"scanned_blog_id={int(_business_blog_id(blog))}, "
                                     f"decision_score={decision.score:.6f}"
                                 ),
                                 created_at=now_utc(),
                             )
                         )
-                        self._delete_blog_graph(session, blog_id=int(blog.id))
+                        self._delete_blog_graph(session, blog_id=int(_business_blog_id(blog)))
                         rejected_blog_count += 1
 
                     scanned_count += 1
@@ -2103,23 +2664,35 @@ class SQLAlchemyRepository:
             requests_deleted = int(session.scalar(select(func.count()).select_from(IngestionRequestModel)) or 0)
             labels_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelAssignmentModel)) or 0)
             tag_defs_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelTagModel)) or 0)
+            raw_urls_deleted = int(session.scalar(select(func.count()).select_from(RawDiscoveredUrlModel)) or 0)
             scan_items_deleted = int(
                 session.scalar(select(func.count()).select_from(BlogDedupScanRunItemModel)) or 0
             )
             scan_runs_deleted = int(
                 session.scalar(select(func.count()).select_from(BlogDedupScanRunModel)) or 0
             )
+            refilter_events_deleted = int(
+                session.scalar(select(func.count()).select_from(UrlRefilterRunEventModel)) or 0
+            )
+            refilter_runs_deleted = int(
+                session.scalar(select(func.count()).select_from(UrlRefilterRunModel)) or 0
+            )
             if self.dialect_name == "postgresql":
                 session.execute(
                     text(
-                        "TRUNCATE TABLE blog_dedup_scan_run_items, blog_dedup_scan_runs, "
-                        "blog_label_assignments, blog_label_tags, ingestion_requests, edges, blogs "
+                        "TRUNCATE TABLE url_refilter_run_events, url_refilter_runs, "
+                        "blog_dedup_scan_run_items, blog_dedup_scan_runs, "
+                        "raw_discovered_urls, blog_label_assignments, blog_label_tags, "
+                        "ingestion_requests, edges, blogs "
                         "RESTART IDENTITY CASCADE"
                     )
                 )
             else:
+                session.query(UrlRefilterRunEventModel).delete()
+                session.query(UrlRefilterRunModel).delete()
                 session.query(BlogDedupScanRunItemModel).delete()
                 session.query(BlogDedupScanRunModel).delete()
+                session.query(RawDiscoveredUrlModel).delete()
                 session.query(BlogLabelAssignmentModel).delete()
                 session.query(BlogLabelTagModel).delete()
                 session.query(IngestionRequestModel).delete()
@@ -2133,6 +2706,9 @@ class SQLAlchemyRepository:
                 "ingestion_requests_deleted": requests_deleted,
                 "blog_link_labels_deleted": labels_deleted,
                 "blog_label_tags_deleted": tag_defs_deleted,
+                "raw_discovered_urls_deleted": raw_urls_deleted,
+                "url_refilter_run_events_deleted": refilter_events_deleted,
+                "url_refilter_runs_deleted": refilter_runs_deleted,
                 "blog_dedup_scan_items_deleted": scan_items_deleted,
                 "blog_dedup_scan_runs_deleted": scan_runs_deleted,
             }

@@ -140,6 +140,17 @@ beforeEach(() => {
     if (url.pathname === "/api/stats") {
       return new Response(JSON.stringify({ total_blogs: 34, total_edges: 10 }));
     }
+    if (url.pathname === "/api/filter-stats") {
+      return new Response(
+        JSON.stringify({
+          by_filter_reason: {
+            raw: 100,
+            "rule:same_domain": 80,
+            "rule:platform_blocked": 60,
+          },
+        }),
+      );
+    }
     if (url.pathname === "/api/graph/views/core") {
       return new Response(
         JSON.stringify({
@@ -365,4 +376,22 @@ test("locks visualization graph size at 200 and shows a maturity notice dialog",
   await waitFor(() => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+});
+
+test("adds a public filter stats route that renders ordered remaining counts", async () => {
+  window.history.replaceState({}, "", "/filter-stats");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "过滤链统计" })).toBeInTheDocument();
+  });
+
+  expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/filter-stats"), expect.anything());
+  expect(screen.getByText("raw")).toBeInTheDocument();
+  expect(screen.getByText("rule:same_domain")).toBeInTheDocument();
+  expect(screen.getByText("rule:platform_blocked")).toBeInTheDocument();
+  expect(screen.getByText("100")).toBeInTheDocument();
+  expect(screen.getByText("80")).toBeInTheDocument();
+  expect(screen.getByText("60")).toBeInTheDocument();
 });

@@ -18,10 +18,13 @@ import {
   fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
+  fetchAdminUrlRefilterEvents,
+  fetchAdminUrlRefilterLatest,
   fetchStats,
   postAdminBootstrap,
   postAdminResetDatabase,
   postAdminRunBatch,
+  postAdminRunUrlRefilter,
   postAdminRuntimeStart,
   postAdminRuntimeStop,
 } from "../lib/api";
@@ -29,6 +32,8 @@ import type {
   AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
+  AdminUrlRefilterRun,
+  AdminUrlRefilterRunEvent,
   StatsData,
 } from "../types/graph";
 
@@ -80,6 +85,8 @@ export function AdminPage() {
   const [runtimeStatus, setRuntimeStatus] = useState<AdminRuntimeStatus | null>(null);
   const [runtimeCurrent, setRuntimeCurrent] = useState<AdminRuntimeCurrent | null>(null);
   const [latestDedup, setLatestDedup] = useState<AdminDedupSummary | null>(null);
+  const [latestRefilterRun, setLatestRefilterRun] = useState<AdminUrlRefilterRun | null>(null);
+  const [refilterEvents, setRefilterEvents] = useState<AdminUrlRefilterRunEvent[]>([]);
   const [batchSize, setBatchSize] = useState("10");
   const [isLoading, setIsLoading] = useState(true);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -89,15 +96,27 @@ export function AdminPage() {
     void loadAdminPage(activeAdminToken);
   }, [activeAdminToken]);
 
+  useEffect(() => {
+    if (!activeAdminToken.trim()) {
+      return undefined;
+    }
+    const interval = window.setInterval(() => {
+      void loadAdminPage(activeAdminToken, { silent: true });
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [activeAdminToken]);
+
   /**
    * Load the admin page summary and privileged panels.
    *
    * @param adminToken Admin bearer token used for protected endpoints.
    * @returns Promise resolved after page state updates.
    */
-  async function loadAdminPage(adminToken: string) {
+  async function loadAdminPage(adminToken: string, options?: { silent?: boolean }) {
     try {
-      setIsLoading(true);
+      if (!options?.silent) {
+        setIsLoading(true);
+      }
       const statsResponse = await fetchStats();
       setStats(statsResponse);
 
@@ -105,27 +124,41 @@ export function AdminPage() {
         setRuntimeStatus(null);
         setRuntimeCurrent(null);
         setLatestDedup(null);
+        setLatestRefilterRun(null);
+        setRefilterEvents([]);
         setAdminError("请输入管理员 Token 以加载受保护接口。");
         return;
       }
 
-      const [runtimeStatusResponse, runtimeCurrentResponse, latestDedupResponse] = await Promise.all([
+      const [runtimeStatusResponse, runtimeCurrentResponse, latestDedupResponse, latestRefilterResponse] =
+        await Promise.all([
         fetchAdminRuntimeStatus(adminToken),
         fetchAdminRuntimeCurrent(adminToken),
         fetchAdminDedupLatest(adminToken),
-      ]);
+          fetchAdminUrlRefilterLatest(adminToken),
+        ]);
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
       setLatestDedup(latestDedupResponse);
+      setLatestRefilterRun(latestRefilterResponse);
+      if (latestRefilterResponse !== null) {
+        setRefilterEvents(await fetchAdminUrlRefilterEvents(adminToken, latestRefilterResponse.id));
+      } else {
+        setRefilterEvents([]);
+      }
       setAdminError(null);
     } catch (error) {
       console.error(error);
       setRuntimeStatus(null);
       setRuntimeCurrent(null);
       setLatestDedup(null);
+      setLatestRefilterRun(null);
+      setRefilterEvents([]);
       setAdminError("管理员接口加载失败，请确认 Token 是否正确。");
     } finally {
-      setIsLoading(false);
+      if (!options?.silent) {
+        setIsLoading(false);
+      }
     }
   }
 
@@ -345,6 +378,22 @@ export function AdminPage() {
                   <div className="text-xs text-slate-500">POST /api/admin/database/reset</div>
                 </div>
               </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void runAdminAction(
+                    () => postAdminRunUrlRefilter(activeAdminToken),
+                    "重新过滤任务已启动。",
+                  )
+                }
+                className="flex items-center gap-3 rounded-3xl border border-indigo-200 px-5 py-4 text-left transition-colors hover:bg-indigo-50"
+              >
+                <RotateCcw className="h-5 w-5 text-indigo-600" />
+                <div>
+                  <div className="text-slate-900">重新过滤</div>
+                  <div className="text-xs text-slate-500">POST /api/admin/url-refilter-runs</div>
+                </div>
+              </button>
             </div>
           </div>
 
@@ -394,6 +443,43 @@ export function AdminPage() {
                     scanned / total: {latestDedup ? `${latestDedup.scannedCount} / ${latestDedup.totalCount}` : "-"}
                     <br />
                     removed: {latestDedup?.removedCount ?? "-"}
+                  </div>
+                </div>
+                <div className="rounded-3xl bg-slate-50 p-4">
+                  <div className="text-sm text-slate-500">latest refilter run</div>
+                  <div className="mt-1 text-xl text-slate-950">{latestRefilterRun?.status ?? "暂无记录"}</div>
+                  <div className="mt-3 text-sm leading-7 text-slate-600">
+                    run id: {latestRefilterRun?.id ?? "-"}
+                    <br />
+                    scanned / total:{" "}
+                    {latestRefilterRun ? `${latestRefilterRun.scannedCount} / ${latestRefilterRun.totalCount}` : "-"}
+                    <br />
+                    activated / deactivated / retagged:{" "}
+                    {latestRefilterRun
+                      ? `${latestRefilterRun.activatedCount} / ${latestRefilterRun.deactivatedCount} / ${latestRefilterRun.retaggedCount}`
+                      : "-"}
+                    <br />
+                    backup: {latestRefilterRun?.backupPath ?? "-"}
+                  </div>
+                </div>
+                <div className="rounded-3xl bg-slate-50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-slate-500">重新过滤日志</div>
+                    <div className="text-xs text-slate-400">{refilterEvents.length} 条</div>
+                  </div>
+                  <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1 text-sm text-slate-600">
+                    {refilterEvents.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-3 text-slate-400">
+                        暂无日志
+                      </div>
+                    ) : (
+                      refilterEvents.map((event) => (
+                        <div key={event.id} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                          <div className="text-xs text-slate-400">{event.createdAt ?? "-"}</div>
+                          <div className="mt-1 leading-6 text-slate-700">{event.message}</div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>

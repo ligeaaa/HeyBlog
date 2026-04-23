@@ -118,6 +118,31 @@ def _execute_blog_dedup_scan_in_background(
         state.maintenance_in_progress = False
 
 
+def _execute_url_refilter_in_background(
+    state: BackendState,
+    *,
+    run_id: int,
+) -> None:
+    try:
+        state.persistence.execute_url_refilter_run(run_id=run_id)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get("detail", "upstream_error")
+        except Exception:  # noqa: BLE001
+            detail = "upstream_error"
+        try:
+            state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(detail))
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as exc:  # noqa: BLE001
+        try:
+            state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        state.maintenance_in_progress = False
+
+
 def create_app(state: BackendState | None = None) -> FastAPI:
     """Create the public backend app."""
     app = FastAPI(title="HeyBlog Backend Service", version="0.1.0")
@@ -379,6 +404,18 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_stats() -> dict[str, Any]:
         return get_state().persistence.stats()
 
+    @app.get("/api/filter-stats")
+    def get_filter_stats() -> dict[str, Any]:
+        try:
+            return get_state().persistence.get_filter_stats_by_chain_order()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
     @app.post("/api/admin/crawl/bootstrap")
     def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.bootstrap()
@@ -468,6 +505,91 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             daemon=True,
         ).start()
         return payload
+
+    @app.post("/api/admin/url-refilter-runs")
+    def run_url_refilter(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        state = get_state()
+        if state.maintenance_in_progress:
+            raise HTTPException(status_code=409, detail="maintenance_in_progress")
+
+        runtime_before = state.crawler.runtime_status()
+        crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
+        state.maintenance_in_progress = True
+        try:
+            payload = state.persistence.create_url_refilter_run(crawler_was_running=crawler_was_running)
+            run_id = int(payload["id"])
+            state.persistence.append_url_refilter_run_event(run_id=run_id, message="停止爬虫中")
+            if crawler_was_running:
+                state.crawler.stop()
+                ensure_runtime_idle()
+                state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已停止")
+            else:
+                state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已处于停止状态")
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", "upstream_error")
+            except Exception:  # noqa: BLE001
+                detail = "upstream_error"
+            if "run_id" in locals():
+                try:
+                    state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(detail))
+                except Exception:  # noqa: BLE001
+                    pass
+            state.maintenance_in_progress = False
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        except HTTPException as exc:
+            if "run_id" in locals():
+                try:
+                    state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc.detail))
+                except Exception:  # noqa: BLE001
+                    pass
+            state.maintenance_in_progress = False
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if "run_id" in locals():
+                try:
+                    state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
+                except Exception:  # noqa: BLE001
+                    pass
+            state.maintenance_in_progress = False
+            raise HTTPException(status_code=500, detail="url_refilter_run_failed") from exc
+
+        Thread(
+            target=_execute_url_refilter_in_background,
+            kwargs={
+                "state": state,
+                "run_id": run_id,
+            },
+            daemon=True,
+        ).start()
+        return payload
+
+    @app.get("/api/admin/url-refilter-runs/latest")
+    def get_latest_url_refilter_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        try:
+            return get_state().persistence.latest_url_refilter_run()
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    @app.get("/api/admin/url-refilter-runs/{run_id}/events")
+    def get_url_refilter_run_events(
+        run_id: int,
+        _: None = Depends(require_admin_access),
+    ) -> list[dict[str, Any]]:
+        try:
+            return get_state().persistence.list_url_refilter_run_events(run_id)
+        except httpx.HTTPStatusError as exc:
+            detail: Any = "upstream_error"
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
     @app.get("/api/admin/blog-dedup-scans/latest")
     def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
