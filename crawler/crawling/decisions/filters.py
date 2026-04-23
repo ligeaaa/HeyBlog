@@ -8,21 +8,15 @@ from urllib.parse import urlparse
 from crawler.crawling.decisions.base import FilterDecision
 from crawler.crawling.decisions.base import StaticStatusUrlFilter
 from crawler.crawling.decisions.base import UrlCandidateContext
-from crawler.filters import BLOCKED_TLDS
-from crawler.filters import FILE_SUFFIX_BLOCKLIST
-from crawler.filters import PATH_BLOCKLIST
-from crawler.filters import PLATFORM_BLOCKLIST
-
-
-def _matches_blocked_domain(domain: str, blocklist: tuple[str, ...] | set[str]) -> bool:
-    """Return whether a domain exactly matches or is nested under a blocked domain."""
-    return any(domain == blocked or domain.endswith(f".{blocked}") for blocked in blocklist)
-
-
-def _matches_exact_url(normalized_url: str, exact_url_blocklist: tuple[str, ...]) -> bool:
-    """Return whether a normalized URL is explicitly blocked."""
-    normalized_blocklist = {value.rstrip("/") for value in exact_url_blocklist}
-    return normalized_url.rstrip("/") in normalized_blocklist
+from crawler.crawling.decisions.rule_helpers import BLOCKED_TLDS
+from crawler.crawling.decisions.rule_helpers import PLATFORM_BLOCKLIST
+from crawler.crawling.decisions.rule_helpers import has_asset_suffix
+from crawler.crawling.decisions.rule_helpers import has_extra_location_parts
+from crawler.crawling.decisions.rule_helpers import is_root_like_path
+from crawler.crawling.decisions.rule_helpers import matches_blocked_domain
+from crawler.crawling.decisions.rule_helpers import matches_exact_url
+from crawler.crawling.decisions.rule_helpers import matches_prefix_blocklist
+from crawler.crawling.decisions.rule_helpers import path_has_blocked_segment
 
 
 @dataclass(slots=True)
@@ -65,7 +59,7 @@ class ExactUrlBlocklistFilter(StaticStatusUrlFilter):
     filter_reason: str = "exact_url_blocked"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        if _matches_exact_url(candidate.normalized_url, self.exact_url_blocklist):
+        if matches_exact_url(candidate.normalized_url, self.exact_url_blocklist):
             return self.reject()
         return self.accept()
 
@@ -80,8 +74,7 @@ class PrefixBlocklistFilter(StaticStatusUrlFilter):
     filter_reason: str = "prefix_blocked"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        normalized_url = candidate.normalized_url.rstrip("/")
-        if any(normalized_url.startswith(prefix.rstrip("/")) for prefix in self.prefix_blocklist):
+        if matches_prefix_blocklist(candidate.normalized_url, self.prefix_blocklist):
             return self.reject()
         return self.accept()
 
@@ -96,7 +89,7 @@ class PlatformDomainFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         domain = urlparse(candidate.normalized_url).netloc.lower()
-        if _matches_blocked_domain(domain, PLATFORM_BLOCKLIST):
+        if matches_blocked_domain(domain, PLATFORM_BLOCKLIST):
             return self.reject()
         return self.accept()
 
@@ -112,7 +105,7 @@ class CustomDomainBlocklistFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         domain = urlparse(candidate.normalized_url).netloc.lower()
-        if _matches_blocked_domain(domain, self.domain_blocklist):
+        if matches_blocked_domain(domain, self.domain_blocklist):
             return self.reject()
         return self.accept()
 
@@ -142,8 +135,7 @@ class RootPathFilter(StaticStatusUrlFilter):
     filter_reason: str = "non_root_path"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        path = urlparse(candidate.normalized_url).path or "/"
-        if path != "/":
+        if not is_root_like_path(urlparse(candidate.normalized_url).path):
             return self.reject()
         return self.accept()
 
@@ -158,7 +150,7 @@ class LocationFragmentFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         parsed = urlparse(candidate.normalized_url)
-        if parsed.query or parsed.fragment:
+        if has_extra_location_parts(query=parsed.query, fragment=parsed.fragment):
             return self.reject()
         return self.accept()
 
@@ -172,8 +164,7 @@ class AssetSuffixFilter(StaticStatusUrlFilter):
     filter_reason: str = "asset_suffix"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        path = (urlparse(candidate.normalized_url).path or "/").lower()
-        if any(path.endswith(suffix) for suffix in FILE_SUFFIX_BLOCKLIST):
+        if has_asset_suffix(urlparse(candidate.normalized_url).path):
             return self.reject()
         return self.accept()
 
@@ -187,7 +178,6 @@ class BlockedPathFilter(StaticStatusUrlFilter):
     filter_reason: str = "blocked_path"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        lowered = (urlparse(candidate.normalized_url).path or "/").lower()
-        if any(lowered == blocked or lowered.startswith(f"{blocked}/") for blocked in PATH_BLOCKLIST):
+        if path_has_blocked_segment(urlparse(candidate.normalized_url).path or "/"):
             return self.reject()
         return self.accept()
