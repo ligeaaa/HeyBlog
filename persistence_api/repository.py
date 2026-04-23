@@ -333,6 +333,36 @@ def _catalog_response(
     }
 
 
+def _count_selectable_rows(session: Session, selectable: Any) -> int:
+    """Return a stable integer row count for one SQLAlchemy selectable."""
+    return int(session.scalar(select(func.count()).select_from(selectable)) or 0)
+
+
+def _resolve_page_window(*, total_items: int, page: int, page_size: int) -> tuple[int, int]:
+    """Return the effective page number and row offset for one paginated query."""
+    total_pages = ceil(total_items / page_size) if total_items else 0
+    effective_page = 1 if total_pages == 0 else min(page, total_pages)
+    return effective_page, (effective_page - 1) * page_size
+
+
+def _execute_paginated_query(
+    session: Session,
+    statement: Any,
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[list[Any], int, int]:
+    """Execute one statement with shared count and page-window semantics."""
+    total_items = _count_selectable_rows(session, statement.subquery())
+    effective_page, offset = _resolve_page_window(
+        total_items=total_items,
+        page=page,
+        page_size=page_size,
+    )
+    rows = session.execute(statement.limit(page_size).offset(offset)).all()
+    return rows, total_items, effective_page
+
+
 def ensure_legacy_compat_schema(engine: Any) -> None:
     """Apply additive compatibility fixes needed by existing persistence databases."""
     inspector = inspect(engine)
@@ -1924,11 +1954,12 @@ class SQLAlchemyRepository:
             else:
                 statement = statement.order_by(BlogModel.blog_id.desc(), BlogModel.id.desc())
 
-            total_items = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
-            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
-            offset = (effective_page - 1) * query["page_size"]
-            rows = session.execute(statement.limit(query["page_size"]).offset(offset)).all()
+            rows, total_items, effective_page = _execute_paginated_query(
+                session,
+                statement,
+                page=query["page"],
+                page_size=query["page_size"],
+            )
             return _catalog_response(
                 items=[self._row_blog_payload(row) for row in rows],
                 page=effective_page,
@@ -2006,11 +2037,12 @@ class SQLAlchemyRepository:
             else:
                 statement = statement.order_by(BlogModel.blog_id.desc(), BlogModel.id.desc())
 
-            total_items = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-            total_pages = ceil(total_items / query["page_size"]) if total_items else 0
-            effective_page = 1 if total_pages == 0 else min(query["page"], total_pages)
-            offset = (effective_page - 1) * query["page_size"]
-            rows = session.execute(statement.limit(query["page_size"]).offset(offset)).all()
+            rows, total_items, effective_page = _execute_paginated_query(
+                session,
+                statement,
+                page=query["page"],
+                page_size=query["page_size"],
+            )
             blog_ids = [int(_business_blog_id(row[0])) for row in rows]
             label_rows = []
             if blog_ids:
@@ -2255,8 +2287,8 @@ class SQLAlchemyRepository:
                 select(BlogModel.crawl_status, func.count()).group_by(BlogModel.crawl_status)
             ).all()
             status_counts = {str(status.value): int(count) for status, count in rows}
-            total_blogs = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
-            total_edges = int(session.scalar(select(func.count()).select_from(EdgeModel)) or 0)
+            total_blogs = _count_selectable_rows(session, BlogModel)
+            total_edges = _count_selectable_rows(session, EdgeModel)
             average_friend_links = float(session.scalar(select(func.avg(BlogModel.friend_links_count))) or 0.0)
             return {
                 "total_blogs": total_blogs,
@@ -2273,7 +2305,7 @@ class SQLAlchemyRepository:
         settings = self._decision_scan_settings()
         decision_chain = build_url_decision_chain(settings)
         with session_scope(self.session_factory) as session:
-            total_raw = int(session.scalar(select(func.count()).select_from(RawDiscoveredUrlModel)) or 0)
+            total_raw = _count_selectable_rows(session, RawDiscoveredUrlModel)
             grouped_rows = session.execute(
                 select(RawDiscoveredUrlModel.status, func.count()).group_by(RawDiscoveredUrlModel.status)
             ).all()
@@ -2349,7 +2381,7 @@ class SQLAlchemyRepository:
                 run.completed_at = None
                 run.error_message = None
                 run.filter_chain_version = _filter_chain_version(settings)
-                run.total_count = int(session.scalar(select(func.count()).select_from(RawDiscoveredUrlModel)) or 0)
+                run.total_count = _count_selectable_rows(session, RawDiscoveredUrlModel)
                 run.scanned_count = 0
                 run.unchanged_count = 0
                 run.activated_count = 0
@@ -2494,7 +2526,7 @@ class SQLAlchemyRepository:
         started_at = now_utc()
         settings = self._decision_scan_settings()
         with session_scope(self.session_factory) as session:
-            total_count = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
+            total_count = _count_selectable_rows(session, BlogModel)
             run = BlogDedupScanRunModel(
                 status="RUNNING",
                 ruleset_version=_decision_scan_ruleset_version(settings),
@@ -2597,7 +2629,7 @@ class SQLAlchemyRepository:
                 if run is None:
                     raise ValueError("blog_dedup_scan_run_not_found")
                 completed_at = now_utc()
-                final_blog_count = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
+                final_blog_count = _count_selectable_rows(session, BlogModel)
                 run.status = "SUCCEEDED"
                 run.completed_at = completed_at
                 run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
@@ -2659,24 +2691,16 @@ class SQLAlchemyRepository:
 
     def reset(self) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
-            blogs_deleted = int(session.scalar(select(func.count()).select_from(BlogModel)) or 0)
-            edges_deleted = int(session.scalar(select(func.count()).select_from(EdgeModel)) or 0)
-            requests_deleted = int(session.scalar(select(func.count()).select_from(IngestionRequestModel)) or 0)
-            labels_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelAssignmentModel)) or 0)
-            tag_defs_deleted = int(session.scalar(select(func.count()).select_from(BlogLabelTagModel)) or 0)
-            raw_urls_deleted = int(session.scalar(select(func.count()).select_from(RawDiscoveredUrlModel)) or 0)
-            scan_items_deleted = int(
-                session.scalar(select(func.count()).select_from(BlogDedupScanRunItemModel)) or 0
-            )
-            scan_runs_deleted = int(
-                session.scalar(select(func.count()).select_from(BlogDedupScanRunModel)) or 0
-            )
-            refilter_events_deleted = int(
-                session.scalar(select(func.count()).select_from(UrlRefilterRunEventModel)) or 0
-            )
-            refilter_runs_deleted = int(
-                session.scalar(select(func.count()).select_from(UrlRefilterRunModel)) or 0
-            )
+            blogs_deleted = _count_selectable_rows(session, BlogModel)
+            edges_deleted = _count_selectable_rows(session, EdgeModel)
+            requests_deleted = _count_selectable_rows(session, IngestionRequestModel)
+            labels_deleted = _count_selectable_rows(session, BlogLabelAssignmentModel)
+            tag_defs_deleted = _count_selectable_rows(session, BlogLabelTagModel)
+            raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
+            scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
+            scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
+            refilter_events_deleted = _count_selectable_rows(session, UrlRefilterRunEventModel)
+            refilter_runs_deleted = _count_selectable_rows(session, UrlRefilterRunModel)
             if self.dialect_name == "postgresql":
                 session.execute(
                     text(
