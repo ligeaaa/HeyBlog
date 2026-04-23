@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from threading import Thread
 from time import sleep
 from typing import Any
+from typing import Callable
+from typing import NoReturn
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -47,9 +49,44 @@ class CreateBlogLabelTagRequest(BaseModel):
     name: str
 
 
+ACTIVE_CRAWLER_RUNNER_STATUSES = frozenset({"starting", "running", "stopping"})
+
+
+def _crawler_runtime_is_active(runtime: dict[str, Any]) -> bool:
+    """Return whether one crawler runtime payload represents an active run."""
+    return runtime.get("runner_status") in ACTIVE_CRAWLER_RUNNER_STATUSES
+
+
 def _raise_for_maintenance(state: BackendState) -> None:
     if state.maintenance_in_progress:
         raise HTTPException(status_code=409, detail="maintenance_in_progress")
+
+
+def _enter_maintenance(state: BackendState) -> bool:
+    """Mark the backend as in maintenance mode and report whether crawler was active."""
+    _raise_for_maintenance(state)
+    runtime_before = state.crawler.runtime_status()
+    crawler_was_running = _crawler_runtime_is_active(runtime_before)
+    state.maintenance_in_progress = True
+    return crawler_was_running
+
+
+def _leave_maintenance(state: BackendState) -> None:
+    """Clear backend maintenance mode."""
+    state.maintenance_in_progress = False
+
+
+def _stop_active_crawler(
+    state: BackendState,
+    *,
+    crawler_was_running: bool,
+    wait_for_idle: Callable[[], Any],
+) -> None:
+    """Stop the crawler and wait for idle only when it was active."""
+    if not crawler_was_running:
+        return
+    state.crawler.stop()
+    wait_for_idle()
 
 
 def _upstream_error_detail(exc: httpx.HTTPStatusError, default: Any = "upstream_error") -> Any:
@@ -86,6 +123,49 @@ def _mark_url_refilter_run_failed(
         pass
 
 
+def _abort_url_refilter_start(
+    state: BackendState,
+    *,
+    run_id: int | None,
+    error_message: str,
+) -> None:
+    """Persist a failed refilter start attempt and clear maintenance mode."""
+    _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
+    _leave_maintenance(state)
+
+
+def _call_upstream_with_http_error_translation(
+    action: Callable[[], Any],
+    *,
+    default: Any = "upstream_error",
+    detail_override: Any | None = None,
+) -> Any:
+    """Execute one upstream call and preserve the shared HTTP error mapping."""
+    try:
+        return action()
+    except httpx.HTTPStatusError as exc:
+        _raise_upstream_http_error(exc, default=default, detail_override=detail_override)
+
+
+def _best_effort_search_reindex(search: Any) -> bool:
+    """Try to rebuild search state and report whether it succeeded."""
+    try:
+        search.reindex()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _run_crawler_action_and_refresh_search(
+    search: Any,
+    action: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Run one crawler action and best-effort refresh search before returning."""
+    result = action()
+    _best_effort_search_reindex(search)
+    return result
+
+
 def build_backend_state(settings: Settings | None = None) -> BackendState:
     """Build the backend service state."""
     resolved = settings or Settings.from_env()
@@ -119,11 +199,7 @@ def _execute_blog_dedup_scan_in_background(
     error_message: str | None = None
     try:
         state.persistence.execute_blog_dedup_scan_run(run_id=run_id)
-        try:
-            state.search.reindex()
-            search_reindexed = True
-        except Exception:  # noqa: BLE001
-            search_reindexed = False
+        search_reindexed = _best_effort_search_reindex(state.search)
     except httpx.HTTPStatusError as exc:
         error_message = str(_upstream_error_detail(exc))
     except Exception as exc:  # noqa: BLE001
@@ -161,7 +237,34 @@ def _execute_url_refilter_in_background(
     except Exception as exc:  # noqa: BLE001
         _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc))
     finally:
-        state.maintenance_in_progress = False
+        _leave_maintenance(state)
+
+
+def _start_maintenance_background_task(
+    state: BackendState,
+    *,
+    prepare_run: Callable[[bool], tuple[dict[str, Any], dict[str, Any]]],
+    on_http_error: Callable[[httpx.HTTPStatusError], NoReturn],
+    on_http_exception: Callable[[HTTPException], NoReturn],
+    on_unexpected_error: Callable[[Exception], NoReturn],
+    target: Callable[..., None],
+) -> dict[str, Any]:
+    """Start one maintenance-mode background task with shared exception handling."""
+    crawler_was_running = _enter_maintenance(state)
+    try:
+        payload, thread_kwargs = prepare_run(crawler_was_running)
+    except httpx.HTTPStatusError as exc:
+        on_http_error(exc)
+    except HTTPException as exc:
+        on_http_exception(exc)
+    except Exception as exc:  # noqa: BLE001
+        on_unexpected_error(exc)
+    Thread(
+        target=target,
+        kwargs={"state": state, **thread_kwargs},
+        daemon=True,
+    ).start()
+    return payload
 
 
 def create_app(state: BackendState | None = None) -> FastAPI:
@@ -222,7 +325,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         stats = get_state().persistence.stats()
         runtime = get_state().crawler.runtime_status()
         return {
-            "is_running": runtime["runner_status"] in {"starting", "running", "stopping"},
+            "is_running": _crawler_runtime_is_active(runtime),
             "pending_tasks": stats["pending_tasks"],
             "processing_tasks": stats["processing_tasks"],
             "finished_tasks": stats["finished_tasks"],
@@ -245,8 +348,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         has_icon: str | None = None,
         min_connections: str | None = None,
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.list_blogs_catalog(
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blogs_catalog(
                 page=page,
                 page_size=page_size,
                 site=site,
@@ -259,15 +362,13 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 has_icon=has_icon,
                 min_connections=min_connections,
             )
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        )
 
     @app.get("/api/blogs/lookup")
     def lookup_blog_candidates(url: str) -> dict[str, Any]:
-        try:
-            return get_state().persistence.lookup_blog_candidates(url=url)
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.lookup_blog_candidates(url=url)
+        )
 
     @app.get("/api/admin/blog-labeling/candidates")
     def get_blog_labeling_candidates(
@@ -279,8 +380,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         sort: str = "id_desc",
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.list_blog_labeling_candidates(
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blog_labeling_candidates(
                 page=page,
                 page_size=page_size,
                 q=q,
@@ -288,25 +389,22 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 labeled=labeled,
                 sort=sort,
             )
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        )
 
     @app.get("/api/admin/blog-labeling/tags")
     def get_blog_label_tags(_: None = Depends(require_admin_access)) -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_blog_label_tags()
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blog_label_tags()
+        )
 
     @app.post("/api/admin/blog-labeling/tags")
     def post_blog_label_tag(
         payload: CreateBlogLabelTagRequest,
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.create_blog_label_tag(name=payload.name)
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_blog_label_tag(name=payload.name)
+        )
 
     @app.put("/api/admin/blog-labeling/labels/{blog_id}")
     def put_blog_labels(
@@ -314,17 +412,18 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         payload: ReplaceBlogLabelsRequest,
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.replace_blog_link_labels(
+                blog_id=blog_id,
+                tag_ids=payload.tag_ids,
+            )
+        )
 
     @app.get("/api/admin/blog-labeling/export")
     def export_blog_label_training_csv(_: None = Depends(require_admin_access)) -> Response:
-        try:
-            csv_payload = get_state().persistence.export_blog_label_training_csv()
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        csv_payload = _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.export_blog_label_training_csv()
+        )
         return Response(
             content=csv_payload,
             media_type="text/csv",
@@ -362,10 +461,9 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.get("/api/graph/nodes/{blog_id}/neighbors")
     def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
-        try:
-            return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+        )
 
     @app.get("/api/graph/snapshots/latest")
     def get_latest_graph_snapshot() -> dict[str, Any]:
@@ -381,10 +479,9 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.get("/api/filter-stats")
     def get_filter_stats() -> dict[str, Any]:
-        try:
-            return get_state().persistence.get_filter_stats_by_chain_order()
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_filter_stats_by_chain_order()
+        )
 
     @app.post("/api/admin/crawl/bootstrap")
     def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
@@ -392,148 +489,142 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.post("/api/admin/crawl/run")
     def run_crawl(max_nodes: int | None = None, _: None = Depends(require_admin_access)) -> dict[str, Any]:
-        result = get_state().crawler.run(max_nodes=max_nodes)
-        try:
-            get_state().search.reindex()
-        except Exception:  # noqa: BLE001
-            pass
-        return result
+        state = get_state()
+        return _run_crawler_action_and_refresh_search(
+            state.search,
+            lambda: state.crawler.run(max_nodes=max_nodes),
+        )
 
     @app.post("/api/ingestion-requests")
     def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
-        try:
-            return get_state().persistence.create_ingestion_request(**payload.model_dump())
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_ingestion_request(**payload.model_dump())
+        )
 
     @app.get("/api/ingestion-requests")
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_priority_ingestion_requests()
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_priority_ingestion_requests()
+        )
 
     @app.get("/api/ingestion-requests/{request_id}")
     def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        try:
-            return get_state().persistence.get_ingestion_request(
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_ingestion_request(
                 request_id=request_id,
                 request_token=request_token,
             )
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        )
 
     @app.post("/api/admin/blog-dedup-scans")
     def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         state = get_state()
-        if state.maintenance_in_progress:
-            raise HTTPException(status_code=409, detail="maintenance_in_progress")
 
-        runtime_before = state.crawler.runtime_status()
-        crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
-        state.maintenance_in_progress = True
-        try:
-            if crawler_was_running:
-                state.crawler.stop()
-                ensure_runtime_idle()
+        def prepare_run(crawler_was_running: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+            _stop_active_crawler(
+                state,
+                crawler_was_running=crawler_was_running,
+                wait_for_idle=ensure_runtime_idle,
+            )
             payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-        except httpx.HTTPStatusError as exc:
-            state.maintenance_in_progress = False
-            _raise_upstream_http_error(exc)
-        except HTTPException:
-            state.maintenance_in_progress = False
-            raise
-        except Exception as exc:  # noqa: BLE001
-            state.maintenance_in_progress = False
-            raise HTTPException(status_code=500, detail="blog_dedup_scan_failed") from exc
-        Thread(
-            target=_execute_blog_dedup_scan_in_background,
-            kwargs={
-                "state": state,
+            return payload, {
                 "run_id": int(payload["id"]),
                 "crawler_was_running": crawler_was_running,
-            },
-            daemon=True,
-        ).start()
-        return payload
+            }
+
+        def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
+            _leave_maintenance(state)
+            _raise_upstream_http_error(exc)
+
+        def on_http_exception(exc: HTTPException) -> NoReturn:
+            _leave_maintenance(state)
+            raise exc
+
+        def on_unexpected_error(exc: Exception) -> NoReturn:
+            _leave_maintenance(state)
+            raise HTTPException(status_code=500, detail="blog_dedup_scan_failed") from exc
+
+        return _start_maintenance_background_task(
+            state,
+            prepare_run=prepare_run,
+            on_http_error=on_http_error,
+            on_http_exception=on_http_exception,
+            on_unexpected_error=on_unexpected_error,
+            target=_execute_blog_dedup_scan_in_background,
+        )
 
     @app.post("/api/admin/url-refilter-runs")
     def run_url_refilter(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         state = get_state()
-        if state.maintenance_in_progress:
-            raise HTTPException(status_code=409, detail="maintenance_in_progress")
+        run_context: dict[str, int | None] = {"run_id": None}
 
-        runtime_before = state.crawler.runtime_status()
-        crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
-        state.maintenance_in_progress = True
-        run_id: int | None = None
-        try:
+        def prepare_run(crawler_was_running: bool) -> tuple[dict[str, Any], dict[str, Any]]:
             payload = state.persistence.create_url_refilter_run(crawler_was_running=crawler_was_running)
             run_id = int(payload["id"])
+            run_context["run_id"] = run_id
             state.persistence.append_url_refilter_run_event(run_id=run_id, message="停止爬虫中")
             if crawler_was_running:
-                state.crawler.stop()
-                ensure_runtime_idle()
+                _stop_active_crawler(
+                    state,
+                    crawler_was_running=True,
+                    wait_for_idle=ensure_runtime_idle,
+                )
                 state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已停止")
             else:
                 state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已处于停止状态")
-        except httpx.HTTPStatusError as exc:
+            return payload, {"run_id": run_id}
+
+        def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
             detail = _upstream_error_detail(exc)
-            _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(detail))
-            state.maintenance_in_progress = False
+            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=str(detail))
             _raise_upstream_http_error(exc, detail_override=detail)
-        except HTTPException as exc:
-            _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc.detail))
-            state.maintenance_in_progress = False
-            raise
-        except Exception as exc:  # noqa: BLE001
-            _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc))
-            state.maintenance_in_progress = False
+
+        def on_http_exception(exc: HTTPException) -> NoReturn:
+            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=str(exc.detail))
+            raise exc
+
+        def on_unexpected_error(exc: Exception) -> NoReturn:
+            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=str(exc))
             raise HTTPException(status_code=500, detail="url_refilter_run_failed") from exc
 
-        Thread(
+        return _start_maintenance_background_task(
+            state,
+            prepare_run=prepare_run,
+            on_http_error=on_http_error,
+            on_http_exception=on_http_exception,
+            on_unexpected_error=on_unexpected_error,
             target=_execute_url_refilter_in_background,
-            kwargs={
-                "state": state,
-                "run_id": run_id,
-            },
-            daemon=True,
-        ).start()
-        return payload
+        )
 
     @app.get("/api/admin/url-refilter-runs/latest")
     def get_latest_url_refilter_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        try:
-            return get_state().persistence.latest_url_refilter_run()
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.latest_url_refilter_run()
+        )
 
     @app.get("/api/admin/url-refilter-runs/{run_id}/events")
     def get_url_refilter_run_events(
         run_id: int,
         _: None = Depends(require_admin_access),
     ) -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_url_refilter_run_events(run_id)
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_url_refilter_run_events(run_id)
+        )
 
     @app.get("/api/admin/blog-dedup-scans/latest")
     def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        try:
-            return get_state().persistence.latest_blog_dedup_scan_run()
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.latest_blog_dedup_scan_run()
+        )
 
     @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
     def get_blog_dedup_scan_run_items(
         run_id: int,
         _: None = Depends(require_admin_access),
     ) -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_blog_dedup_scan_run_items(run_id)
-        except httpx.HTTPStatusError as exc:
-            _raise_upstream_http_error(exc)
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blog_dedup_scan_run_items(run_id)
+        )
 
     @app.get("/api/admin/runtime/status")
     def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
@@ -559,18 +650,17 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         payload: RunBatchRequest,
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        _raise_for_maintenance(get_state())
-        result = get_state().crawler.run_batch(payload.max_nodes)
-        try:
-            get_state().search.reindex()
-        except Exception:  # noqa: BLE001
-            pass
-        return result
+        state = get_state()
+        _raise_for_maintenance(state)
+        return _run_crawler_action_and_refresh_search(
+            state.search,
+            lambda: state.crawler.run_batch(payload.max_nodes),
+        )
 
     @app.post("/api/admin/database/reset")
     def reset_database(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         runtime = get_state().crawler.runtime_status()
-        if runtime.get("runner_status") in {"starting", "running", "stopping"}:
+        if _crawler_runtime_is_active(runtime):
             raise HTTPException(status_code=409, detail="crawler_busy")
 
         result = get_state().persistence.reset()

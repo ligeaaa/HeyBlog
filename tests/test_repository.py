@@ -796,6 +796,63 @@ def test_repository_claims_waiting_blogs_in_id_order(tmp_path: Path) -> None:
     assert second_claim["id"] == second_blog_id
 
 
+def test_repository_claims_priority_blogs_by_request_priority(tmp_path: Path) -> None:
+    """Priority queue claiming should follow ingestion priority before request age."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    first = repository.create_ingestion_request(
+        homepage_url="https://first-priority.example/",
+        email="owner@example.com",
+    )
+    second = repository.create_ingestion_request(
+        homepage_url="https://second-priority.example/",
+        email="owner@example.com",
+    )
+
+    with session_scope(repository.session_factory) as session:
+        first_request = session.scalar(
+            repository_module.select(repository_module.IngestionRequestModel).where(
+                repository_module.IngestionRequestModel.id == first["request_id"]
+            )
+        )
+        second_request = session.scalar(
+            repository_module.select(repository_module.IngestionRequestModel).where(
+                repository_module.IngestionRequestModel.id == second["request_id"]
+            )
+        )
+        assert first_request is not None
+        assert second_request is not None
+        first_request.priority = 100
+        second_request.priority = 200
+        first_request.updated_at = repository_module.now_utc()
+        second_request.updated_at = repository_module.now_utc()
+
+    claimed = repository.get_next_priority_blog()
+
+    assert claimed is not None
+    assert claimed["id"] == second["seed_blog_id"]
+
+
+def test_repository_waiting_queue_can_exclude_priority_seed_blogs(tmp_path: Path) -> None:
+    """Normal queue claiming should skip active ingestion seeds when requested."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    priority_request = repository.create_ingestion_request(
+        homepage_url="https://priority-seed.example/",
+        email="owner@example.com",
+    )
+    normal_blog_id, inserted = repository.upsert_blog(
+        url="https://normal.example/",
+        normalized_url="https://normal.example/",
+        domain="normal.example",
+    )
+    assert inserted is True
+
+    claimed = repository.get_next_waiting_blog(include_priority=False)
+
+    assert claimed is not None
+    assert claimed["id"] == normal_blog_id
+    assert repository.get_blog(priority_request["seed_blog_id"])["crawl_status"] == "WAITING"
+
+
 def test_repository_blog_catalog_paginates_and_filters(tmp_path: Path) -> None:
     """Catalog queries should paginate and filter on the server side."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")

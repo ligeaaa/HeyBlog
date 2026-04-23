@@ -22,6 +22,7 @@ from sqlalchemy import case
 from sqlalchemy import cast
 from sqlalchemy import func
 from sqlalchemy import inspect
+from sqlalchemy import ColumnElement
 from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy import String
@@ -528,50 +529,6 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                 },
             )
 
-
-def _blog_payload(
-    model: BlogModel,
-    *,
-    incoming_count: int = 0,
-    outgoing_count: int = 0,
-    activity_at: datetime | None = None,
-    identity_complete: bool | None = None,
-) -> dict[str, Any]:
-    resolved_incoming_count = int(incoming_count)
-    resolved_outgoing_count = int(outgoing_count)
-    resolved_title = _resolved_blog_title(model)
-    resolved_icon_url = _resolved_blog_icon_url(model)
-    resolved_blog_id = _business_blog_id(model)
-    return {
-        "id": int(resolved_blog_id),
-        "blog_id": int(resolved_blog_id),
-        "url": model.url,
-        "normalized_url": model.normalized_url,
-        "identity_key": model.identity_key,
-        "identity_reason_codes": _load_reason_codes(model.identity_reason_codes),
-        "identity_ruleset_version": model.identity_ruleset_version,
-        "domain": model.domain,
-        "email": model.email,
-        "title": resolved_title,
-        "icon_url": resolved_icon_url,
-        "status_code": model.status_code,
-        "crawl_status": model.crawl_status.value,
-        "friend_links_count": int(model.friend_links_count),
-        "last_crawled_at": _iso(model.last_crawled_at),
-        "created_at": _iso(model.created_at),
-        "updated_at": _iso(model.updated_at),
-        "incoming_count": resolved_incoming_count,
-        "outgoing_count": resolved_outgoing_count,
-        "connection_count": resolved_incoming_count + resolved_outgoing_count,
-        "activity_at": _iso(activity_at or model.last_crawled_at or model.updated_at),
-        "identity_complete": bool(
-            identity_complete
-            if identity_complete is not None
-            else (bool(resolved_title) and bool(resolved_icon_url))
-        ),
-    }
-
-
 def _resolved_blog_title(model: BlogModel) -> str:
     title = (model.title or "").strip()
     if title:
@@ -590,6 +547,91 @@ def _resolved_blog_icon_url(model: BlogModel) -> str | None:
     return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
 
 
+@dataclass(frozen=True, slots=True)
+class _BlogPayloadView:
+    """Hold one resolved blog view and expose the payload slices used by the repository."""
+
+    model: BlogModel
+    blog_id: int
+    title: str
+    icon_url: str | None
+
+    @classmethod
+    def from_model(cls, model: BlogModel | None) -> _BlogPayloadView | None:
+        """Return a resolved blog view for one model, or ``None`` when absent."""
+        if model is None:
+            return None
+        return cls(
+            model=model,
+            blog_id=int(_business_blog_id(model)),
+            title=_resolved_blog_title(model),
+            icon_url=_resolved_blog_icon_url(model),
+        )
+
+    def as_blog_payload(
+        self,
+        *,
+        incoming_count: int = 0,
+        outgoing_count: int = 0,
+        activity_at: datetime | None = None,
+        identity_complete: bool | None = None,
+    ) -> dict[str, Any]:
+        """Return the full blog payload with optional metric overrides."""
+        resolved_incoming_count = int(incoming_count)
+        resolved_outgoing_count = int(outgoing_count)
+        return {
+            "id": self.blog_id,
+            "blog_id": self.blog_id,
+            "url": self.model.url,
+            "normalized_url": self.model.normalized_url,
+            "identity_key": self.model.identity_key,
+            "identity_reason_codes": _load_reason_codes(self.model.identity_reason_codes),
+            "identity_ruleset_version": self.model.identity_ruleset_version,
+            "domain": self.model.domain,
+            "email": self.model.email,
+            "title": self.title,
+            "icon_url": self.icon_url,
+            "status_code": self.model.status_code,
+            "crawl_status": self.model.crawl_status.value,
+            "friend_links_count": int(self.model.friend_links_count),
+            "last_crawled_at": _iso(self.model.last_crawled_at),
+            "created_at": _iso(self.model.created_at),
+            "updated_at": _iso(self.model.updated_at),
+            "incoming_count": resolved_incoming_count,
+            "outgoing_count": resolved_outgoing_count,
+            "connection_count": resolved_incoming_count + resolved_outgoing_count,
+            "activity_at": _iso(activity_at or self.model.last_crawled_at or self.model.updated_at),
+            "identity_complete": bool(
+                identity_complete
+                if identity_complete is not None
+                else (bool(self.title) and bool(self.icon_url))
+            ),
+        }
+
+    def as_neighbor_payload(self) -> dict[str, Any]:
+        """Return the compact blog payload used for neighbor references."""
+        return {
+            "id": self.blog_id,
+            "blog_id": self.blog_id,
+            "domain": self.model.domain,
+            "title": self.title,
+            "icon_url": self.icon_url,
+        }
+
+    def as_public_summary_payload(self) -> dict[str, Any]:
+        """Return the public blog summary payload used by ingestion summaries."""
+        return {
+            "id": self.blog_id,
+            "blog_id": self.blog_id,
+            "url": self.model.url,
+            "normalized_url": self.model.normalized_url,
+            "domain": self.model.domain,
+            "title": self.title,
+            "icon_url": self.icon_url,
+            "crawl_status": self.model.crawl_status.value,
+        }
+
+
 def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     return {
         "id": int(model.id),
@@ -601,33 +643,6 @@ def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     }
 
 
-def _neighbor_payload(model: BlogModel | None) -> dict[str, Any] | None:
-    if model is None:
-        return None
-    return {
-        "id": int(_business_blog_id(model)),
-        "blog_id": int(_business_blog_id(model)),
-        "domain": model.domain,
-        "title": _resolved_blog_title(model),
-        "icon_url": _resolved_blog_icon_url(model),
-    }
-
-
-def _public_blog_summary_payload(model: BlogModel | None) -> dict[str, Any] | None:
-    if model is None:
-        return None
-    return {
-        "id": int(_business_blog_id(model)),
-        "blog_id": int(_business_blog_id(model)),
-        "url": model.url,
-        "normalized_url": model.normalized_url,
-        "domain": model.domain,
-        "title": _resolved_blog_title(model),
-        "icon_url": _resolved_blog_icon_url(model),
-        "crawl_status": model.crawl_status.value,
-    }
-
-
 def _ingestion_request_payload(
     model: IngestionRequestModel,
     *,
@@ -635,6 +650,9 @@ def _ingestion_request_payload(
     matched_blog: BlogModel | None = None,
 ) -> dict[str, Any]:
     resolved_blog = matched_blog or seed_blog
+    seed_blog_view = _BlogPayloadView.from_model(seed_blog)
+    matched_blog_view = _BlogPayloadView.from_model(matched_blog)
+    resolved_blog_view = _BlogPayloadView.from_model(resolved_blog)
     resolved_blog_id = None
     if matched_blog is not None:
         resolved_blog_id = _business_blog_id(matched_blog)
@@ -659,9 +677,9 @@ def _ingestion_request_payload(
         "error_message": model.error_message,
         "created_at": _iso(model.created_at),
         "updated_at": _iso(model.updated_at),
-        "seed_blog": _blog_payload(seed_blog) if seed_blog is not None else None,
-        "matched_blog": _blog_payload(matched_blog) if matched_blog is not None else None,
-        "blog": _blog_payload(resolved_blog) if resolved_blog is not None else None,
+        "seed_blog": seed_blog_view.as_blog_payload() if seed_blog_view is not None else None,
+        "matched_blog": matched_blog_view.as_blog_payload() if matched_blog_view is not None else None,
+        "blog": resolved_blog_view.as_blog_payload() if resolved_blog_view is not None else None,
     }
 
 
@@ -686,7 +704,8 @@ def _priority_ingestion_request_payload(
         "matched_blog",
     ):
         payload.pop(key, None)
-    payload["blog"] = _public_blog_summary_payload(resolved_blog)
+    resolved_blog_view = _BlogPayloadView.from_model(resolved_blog)
+    payload["blog"] = resolved_blog_view.as_public_summary_payload() if resolved_blog_view is not None else None
     return payload
 
 
@@ -714,6 +733,47 @@ def _blog_label_tag_payload(model: BlogLabelTagModel) -> dict[str, Any]:
         "created_at": _iso(model.created_at),
         "updated_at": _iso(model.updated_at),
     }
+
+
+def _blog_label_assignment_payload(
+    assignment: BlogLabelAssignmentModel,
+    tag: BlogLabelTagModel,
+) -> dict[str, Any]:
+    """Return the API payload for one labeled tag assignment."""
+    return {
+        **_blog_label_tag_payload(tag),
+        "labeled_at": _iso(assignment.labeled_at),
+    }
+
+
+def _blog_label_state_payload(
+    *,
+    blog_id: int,
+    labels: list[dict[str, Any]],
+    last_labeled_at: datetime | None,
+) -> dict[str, Any]:
+    """Return the shared label-state payload used by labeling read/write flows."""
+    return {
+        "blog_id": blog_id,
+        "labels": labels,
+        "label_slugs": [label["slug"] for label in labels],
+        "last_labeled_at": _iso(last_labeled_at),
+        "is_labeled": len(labels) > 0,
+    }
+
+
+def _labels_by_blog_payload(
+    *,
+    blog_ids: list[int],
+    rows: list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]],
+) -> dict[int, list[dict[str, Any]]]:
+    """Group labeled-tag payloads by business blog id."""
+    labels_by_blog: dict[int, list[dict[str, Any]]] = {blog_id: [] for blog_id in blog_ids}
+    for assignment, tag in rows:
+        labels_by_blog.setdefault(int(assignment.blog_id), []).append(
+            _blog_label_assignment_payload(assignment, tag)
+        )
+    return labels_by_blog
 
 
 def _blog_dedup_scan_run_payload(model: BlogDedupScanRunModel) -> dict[str, Any]:
@@ -813,18 +873,21 @@ def _blog_labeling_payload(
     last_labeled_at: datetime | None,
 ) -> dict[str, Any]:
     blog = row[0]
+    blog_view = _BlogPayloadView.from_model(blog)
+    if blog_view is None:
+        raise ValueError("blog_not_found")
     return {
-        **_blog_payload(
-            blog,
+        **blog_view.as_blog_payload(
             incoming_count=int(row.incoming_count or 0),
             outgoing_count=int(row.outgoing_count or 0),
             activity_at=row.activity_at,
             identity_complete=bool(row.identity_complete),
         ),
-        "labels": labels,
-        "label_slugs": [label["slug"] for label in labels],
-        "last_labeled_at": _iso(last_labeled_at),
-        "is_labeled": len(labels) > 0,
+        **_blog_label_state_payload(
+            blog_id=int(_business_blog_id(blog)),
+            labels=labels,
+            last_labeled_at=last_labeled_at,
+        ),
     }
 
 
@@ -837,9 +900,11 @@ def _recommended_blog_payload(
     activity_at: datetime | None = None,
     identity_complete: bool | None = None,
 ) -> dict[str, Any]:
+    blog_view = _BlogPayloadView.from_model(blog)
+    if blog_view is None:
+        raise ValueError("blog_not_found")
     return {
-        "blog": _blog_payload(
-            blog,
+        "blog": blog_view.as_blog_payload(
             incoming_count=incoming_count,
             outgoing_count=outgoing_count,
             activity_at=activity_at,
@@ -847,7 +912,11 @@ def _recommended_blog_payload(
         ),
         "reason": "mutual_connection",
         "mutual_connection_count": len(via_blogs),
-        "via_blogs": [_neighbor_payload(via_blog) for via_blog in via_blogs if via_blog is not None],
+        "via_blogs": [
+            via_blog_view.as_neighbor_payload()
+            for via_blog in via_blogs
+            if (via_blog_view := _BlogPayloadView.from_model(via_blog)) is not None
+        ],
     }
 
 
@@ -1157,19 +1226,50 @@ class SQLAlchemyRepository:
         return statement, metrics
 
     def _row_blog_payload(self, row: Any) -> dict[str, Any]:
-        return _blog_payload(
-            row[0],
+        blog_view = _BlogPayloadView.from_model(row[0])
+        if blog_view is None:
+            raise ValueError("blog_not_found")
+        return blog_view.as_blog_payload(
             incoming_count=int(row.incoming_count or 0),
             outgoing_count=int(row.outgoing_count or 0),
             activity_at=row.activity_at,
             identity_complete=bool(row.identity_complete),
         )
 
-    def _ingestion_request_row_payload(
+    def _serialize_ingestion_request_payload(
         self,
         session: Session,
         request: IngestionRequestModel,
+        *,
+        serializer: Callable[..., dict[str, Any]],
     ) -> dict[str, Any]:
+        """Resolve request blogs once and pass them to the chosen serializer."""
+        seed_blog, matched_blog = self._resolve_ingestion_request_blogs(session, request)
+        return serializer(request, seed_blog=seed_blog, matched_blog=matched_blog)
+
+    def _serialize_ingestion_request_payloads(
+        self,
+        session: Session,
+        requests: list[IngestionRequestModel],
+        *,
+        serializer: Callable[..., dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Resolve and serialize multiple ingestion requests using the shared serializer handoff."""
+        return [
+            self._serialize_ingestion_request_payload(
+                session,
+                request,
+                serializer=serializer,
+            )
+            for request in requests
+        ]
+
+    def _resolve_ingestion_request_blogs(
+        self,
+        session: Session,
+        request: IngestionRequestModel,
+    ) -> tuple[BlogModel | None, BlogModel | None]:
+        """Resolve the seed and matched blogs referenced by one ingestion request."""
         seed_blog = (
             self._get_blog_by_business_id(session, request.seed_blog_id)
             if request.seed_blog_id is not None
@@ -1180,15 +1280,130 @@ class SQLAlchemyRepository:
             if request.matched_blog_id is not None
             else None
         )
-        return _ingestion_request_payload(request, seed_blog=seed_blog, matched_blog=matched_blog)
+        return seed_blog, matched_blog
 
-    def _resolve_identity_from_blog_fields(
+    def _latest_row_payload(
         self,
+        session: Session,
         *,
-        url: str,
-        normalized_url: str,
-    ) -> BlogIdentityResolution:
-        return resolve_blog_identity(url or normalized_url)
+        statement: Any,
+        serializer: Callable[[Any], dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Return the serialized payload for the latest matching row or ``None``."""
+        row = session.scalar(statement)
+        return serializer(row) if row is not None else None
+
+    def _ordered_row_payloads(
+        self,
+        session: Session,
+        *,
+        statement: Any,
+        serializer: Callable[[Any], dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return ordered row payloads for one scalar-select statement."""
+        return [serializer(row) for row in session.scalars(statement).all()]
+
+    def _blog_label_assignment_rows(
+        self,
+        session: Session,
+        *,
+        blog_ids: list[int],
+        order_by_blog_id: bool,
+    ) -> list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]]:
+        """Return joined label-assignment rows for the provided blog ids using stable ordering."""
+        if not blog_ids:
+            return []
+        statement = (
+            select(BlogLabelAssignmentModel, BlogLabelTagModel)
+            .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
+            .where(BlogLabelAssignmentModel.blog_id.in_(blog_ids))
+        )
+        if order_by_blog_id:
+            statement = statement.order_by(BlogLabelAssignmentModel.blog_id.asc(), BlogLabelTagModel.name.asc())
+        else:
+            statement = statement.order_by(BlogLabelTagModel.name.asc())
+        return session.execute(statement).all()
+
+    def _require_model(
+        self,
+        session: Session,
+        model_type: Any,
+        primary_key: Any,
+        *,
+        not_found_error: str,
+    ) -> Any:
+        """Return one persisted model by primary key or raise the configured ``ValueError``."""
+        model = session.get(model_type, primary_key)
+        if model is None:
+            raise ValueError(not_found_error)
+        return model
+
+    def _blog_detail_relation_payloads(
+        self,
+        session: Session,
+        edges: list[EdgeModel],
+        *,
+        neighbor_id_getter: Callable[[EdgeModel], int],
+    ) -> list[dict[str, Any]]:
+        """Return ordered blog-detail edge payloads using the provided neighbor-id selector."""
+        return [
+            {
+                **_edge_payload(edge),
+                "neighbor_blog": (
+                    blog_view.as_neighbor_payload()
+                    if (
+                        blog_view := _BlogPayloadView.from_model(
+                            self._get_blog_by_business_id(session, neighbor_id_getter(edge))
+                        )
+                    )
+                    is not None
+                    else None
+                ),
+            }
+            for edge in edges
+        ]
+
+    def _recommended_blog_rows(
+        self,
+        session: Session,
+        recommendation_map: dict[int, set[int]],
+    ) -> list[dict[str, Any]]:
+        """Return sorted recommended-blog payloads for one blog-detail response."""
+        if not recommendation_map:
+            return []
+
+        statement, _ = self._blog_select()
+        recommended_blog_rows = session.execute(
+            statement.where(BlogModel.blog_id.in_(list(recommendation_map.keys())))
+        ).all()
+        recommended_by_id = {
+            int(_business_blog_id(row[0])): row for row in recommended_blog_rows
+        }
+        via_blog_ids = {via_id for via_ids in recommendation_map.values() for via_id in via_ids}
+        via_blogs = {
+            int(_business_blog_id(blog_model)): blog_model
+            for blog_model in session.scalars(select(BlogModel).where(BlogModel.blog_id.in_(via_blog_ids))).all()
+        }
+
+        recommended_rows: list[dict[str, Any]] = []
+        for candidate_id, via_ids in sorted(
+            recommendation_map.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        ):
+            candidate_row = recommended_by_id.get(candidate_id)
+            if candidate_row is None:
+                continue
+            recommended_rows.append(
+                _recommended_blog_payload(
+                    blog=candidate_row[0],
+                    via_blogs=[via_blogs[via_id] for via_id in sorted(via_ids) if via_id in via_blogs],
+                    incoming_count=int(candidate_row.incoming_count or 0),
+                    outgoing_count=int(candidate_row.outgoing_count or 0),
+                    activity_at=candidate_row.activity_at,
+                    identity_complete=bool(candidate_row.identity_complete),
+                )
+            )
+        return recommended_rows
 
     def _select_survivor(self, blogs: list[BlogModel]) -> tuple[BlogModel, str]:
         ranked = sorted(
@@ -1263,8 +1478,8 @@ class SQLAlchemyRepository:
         normalized_url: str,
         domain: str,
         email: str | None = None,
-    ) -> BlogModel:
-        identity = self._resolve_identity_from_blog_fields(url=url, normalized_url=normalized_url)
+    ) -> tuple[BlogModel, bool]:
+        identity = resolve_blog_identity(url or normalized_url)
         stored_url, stored_domain = _storage_url_and_domain(
             input_url=url,
             input_normalized_url=normalized_url,
@@ -1290,7 +1505,7 @@ class SQLAlchemyRepository:
             existing.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
             existing.identity_ruleset_version = identity.ruleset_version
             existing.updated_at = now_utc()
-            return existing
+            return existing, False
 
         blog = BlogModel(
             blog_id=None,
@@ -1310,7 +1525,7 @@ class SQLAlchemyRepository:
         session.flush()
         blog.blog_id = int(blog.id)
         session.flush()
-        return blog
+        return blog, True
 
     def _ensure_edge_in_session(
         self,
@@ -1346,7 +1561,7 @@ class SQLAlchemyRepository:
         raw: RawDiscoveredUrlModel,
     ) -> None:
         normalized = normalize_url(raw.normalized_url)
-        target_blog = self._upsert_blog_in_session(
+        target_blog, _ = self._upsert_blog_in_session(
             session,
             url=raw.normalized_url,
             normalized_url=normalized.normalized_url,
@@ -1367,7 +1582,7 @@ class SQLAlchemyRepository:
         raw: RawDiscoveredUrlModel,
     ) -> None:
         session.flush()
-        identity = self._resolve_identity_from_blog_fields(url=raw.normalized_url, normalized_url=raw.normalized_url)
+        identity = resolve_blog_identity(raw.normalized_url)
         normalized = normalize_url(raw.normalized_url)
         stored_url, _ = _storage_url_and_domain(
             input_url=raw.normalized_url,
@@ -1448,60 +1663,15 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
     ) -> tuple[int, bool]:
-        identity = self._resolve_identity_from_blog_fields(
-            url=url,
-            normalized_url=normalized_url,
-        )
-        stored_url, stored_domain = _storage_url_and_domain(
-            input_url=url,
-            input_normalized_url=normalized_url,
-            input_domain=domain,
-            identity=identity,
-        )
-        identity_key = identity.identity_key
-        reason_codes = identity.reason_codes
-        ruleset_version = identity.ruleset_version
         with session_scope(self.session_factory) as session:
-            existing = session.scalar(
-                select(BlogModel).where(
-                    or_(
-                        BlogModel.normalized_url == stored_url,
-                        BlogModel.identity_key == identity_key,
-                    )
-                )
-            )
-            if existing is not None:
-                if _uses_tenant_root_canonicalization(reason_codes):
-                    existing.url = stored_url
-                    existing.normalized_url = stored_url
-                    existing.domain = stored_domain
-                if email is not None and not (existing.email or "").strip():
-                    existing.email = email
-                existing.identity_key = identity_key
-                existing.identity_reason_codes = _dump_reason_codes(reason_codes)
-                existing.identity_ruleset_version = ruleset_version
-                existing.updated_at = now_utc()
-                return int(_business_blog_id(existing)), False
-
-            blog = BlogModel(
-                blog_id=None,
-                url=stored_url,
-                normalized_url=stored_url,
-                identity_key=identity_key,
-                identity_reason_codes=_dump_reason_codes(reason_codes),
-                identity_ruleset_version=ruleset_version,
-                domain=stored_domain,
+            blog, inserted = self._upsert_blog_in_session(
+                session,
+                url=url,
+                normalized_url=normalized_url,
+                domain=domain,
                 email=email,
-                crawl_status=CrawlStatus.WAITING,
-                friend_links_count=0,
-                created_at=now_utc(),
-                updated_at=now_utc(),
             )
-            session.add(blog)
-            session.flush()
-            blog.blog_id = int(blog.id)
-            session.flush()
-            return int(_business_blog_id(blog)), True
+            return int(_business_blog_id(blog)), inserted
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
         requested_url, normalized_url, domain, identity_key, reason_codes, ruleset_version = normalize_homepage_url(
@@ -1525,22 +1695,20 @@ class SQLAlchemyRepository:
                 existing_blog.updated_at = now_utc()
 
             if existing_blog is not None and existing_blog.crawl_status == CrawlStatus.FINISHED:
+                existing_blog_view = _BlogPayloadView.from_model(existing_blog)
                 return {
                     "status": INGESTION_REQUEST_STATUS_DEDUPED_EXISTING,
                     "blog_id": int(_business_blog_id(existing_blog)),
                     "matched_blog_id": int(_business_blog_id(existing_blog)),
                     "request_id": None,
                     "request_token": None,
-                    "blog": _blog_payload(existing_blog),
+                    "blog": existing_blog_view.as_blog_payload() if existing_blog_view is not None else None,
                 }
 
-            existing_request = session.scalar(
-                select(IngestionRequestModel)
-                .where(
-                    IngestionRequestModel.identity_key == identity_key,
-                    IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
-                )
-                .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
+            existing_request = self._oldest_ingestion_request(
+                session,
+                filters=(IngestionRequestModel.identity_key == identity_key,),
+                statuses=tuple(ACTIVE_INGESTION_REQUEST_STATUSES),
             )
             if existing_request is not None:
                 if not (existing_request.requester_email or "").strip():
@@ -1551,7 +1719,11 @@ class SQLAlchemyRepository:
                 existing_request.identity_reason_codes = _dump_reason_codes(reason_codes)
                 existing_request.identity_ruleset_version = ruleset_version
                 existing_request.updated_at = now_utc()
-                return self._ingestion_request_row_payload(session, existing_request)
+                return self._serialize_ingestion_request_payload(
+                    session,
+                    existing_request,
+                    serializer=_ingestion_request_payload,
+                )
 
             if existing_blog is None:
                 existing_blog = BlogModel(
@@ -1600,7 +1772,11 @@ class SQLAlchemyRepository:
             )
             session.add(request)
             session.flush()
-            return self._ingestion_request_row_payload(session, request)
+            return self._serialize_ingestion_request_payload(
+                session,
+                request,
+                serializer=_ingestion_request_payload,
+            )
 
     def get_ingestion_request(
         self,
@@ -1614,7 +1790,11 @@ class SQLAlchemyRepository:
             )
             if request is None or request.request_token != request_token:
                 return None
-            return self._ingestion_request_row_payload(session, request)
+            return self._serialize_ingestion_request_payload(
+                session,
+                request,
+                serializer=_ingestion_request_payload,
+            )
 
     def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]:
         resolved_limit = max(1, min(int(limit), INGESTION_PRIORITY_LIST_LIMIT))
@@ -1629,26 +1809,11 @@ class SQLAlchemyRepository:
                 .order_by(active_sort.asc(), IngestionRequestModel.created_at.desc(), IngestionRequestModel.id.desc())
                 .limit(resolved_limit)
             ).all()
-            payload: list[dict[str, Any]] = []
-            for request in requests:
-                seed_blog = (
-                    self._get_blog_by_business_id(session, request.seed_blog_id)
-                    if request.seed_blog_id is not None
-                    else None
-                )
-                matched_blog = (
-                    self._get_blog_by_business_id(session, request.matched_blog_id)
-                    if request.matched_blog_id is not None
-                    else None
-                )
-                payload.append(
-                    _priority_ingestion_request_payload(
-                        request,
-                        seed_blog=seed_blog,
-                        matched_blog=matched_blog,
-                    )
-                )
-            return payload
+            return self._serialize_ingestion_request_payloads(
+                session,
+                requests,
+                serializer=_priority_ingestion_request_payload,
+            )
 
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         normalized = normalize_url(url)
@@ -1660,31 +1825,33 @@ class SQLAlchemyRepository:
         normalized_query_url = identity.canonical_url if identity.is_homepage else normalized.normalized_url
         identity_key = identity.identity_key
         with session_scope(self.session_factory) as session:
-            identity_matches = session.scalars(
-                select(BlogModel)
-                .where(BlogModel.identity_key == identity_key)
-                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
-            ).all()
-            if identity_matches:
-                return _blog_lookup_payload(
-                    query_url=query_url,
-                    normalized_query_url=normalized_query_url,
-                    items=[_blog_payload(item) for item in identity_matches],
-                    match_reason="identity_key",
-                )
+            identity_matches = self._lookup_blog_matches(
+                session,
+                query_url=query_url,
+                normalized_query_url=normalized_query_url,
+                statement=(
+                    select(BlogModel)
+                    .where(BlogModel.identity_key == identity_key)
+                    .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
+                ),
+                match_reason="identity_key",
+            )
+            if identity_matches is not None:
+                return identity_matches
 
-            normalized_matches = session.scalars(
-                select(BlogModel)
-                .where(BlogModel.normalized_url == normalized_query_url)
-                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
-            ).all()
-            if normalized_matches:
-                return _blog_lookup_payload(
-                    query_url=query_url,
-                    normalized_query_url=normalized_query_url,
-                    items=[_blog_payload(item) for item in normalized_matches],
-                    match_reason="normalized_url",
-                )
+            normalized_matches = self._lookup_blog_matches(
+                session,
+                query_url=query_url,
+                normalized_query_url=normalized_query_url,
+                statement=(
+                    select(BlogModel)
+                    .where(BlogModel.normalized_url == normalized_query_url)
+                    .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
+                ),
+                match_reason="normalized_url",
+            )
+            if normalized_matches is not None:
+                return normalized_matches
 
             return _blog_lookup_payload(
                 query_url=query_url,
@@ -1695,13 +1862,10 @@ class SQLAlchemyRepository:
 
     def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
         with session_scope(self.session_factory) as session:
-            request = session.scalar(
-                select(IngestionRequestModel)
-                .where(
-                    IngestionRequestModel.seed_blog_id == blog_id,
-                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
-                )
-                .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
+            request = self._oldest_seed_ingestion_request(
+                session,
+                blog_id=blog_id,
+                statuses=(INGESTION_REQUEST_STATUS_QUEUED,),
             )
             if request is None:
                 return
@@ -1715,49 +1879,117 @@ class SQLAlchemyRepository:
         blog.crawl_status = CrawlStatus.PROCESSING
         blog.updated_at = now_utc()
         session.flush()
-        return _blog_payload(blog)
+        blog_view = _BlogPayloadView.from_model(blog)
+        return blog_view.as_blog_payload() if blog_view is not None else None
+
+    def _claim_first_matching_blog(self, session: Session, statement: Any) -> dict[str, Any] | None:
+        """Claim the first blog matching a queue statement and return its payload."""
+        if self.dialect_name == "postgresql":
+            statement = statement.with_for_update(skip_locked=True)
+        return self._claim_blog_for_statement(session, statement)
+
+    def _active_ingestion_seed_ids_statement(self) -> Any:
+        """Return the active ingestion seed ids used to exclude priority-backed blogs."""
+        return select(IngestionRequestModel.seed_blog_id).where(
+            IngestionRequestModel.seed_blog_id.is_not(None),
+            IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
+        )
+
+    def _oldest_ingestion_request(
+        self,
+        session: Session,
+        *,
+        filters: tuple[ColumnElement[bool], ...],
+        statuses: tuple[str, ...],
+    ) -> IngestionRequestModel | None:
+        """Return the oldest ingestion request matching the given filters and statuses."""
+        return session.scalar(
+            select(IngestionRequestModel)
+            .where(
+                *filters,
+                IngestionRequestModel.status.in_(statuses),
+            )
+            .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
+        )
+
+    def _oldest_seed_ingestion_request(
+        self,
+        session: Session,
+        *,
+        blog_id: int,
+        statuses: tuple[str, ...],
+    ) -> IngestionRequestModel | None:
+        """Return the oldest ingestion request for one seed blog within the allowed statuses."""
+        return self._oldest_ingestion_request(
+            session,
+            filters=(IngestionRequestModel.seed_blog_id == blog_id,),
+            statuses=statuses,
+        )
+
+    def _lookup_blog_matches(
+        self,
+        session: Session,
+        *,
+        query_url: str,
+        normalized_query_url: str,
+        statement: Any,
+        match_reason: str,
+    ) -> dict[str, Any] | None:
+        """Return the wrapped lookup payload for one ordered blog-match query when it has matches."""
+        matches = session.scalars(statement).all()
+        if not matches:
+            return None
+        return _blog_lookup_payload(
+            query_url=query_url,
+            normalized_query_url=normalized_query_url,
+            items=[
+                blog_view.as_blog_payload()
+                for item in matches
+                if (blog_view := _BlogPayloadView.from_model(item)) is not None
+            ],
+            match_reason=match_reason,
+        )
+
+    def _priority_blog_claim_statement(self) -> Any:
+        """Build the priority queue statement without changing claim semantics."""
+        return (
+            select(BlogModel)
+            .join(
+                IngestionRequestModel,
+                IngestionRequestModel.seed_blog_id == BlogModel.blog_id,
+            )
+            .where(
+                BlogModel.crawl_status == CrawlStatus.WAITING,
+                IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
+            )
+            .order_by(
+                IngestionRequestModel.priority.desc(),
+                IngestionRequestModel.created_at.asc(),
+                BlogModel.blog_id.asc(),
+                BlogModel.id.asc(),
+            )
+            .limit(1)
+        )
+
+    def _waiting_blog_claim_statement(self, *, include_priority: bool) -> Any:
+        """Build the waiting queue statement while preserving priority exclusion semantics."""
+        statement = select(BlogModel).where(BlogModel.crawl_status == CrawlStatus.WAITING)
+        if not include_priority:
+            statement = statement.where(
+                BlogModel.blog_id.not_in(self._active_ingestion_seed_ids_statement())
+            )
+        return statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc()).limit(1)
 
     def get_next_priority_blog(self) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
-            statement = (
-                select(BlogModel)
-                .join(
-                    IngestionRequestModel,
-                    IngestionRequestModel.seed_blog_id == BlogModel.blog_id,
-                )
-                .where(
-                    BlogModel.crawl_status == CrawlStatus.WAITING,
-                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
-                )
-                .order_by(
-                    IngestionRequestModel.priority.desc(),
-                    IngestionRequestModel.created_at.asc(),
-                    BlogModel.blog_id.asc(),
-                    BlogModel.id.asc(),
-                )
-                .limit(1)
-            )
-            if self.dialect_name == "postgresql":
-                statement = statement.with_for_update(skip_locked=True)
-            return self._claim_blog_for_statement(session, statement)
+            return self._claim_first_matching_blog(session, self._priority_blog_claim_statement())
 
     def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
-            statement = select(BlogModel).where(BlogModel.crawl_status == CrawlStatus.WAITING)
-            if not include_priority:
-                priority_seed_ids = (
-                    select(IngestionRequestModel.seed_blog_id)
-                    .where(
-                        IngestionRequestModel.seed_blog_id.is_not(None),
-                        IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
-                    )
-                    .subquery()
-                )
-                statement = statement.where(BlogModel.blog_id.not_in(select(priority_seed_ids.c.seed_blog_id)))
-            statement = statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc()).limit(1)
-            if self.dialect_name == "postgresql":
-                statement = statement.with_for_update(skip_locked=True)
-            return self._claim_blog_for_statement(session, statement)
+            return self._claim_first_matching_blog(
+                session,
+                self._waiting_blog_claim_statement(include_priority=include_priority),
+            )
 
     def mark_blog_result(
         self,
@@ -1782,13 +2014,10 @@ class SQLAlchemyRepository:
             if metadata_captured:
                 blog.title = title
                 blog.icon_url = icon_url
-            request = session.scalar(
-                select(IngestionRequestModel)
-                .where(
-                    IngestionRequestModel.seed_blog_id == blog_id,
-                    IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
-                )
-                .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
+            request = self._oldest_seed_ingestion_request(
+                session,
+                blog_id=blog_id,
+                statuses=tuple(ACTIVE_INGESTION_REQUEST_STATUSES),
             )
             if request is not None:
                 if blog.crawl_status == CrawlStatus.FINISHED:
@@ -1847,9 +2076,12 @@ class SQLAlchemyRepository:
 
     def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None:
         with session_scope(self.session_factory) as session:
-            record = session.get(RawDiscoveredUrlModel, record_id)
-            if record is None:
-                raise ValueError("raw_discovered_url_not_found")
+            record = self._require_model(
+                session,
+                RawDiscoveredUrlModel,
+                record_id,
+                not_found_error="raw_discovered_url_not_found",
+            )
             record.status = status
             record.updated_at = now_utc()
 
@@ -2044,26 +2276,17 @@ class SQLAlchemyRepository:
                 page_size=query["page_size"],
             )
             blog_ids = [int(_business_blog_id(row[0])) for row in rows]
-            label_rows = []
-            if blog_ids:
-                label_rows = session.execute(
-                    select(BlogLabelAssignmentModel, BlogLabelTagModel)
-                    .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
-                    .where(BlogLabelAssignmentModel.blog_id.in_(blog_ids))
-                    .order_by(BlogLabelAssignmentModel.blog_id.asc(), BlogLabelTagModel.name.asc())
-                ).all()
-            labels_by_blog: dict[int, list[dict[str, Any]]] = {blog_id: [] for blog_id in blog_ids}
-            for assignment, tag in label_rows:
-                labels_by_blog.setdefault(int(assignment.blog_id), []).append(
-                    {
-                        **_blog_label_tag_payload(tag),
-                        "labeled_at": _iso(assignment.labeled_at),
-                    }
-                )
-            available_tags = [
-                _blog_label_tag_payload(tag)
-                for tag in session.scalars(select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc())).all()
-            ]
+            label_rows = self._blog_label_assignment_rows(
+                session,
+                blog_ids=blog_ids,
+                order_by_blog_id=True,
+            )
+            labels_by_blog = _labels_by_blog_payload(blog_ids=blog_ids, rows=label_rows)
+            available_tags = self._ordered_row_payloads(
+                session,
+                statement=select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc()),
+                serializer=_blog_label_tag_payload,
+            )
             return _catalog_response(
                 items=[
                     _blog_labeling_payload(
@@ -2086,8 +2309,11 @@ class SQLAlchemyRepository:
 
     def list_blog_label_tags(self) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
-            rows = session.scalars(select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc())).all()
-            return [_blog_label_tag_payload(row) for row in rows]
+            return self._ordered_row_payloads(
+                session,
+                statement=select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc()),
+                serializer=_blog_label_tag_payload,
+            )
 
     def export_blog_label_training_csv(self) -> str:
         with session_scope(self.session_factory) as session:
@@ -2168,28 +2394,19 @@ class SQLAlchemyRepository:
                         created_at=timestamp,
                         updated_at=timestamp,
                     )
-                )
+            )
             session.flush()
-            refreshed = session.execute(
-                select(BlogLabelAssignmentModel, BlogLabelTagModel)
-                .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
-                .where(BlogLabelAssignmentModel.blog_id == resolved_blog_id)
-                .order_by(BlogLabelTagModel.name.asc())
-            ).all()
-            labels = [
-                {
-                    **_blog_label_tag_payload(tag),
-                    "labeled_at": _iso(assignment.labeled_at),
-                }
-                for assignment, tag in refreshed
-            ]
-            return {
-                "blog_id": resolved_blog_id,
-                "labels": labels,
-                "label_slugs": [label["slug"] for label in labels],
-                "last_labeled_at": _iso(timestamp if labels else None),
-                "is_labeled": len(labels) > 0,
-            }
+            refreshed = self._blog_label_assignment_rows(
+                session,
+                blog_ids=[resolved_blog_id],
+                order_by_blog_id=False,
+            )
+            labels = [_blog_label_assignment_payload(assignment, tag) for assignment, tag in refreshed]
+            return _blog_label_state_payload(
+                blog_id=resolved_blog_id,
+                labels=labels,
+                last_labeled_at=timestamp if labels else None,
+            )
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
@@ -2210,13 +2427,6 @@ class SQLAlchemyRepository:
                 select(EdgeModel).where(EdgeModel.to_blog_id == blog_id).order_by(EdgeModel.id.asc())
             ).all()
 
-            def relation_payload(edge: EdgeModel, *, neighbor_id: int) -> dict[str, Any]:
-                neighbor = self._get_blog_by_business_id(session, neighbor_id)
-                return {
-                    **_edge_payload(edge),
-                    "neighbor_blog": _neighbor_payload(neighbor),
-                }
-
             direct_related_ids = {
                 int(edge.from_blog_id) for edge in incoming_edges
             } | {int(edge.to_blog_id) for edge in outgoing_edges}
@@ -2228,55 +2438,28 @@ class SQLAlchemyRepository:
                 excluded_blog_ids=direct_related_ids,
             )
 
-            recommended_rows: list[dict[str, Any]] = []
-            if recommendation_map:
-                recommended_statement, _ = self._blog_select()
-                recommended_blog_rows = session.execute(
-                    recommended_statement.where(BlogModel.blog_id.in_(recommendation_map.keys()))
-                ).all()
-                recommended_by_id = {
-                    int(_business_blog_id(row[0])): row for row in recommended_blog_rows
-                }
-                via_blog_ids = {via_id for via_ids in recommendation_map.values() for via_id in via_ids}
-                via_blogs = {
-                    int(_business_blog_id(blog_model)): blog_model
-                    for blog_model in session.scalars(
-                        select(BlogModel).where(BlogModel.blog_id.in_(via_blog_ids))
-                    ).all()
-                }
-                for candidate_id, via_ids in sorted(
-                    recommendation_map.items(),
-                    key=lambda item: (-len(item[1]), item[0]),
-                ):
-                    candidate_row = recommended_by_id.get(candidate_id)
-                    if candidate_row is None:
-                        continue
-                    recommended_rows.append(
-                        _recommended_blog_payload(
-                            blog=candidate_row[0],
-                            via_blogs=[via_blogs[via_id] for via_id in sorted(via_ids) if via_id in via_blogs],
-                            incoming_count=int(candidate_row.incoming_count or 0),
-                            outgoing_count=int(candidate_row.outgoing_count or 0),
-                            activity_at=candidate_row.activity_at,
-                            identity_complete=bool(candidate_row.identity_complete),
-                        )
-                    )
-
             return {
                 **self._row_blog_payload(blog_row),
-                "incoming_edges": [
-                    relation_payload(edge, neighbor_id=int(edge.from_blog_id)) for edge in incoming_edges
-                ],
-                "outgoing_edges": [
-                    relation_payload(edge, neighbor_id=int(edge.to_blog_id)) for edge in outgoing_edges
-                ],
-                "recommended_blogs": recommended_rows,
+                "incoming_edges": self._blog_detail_relation_payloads(
+                    session,
+                    incoming_edges,
+                    neighbor_id_getter=lambda edge: int(edge.from_blog_id),
+                ),
+                "outgoing_edges": self._blog_detail_relation_payloads(
+                    session,
+                    outgoing_edges,
+                    neighbor_id_getter=lambda edge: int(edge.to_blog_id),
+                ),
+                "recommended_blogs": self._recommended_blog_rows(session, recommendation_map),
             }
 
     def list_edges(self) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
-            rows = session.scalars(select(EdgeModel).order_by(EdgeModel.id.asc())).all()
-            return [_edge_payload(row) for row in rows]
+            return self._ordered_row_payloads(
+                session,
+                statement=select(EdgeModel).order_by(EdgeModel.id.asc()),
+                serializer=_edge_payload,
+            )
 
     def list_logs(self, limit: int = 100) -> list[dict[str, Any]]:
         return []
@@ -2343,18 +2526,24 @@ class SQLAlchemyRepository:
 
     def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
-            run = session.get(UrlRefilterRunModel, run_id)
-            if run is None:
-                raise ValueError("url_refilter_run_not_found")
+            run = self._require_model(
+                session,
+                UrlRefilterRunModel,
+                run_id,
+                not_found_error="url_refilter_run_not_found",
+            )
             event = self._append_url_refilter_run_event_in_session(session, run_id=run_id, message=message)
             run.updated_at = now_utc()
             return _url_refilter_run_event_payload(event)
 
     def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
-            run = session.get(UrlRefilterRunModel, run_id)
-            if run is None:
-                raise ValueError("url_refilter_run_not_found")
+            run = self._require_model(
+                session,
+                UrlRefilterRunModel,
+                run_id,
+                not_found_error="url_refilter_run_not_found",
+            )
             completed_at = now_utc()
             run.status = "FAILED"
             run.error_message = error_message
@@ -2373,9 +2562,12 @@ class SQLAlchemyRepository:
         started_at = now_utc()
         try:
             with session_scope(self.session_factory) as session:
-                run = session.get(UrlRefilterRunModel, run_id)
-                if run is None:
-                    raise ValueError("url_refilter_run_not_found")
+                run = self._require_model(
+                    session,
+                    UrlRefilterRunModel,
+                    run_id,
+                    not_found_error="url_refilter_run_not_found",
+                )
                 run.status = "RUNNING"
                 run.started_at = started_at
                 run.completed_at = None
@@ -2394,9 +2586,12 @@ class SQLAlchemyRepository:
             backup_path = self._backup_sqlite_database()
 
             with session_scope(self.session_factory) as session:
-                run = session.get(UrlRefilterRunModel, run_id)
-                if run is None:
-                    raise ValueError("url_refilter_run_not_found")
+                run = self._require_model(
+                    session,
+                    UrlRefilterRunModel,
+                    run_id,
+                    not_found_error="url_refilter_run_not_found",
+                )
                 run.backup_path = backup_path
                 run.updated_at = now_utc()
                 self._append_url_refilter_run_event_in_session(
@@ -2422,9 +2617,12 @@ class SQLAlchemyRepository:
 
             while True:
                 with session_scope(self.session_factory) as session:
-                    run = session.get(UrlRefilterRunModel, run_id)
-                    if run is None:
-                        raise ValueError("url_refilter_run_not_found")
+                    run = self._require_model(
+                        session,
+                        UrlRefilterRunModel,
+                        run_id,
+                        not_found_error="url_refilter_run_not_found",
+                    )
                     raws = session.scalars(
                         select(RawDiscoveredUrlModel)
                         .where(RawDiscoveredUrlModel.id > cursor)
@@ -2510,17 +2708,23 @@ class SQLAlchemyRepository:
 
     def get_latest_url_refilter_run(self) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
-            run = session.scalar(select(UrlRefilterRunModel).order_by(UrlRefilterRunModel.id.desc()).limit(1))
-            return _url_refilter_run_payload(run) if run is not None else None
+            return self._latest_row_payload(
+                session,
+                statement=select(UrlRefilterRunModel).order_by(UrlRefilterRunModel.id.desc()).limit(1),
+                serializer=_url_refilter_run_payload,
+            )
 
     def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
-            rows = session.scalars(
-                select(UrlRefilterRunEventModel)
-                .where(UrlRefilterRunEventModel.run_id == run_id)
-                .order_by(UrlRefilterRunEventModel.id.asc())
-            ).all()
-            return [_url_refilter_run_event_payload(row) for row in rows]
+            return self._ordered_row_payloads(
+                session,
+                statement=(
+                    select(UrlRefilterRunEventModel)
+                    .where(UrlRefilterRunEventModel.run_id == run_id)
+                    .order_by(UrlRefilterRunEventModel.id.asc())
+                ),
+                serializer=_url_refilter_run_event_payload,
+            )
 
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         started_at = now_utc()
@@ -2555,9 +2759,12 @@ class SQLAlchemyRepository:
         decision_chain = build_url_decision_chain(settings)
         try:
             with session_scope(self.session_factory) as session:
-                run = session.get(BlogDedupScanRunModel, run_id)
-                if run is None:
-                    raise ValueError("blog_dedup_scan_run_not_found")
+                run = self._require_model(
+                    session,
+                    BlogDedupScanRunModel,
+                    run_id,
+                    not_found_error="blog_dedup_scan_run_not_found",
+                )
                 run.status = "RUNNING"
                 run.started_at = run.started_at or started_at
                 run.completed_at = None
@@ -2582,9 +2789,12 @@ class SQLAlchemyRepository:
             rejected_blog_count = 0
             for blog_row in blog_rows:
                 with session_scope(self.session_factory) as session:
-                    run = session.get(BlogDedupScanRunModel, run_id)
-                    if run is None:
-                        raise ValueError("blog_dedup_scan_run_not_found")
+                    run = self._require_model(
+                        session,
+                        BlogDedupScanRunModel,
+                        run_id,
+                        not_found_error="blog_dedup_scan_run_not_found",
+                    )
                     blog = self._get_blog_by_business_id(session, int(blog_row.blog_id))
                     if blog is None:
                         continue
@@ -2625,9 +2835,12 @@ class SQLAlchemyRepository:
                     run.updated_at = completed_so_far
 
             with session_scope(self.session_factory) as session:
-                run = session.get(BlogDedupScanRunModel, run_id)
-                if run is None:
-                    raise ValueError("blog_dedup_scan_run_not_found")
+                run = self._require_model(
+                    session,
+                    BlogDedupScanRunModel,
+                    run_id,
+                    not_found_error="blog_dedup_scan_run_not_found",
+                )
                 completed_at = now_utc()
                 final_blog_count = _count_selectable_rows(session, BlogModel)
                 run.status = "SUCCEEDED"
@@ -2661,9 +2874,12 @@ class SQLAlchemyRepository:
         error_message: str | None = None,
     ) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
-            run = session.get(BlogDedupScanRunModel, run_id)
-            if run is None:
-                raise ValueError("blog_dedup_scan_run_not_found")
+            run = self._require_model(
+                session,
+                BlogDedupScanRunModel,
+                run_id,
+                not_found_error="blog_dedup_scan_run_not_found",
+            )
             run.crawler_restart_attempted = crawler_restart_attempted
             run.crawler_restart_succeeded = crawler_restart_succeeded
             run.search_reindexed = search_reindexed
@@ -2675,19 +2891,23 @@ class SQLAlchemyRepository:
 
     def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
-            row = session.scalar(
-                select(BlogDedupScanRunModel).order_by(BlogDedupScanRunModel.id.desc()).limit(1)
+            return self._latest_row_payload(
+                session,
+                statement=select(BlogDedupScanRunModel).order_by(BlogDedupScanRunModel.id.desc()).limit(1),
+                serializer=_blog_dedup_scan_run_payload,
             )
-            return _blog_dedup_scan_run_payload(row) if row is not None else None
 
     def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
-            rows = session.scalars(
-                select(BlogDedupScanRunItemModel)
-                .where(BlogDedupScanRunItemModel.run_id == run_id)
-                .order_by(BlogDedupScanRunItemModel.id.asc())
-            ).all()
-            return [_blog_dedup_scan_run_item_payload(row) for row in rows]
+            return self._ordered_row_payloads(
+                session,
+                statement=(
+                    select(BlogDedupScanRunItemModel)
+                    .where(BlogDedupScanRunItemModel.run_id == run_id)
+                    .order_by(BlogDedupScanRunItemModel.id.asc())
+                ),
+                serializer=_blog_dedup_scan_run_item_payload,
+            )
 
     def reset(self) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
