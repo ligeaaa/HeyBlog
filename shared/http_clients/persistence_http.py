@@ -24,6 +24,18 @@ class PersistenceHttpClient:
         self.export_dir = export_dir
         self.client = httpx.Client(base_url=self.base_url, timeout=timeout_seconds)
 
+    def _bool_query_value(self, value: bool) -> str:
+        """Encode a bool query parameter using the persistence API format.
+
+        Args:
+            value: Boolean value that should be sent over the HTTP query string.
+
+        Returns:
+            Lowercase string form expected by the persistence service.
+        """
+
+        return str(value).lower()
+
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
         response = self.client.post(path, json=payload)
         response.raise_for_status()
@@ -43,6 +55,76 @@ class PersistenceHttpClient:
         response = self.client.get(path, params=params)
         response.raise_for_status()
         return response.text
+
+    def _create_maintenance_run(self, runs_path: str, *, crawler_was_running: bool) -> dict[str, Any]:
+        """Create a maintenance run using the shared bool-query POST skeleton.
+
+        Args:
+            runs_path: Collection path for the maintenance run family.
+            crawler_was_running: Whether crawler runtime was active before the run.
+
+        Returns:
+            Decoded maintenance run summary returned by persistence service.
+        """
+
+        return self._post(
+            f"{runs_path}?crawler_was_running={self._bool_query_value(crawler_was_running)}",
+            {},
+        )
+
+    def _post_maintenance_run_action(
+        self,
+        runs_path: str,
+        *,
+        run_id: int,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Post to an action endpoint under a maintenance run family.
+
+        Args:
+            runs_path: Collection path for the maintenance run family.
+            run_id: Maintenance run identifier.
+            action: Child action name such as `execute` or `failed`.
+            payload: Optional JSON body for the action request.
+
+        Returns:
+            Decoded JSON payload returned by persistence service.
+        """
+
+        return self._post(f"{runs_path}/{run_id}/{action}", payload or {})
+
+    def _get_latest_maintenance_run(self, runs_path: str) -> dict[str, Any]:
+        """Load the latest summary from a maintenance run family.
+
+        Args:
+            runs_path: Collection path for the maintenance run family.
+
+        Returns:
+            Decoded latest-run payload returned by persistence service.
+        """
+
+        return self._get(f"{runs_path}/latest")
+
+    def _list_maintenance_run_children(
+        self,
+        runs_path: str,
+        *,
+        run_id: int,
+        child_resource: str,
+    ) -> list[dict[str, Any]]:
+        """Load child resources attached to one maintenance run.
+
+        Args:
+            runs_path: Collection path for the maintenance run family.
+            run_id: Maintenance run identifier.
+            child_resource: Child collection name such as `events` or `items`.
+
+        Returns:
+            Ordered child payload list returned by persistence service.
+        """
+
+        return self._get(f"{runs_path}/{run_id}/{child_resource}")
 
     def add_log(
         self, stage: str, result: str, message: str, blog_id: int | None = None
@@ -103,34 +185,51 @@ class PersistenceHttpClient:
         return self._get("/internal/blogs/lookup", {"url": url})
 
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        return self._post(
-            f"/internal/blog-dedup-scans/runs?crawler_was_running={str(crawler_was_running).lower()}",
-            {},
+        return self._create_maintenance_run(
+            "/internal/blog-dedup-scans/runs",
+            crawler_was_running=crawler_was_running,
         )
 
     def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        return self._post(
-            f"/internal/url-refilter-runs?crawler_was_running={str(crawler_was_running).lower()}",
-            {},
+        return self._create_maintenance_run(
+            "/internal/url-refilter-runs",
+            crawler_was_running=crawler_was_running,
         )
 
     def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]:
         return self._post(f"/internal/url-refilter-runs/{run_id}/events", {"message": message})
 
     def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]:
-        return self._post(f"/internal/url-refilter-runs/{run_id}/failed", {"error_message": error_message})
+        return self._post_maintenance_run_action(
+            "/internal/url-refilter-runs",
+            run_id=run_id,
+            action="failed",
+            payload={"error_message": error_message},
+        )
 
     def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]:
-        return self._post(f"/internal/url-refilter-runs/{run_id}/execute", {})
+        return self._post_maintenance_run_action(
+            "/internal/url-refilter-runs",
+            run_id=run_id,
+            action="execute",
+        )
 
     def latest_url_refilter_run(self) -> dict[str, Any]:
-        return self._get("/internal/url-refilter-runs/latest")
+        return self._get_latest_maintenance_run("/internal/url-refilter-runs")
 
     def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]:
-        return self._get(f"/internal/url-refilter-runs/{run_id}/events")
+        return self._list_maintenance_run_children(
+            "/internal/url-refilter-runs",
+            run_id=run_id,
+            child_resource="events",
+        )
 
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
-        return self._post(f"/internal/blog-dedup-scans/{run_id}/execute", {})
+        return self._post_maintenance_run_action(
+            "/internal/blog-dedup-scans",
+            run_id=run_id,
+            action="execute",
+        )
 
     def finalize_blog_dedup_scan_run(
         self,
@@ -152,16 +251,20 @@ class PersistenceHttpClient:
         )
 
     def latest_blog_dedup_scan_run(self) -> dict[str, Any]:
-        return self._get("/internal/blog-dedup-scans/latest")
+        return self._get_latest_maintenance_run("/internal/blog-dedup-scans")
 
     def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
-        return self._get(f"/internal/blog-dedup-scans/{run_id}/items")
+        return self._list_maintenance_run_children(
+            "/internal/blog-dedup-scans",
+            run_id=run_id,
+            child_resource="items",
+        )
 
     def get_next_priority_blog(self) -> dict[str, Any] | None:
         return self._get("/internal/queue/priority-next")
 
     def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next", {"include_priority": str(include_priority).lower()})
+        return self._get("/internal/queue/next", {"include_priority": self._bool_query_value(include_priority)})
 
     def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
         self._post(f"/internal/ingestion-requests/by-blog/{blog_id}/crawling", {})

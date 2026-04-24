@@ -68,3 +68,17 @@ class StaticStatusUrlFilter:
     def reject(self) -> FilterDecision:
         """Return the canonical rejected decision for this filter."""
         return FilterDecision(accepted=False, status=self.status)
+
+    def decision_for(self, rejected: bool) -> FilterDecision:
+        """Translate one rejection condition into the canonical decision.
+
+        Args:
+            rejected: Whether the current filter should reject the candidate.
+
+        Returns:
+            The canonical rejected decision when ``rejected`` is ``True``,
+            otherwise the canonical accepted decision.
+        """
+        if rejected:
+            return self.reject()
+        return self.accept()

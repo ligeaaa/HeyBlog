@@ -267,6 +267,33 @@ def _start_maintenance_background_task(
     return payload
 
 
+def _build_maintenance_start_error_handlers(
+    *,
+    cleanup: Callable[[str], None],
+    unexpected_detail: str,
+) -> tuple[
+    Callable[[httpx.HTTPStatusError], NoReturn],
+    Callable[[HTTPException], NoReturn],
+    Callable[[Exception], NoReturn],
+]:
+    """Build the shared error-handler skeleton for maintenance start routes."""
+
+    def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
+        detail = _upstream_error_detail(exc)
+        cleanup(str(detail))
+        _raise_upstream_http_error(exc, detail_override=detail)
+
+    def on_http_exception(exc: HTTPException) -> NoReturn:
+        cleanup(str(exc.detail))
+        raise exc
+
+    def on_unexpected_error(exc: Exception) -> NoReturn:
+        cleanup(str(exc))
+        raise HTTPException(status_code=500, detail=unexpected_detail) from exc
+
+    return on_http_error, on_http_exception, on_unexpected_error
+
+
 def create_app(state: BackendState | None = None) -> FastAPI:
     """Create the public backend app."""
     app = FastAPI(title="HeyBlog Backend Service", version="0.1.0")
@@ -532,17 +559,13 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 "crawler_was_running": crawler_was_running,
             }
 
-        def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
+        def cleanup(_: str) -> None:
             _leave_maintenance(state)
-            _raise_upstream_http_error(exc)
 
-        def on_http_exception(exc: HTTPException) -> NoReturn:
-            _leave_maintenance(state)
-            raise exc
-
-        def on_unexpected_error(exc: Exception) -> NoReturn:
-            _leave_maintenance(state)
-            raise HTTPException(status_code=500, detail="blog_dedup_scan_failed") from exc
+        on_http_error, on_http_exception, on_unexpected_error = _build_maintenance_start_error_handlers(
+            cleanup=cleanup,
+            unexpected_detail="blog_dedup_scan_failed",
+        )
 
         return _start_maintenance_background_task(
             state,
@@ -574,18 +597,13 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已处于停止状态")
             return payload, {"run_id": run_id}
 
-        def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
-            detail = _upstream_error_detail(exc)
-            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=str(detail))
-            _raise_upstream_http_error(exc, detail_override=detail)
+        def cleanup(error_message: str) -> None:
+            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=error_message)
 
-        def on_http_exception(exc: HTTPException) -> NoReturn:
-            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=str(exc.detail))
-            raise exc
-
-        def on_unexpected_error(exc: Exception) -> NoReturn:
-            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=str(exc))
-            raise HTTPException(status_code=500, detail="url_refilter_run_failed") from exc
+        on_http_error, on_http_exception, on_unexpected_error = _build_maintenance_start_error_handlers(
+            cleanup=cleanup,
+            unexpected_detail="url_refilter_run_failed",
+        )
 
         return _start_maintenance_background_task(
             state,

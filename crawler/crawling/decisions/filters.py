@@ -29,9 +29,7 @@ class NonHttpSchemeFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         parsed = urlparse(candidate.normalized_url)
-        if not parsed.scheme.startswith("http"):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=not parsed.scheme.startswith("http"))
 
 
 @dataclass(slots=True)
@@ -44,9 +42,7 @@ class SameDomainFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         domain = urlparse(candidate.normalized_url).netloc.lower()
-        if not domain or domain == candidate.source_domain.lower():
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=not domain or domain == candidate.source_domain.lower())
 
 
 @dataclass(slots=True)
@@ -59,9 +55,9 @@ class ExactUrlBlocklistFilter(StaticStatusUrlFilter):
     filter_reason: str = "exact_url_blocked"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        if matches_exact_url(candidate.normalized_url, self.exact_url_blocklist):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(
+            rejected=matches_exact_url(candidate.normalized_url, self.exact_url_blocklist)
+        )
 
 
 @dataclass(slots=True)
@@ -74,9 +70,9 @@ class PrefixBlocklistFilter(StaticStatusUrlFilter):
     filter_reason: str = "prefix_blocked"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        if matches_prefix_blocklist(candidate.normalized_url, self.prefix_blocklist):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(
+            rejected=matches_prefix_blocklist(candidate.normalized_url, self.prefix_blocklist)
+        )
 
 
 @dataclass(slots=True)
@@ -89,9 +85,7 @@ class PlatformDomainFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         domain = urlparse(candidate.normalized_url).netloc.lower()
-        if matches_blocked_domain(domain, PLATFORM_BLOCKLIST):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=matches_blocked_domain(domain, PLATFORM_BLOCKLIST))
 
 
 @dataclass(slots=True)
@@ -105,9 +99,7 @@ class CustomDomainBlocklistFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         domain = urlparse(candidate.normalized_url).netloc.lower()
-        if matches_blocked_domain(domain, self.domain_blocklist):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=matches_blocked_domain(domain, self.domain_blocklist))
 
 
 @dataclass(slots=True)
@@ -121,9 +113,7 @@ class BlockedTldFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         domain = urlparse(candidate.normalized_url).netloc.lower()
-        if any(domain.endswith(tld) for tld in self.blocked_tlds):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=any(domain.endswith(tld) for tld in self.blocked_tlds))
 
 
 @dataclass(slots=True)
@@ -135,9 +125,7 @@ class RootPathFilter(StaticStatusUrlFilter):
     filter_reason: str = "non_root_path"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        if not is_root_like_path(urlparse(candidate.normalized_url).path):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=not is_root_like_path(urlparse(candidate.normalized_url).path))
 
 
 @dataclass(slots=True)
@@ -150,9 +138,9 @@ class LocationFragmentFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         parsed = urlparse(candidate.normalized_url)
-        if has_extra_location_parts(query=parsed.query, fragment=parsed.fragment):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(
+            rejected=has_extra_location_parts(query=parsed.query, fragment=parsed.fragment)
+        )
 
 
 @dataclass(slots=True)
@@ -164,9 +152,7 @@ class AssetSuffixFilter(StaticStatusUrlFilter):
     filter_reason: str = "asset_suffix"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        if has_asset_suffix(urlparse(candidate.normalized_url).path):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(rejected=has_asset_suffix(urlparse(candidate.normalized_url).path))
 
 
 @dataclass(slots=True)
@@ -178,6 +164,6 @@ class BlockedPathFilter(StaticStatusUrlFilter):
     filter_reason: str = "blocked_path"
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        if path_has_blocked_segment(urlparse(candidate.normalized_url).path or "/"):
-            return self.reject()
-        return self.accept()
+        return self.decision_for(
+            rejected=path_has_blocked_segment(urlparse(candidate.normalized_url).path or "/")
+        )

@@ -261,10 +261,7 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
         if usable_models == 0:
             return self.accept()
 
-        if blog_votes == 0:
-            return self.reject()
-
-        return self.accept()
+        return self.decision_for(rejected=blog_votes == 0)
 
 
 @dataclass(slots=True)

@@ -15,6 +15,28 @@ class CrawlerLogger:
     message wording and structured metadata in one place.
     """
 
+    def _emit(
+        self,
+        *,
+        level: int,
+        message: str,
+        stage: str,
+        extra: dict[str, object],
+    ) -> None:
+        """Emit one crawler log entry with a normalized stage payload.
+
+        Args:
+            level: Logging level used for the emitted entry.
+            message: Human-readable log message.
+            stage: Crawler stage marker stored in the structured payload.
+            extra: Additional structured fields to merge into the log record.
+
+        Returns:
+            ``None``. The log entry is emitted to the module logger.
+        """
+
+        logger.log(level, message, extra={"stage": stage, **extra})
+
     def bootstrap_success(self, seed_path: Path) -> None:
         """Log that the seed bootstrap flow completed successfully.
 
@@ -24,7 +46,12 @@ class CrawlerLogger:
         Returns:
             ``None``. A structured log entry is emitted.
         """
-        logger.info("bootstrap succeeded", extra={"seed_path": str(seed_path), "stage": "bootstrap"})
+        self._emit(
+            level=logging.INFO,
+            message="bootstrap succeeded",
+            stage="bootstrap",
+            extra={"seed_path": str(seed_path)},
+        )
 
     def crawl_success(self, *, blog_id: int, blog_url: str) -> None:
         """Log that one blog crawl completed successfully.
@@ -36,9 +63,11 @@ class CrawlerLogger:
         Returns:
             ``None``. A structured log entry is emitted.
         """
-        logger.info(
-            "crawl succeeded",
-            extra={"blog_id": blog_id, "blog_url": blog_url, "stage": "crawl"},
+        self._emit(
+            level=logging.INFO,
+            message="crawl succeeded",
+            stage="crawl",
+            extra={"blog_id": blog_id, "blog_url": blog_url},
         )
 
     def crawl_error(self, *, blog_id: int, error: Exception) -> None:
@@ -51,7 +80,9 @@ class CrawlerLogger:
         Returns:
             ``None``. A structured warning log entry is emitted.
         """
-        logger.warning(
-            "crawl failed",
-            extra={"blog_id": blog_id, "error": str(error), "stage": "crawl"},
+        self._emit(
+            level=logging.WARNING,
+            message="crawl failed",
+            stage="crawl",
+            extra={"blog_id": blog_id, "error": str(error)},
         )
