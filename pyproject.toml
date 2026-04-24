@@ -19,11 +19,19 @@ dependencies = [
   "uvicorn>=0.34,<1",
 ]
 
+[project.scripts]
+heyblog-agent-eval = "agent.eval:main"
+heyblog-agent-debug-model = "agent.debug_model_call:main"
+
 [project.optional-dependencies]
 runtime-models = [
   "numpy>=1.26,<3",
   "scikit-learn>=1.5,<2",
   "scipy>=1.11,<2",
+]
+agent = [
+  "litellm>=1.68,<2",
+  "tqdm>=4.66,<5",
 ]
 trainer = [
   "numpy>=1.26,<3",
@@ -41,4 +49,4 @@ testpaths = ["tests", "trainer/tests"]
 pythonpath = ["."]
 
 [tool.setuptools.packages.find]
-include = ["services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*", "trainer*"]
+include = ["agent*", "services*", "shared*", "crawler*", "persistence_api*", "backend*", "search*", "frontend*", "trainer*"]
