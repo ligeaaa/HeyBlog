@@ -14,6 +14,7 @@ import sqlite3
 from secrets import token_urlsafe
 import re
 from typing import Any
+from typing import Callable
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -632,6 +633,87 @@ class _BlogPayloadView:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _IngestionRequestPayloadView:
+    """Hold one ingestion request plus its related blogs and expose output slices."""
+
+    model: IngestionRequestModel
+    seed_blog_view: _BlogPayloadView | None
+    matched_blog_view: _BlogPayloadView | None
+
+    @classmethod
+    def from_model(
+        cls,
+        model: IngestionRequestModel,
+        *,
+        seed_blog: BlogModel | None = None,
+        matched_blog: BlogModel | None = None,
+    ) -> _IngestionRequestPayloadView:
+        """Return the resolved request view for one ingestion request row."""
+        return cls(
+            model=model,
+            seed_blog_view=_BlogPayloadView.from_model(seed_blog),
+            matched_blog_view=_BlogPayloadView.from_model(matched_blog),
+        )
+
+    def _resolved_blog_view(self) -> _BlogPayloadView | None:
+        """Return the matched blog when present, otherwise the seed blog."""
+        return self.matched_blog_view or self.seed_blog_view
+
+    def _resolved_blog_id(self) -> int | None:
+        """Return the business id of the resolved blog used by public payloads."""
+        resolved_blog_view = self._resolved_blog_view()
+        return resolved_blog_view.blog_id if resolved_blog_view is not None else None
+
+    def as_full_payload(self) -> dict[str, Any]:
+        """Return the full ingestion request payload used by private flows."""
+        resolved_blog_view = self._resolved_blog_view()
+        return {
+            "id": int(self.model.id),
+            "request_id": int(self.model.id),
+            "requested_url": self.model.requested_url,
+            "normalized_url": self.model.normalized_url,
+            "identity_key": self.model.identity_key,
+            "identity_reason_codes": _load_reason_codes(self.model.identity_reason_codes),
+            "identity_ruleset_version": self.model.identity_ruleset_version,
+            "email": self.model.requester_email,
+            "status": self.model.status,
+            "priority": int(self.model.priority),
+            "seed_blog_id": int(self.model.seed_blog_id) if self.model.seed_blog_id is not None else None,
+            "matched_blog_id": int(self.model.matched_blog_id) if self.model.matched_blog_id is not None else None,
+            "blog_id": self._resolved_blog_id(),
+            "request_token": self.model.request_token,
+            "expires_at": _iso(self.model.expires_at),
+            "error_message": self.model.error_message,
+            "created_at": _iso(self.model.created_at),
+            "updated_at": _iso(self.model.updated_at),
+            "seed_blog": self.seed_blog_view.as_blog_payload() if self.seed_blog_view is not None else None,
+            "matched_blog": self.matched_blog_view.as_blog_payload() if self.matched_blog_view is not None else None,
+            "blog": resolved_blog_view.as_blog_payload() if resolved_blog_view is not None else None,
+        }
+
+    def as_priority_payload(self) -> dict[str, Any]:
+        """Return the public priority-list payload with private fields removed."""
+        resolved_blog_view = self._resolved_blog_view()
+        return {
+            "request_id": int(self.model.id),
+            "requested_url": self.model.requested_url,
+            "normalized_url": self.model.normalized_url,
+            "status": self.model.status,
+            "seed_blog_id": int(self.model.seed_blog_id) if self.model.seed_blog_id is not None else None,
+            "matched_blog_id": int(self.model.matched_blog_id) if self.model.matched_blog_id is not None else None,
+            "blog_id": self._resolved_blog_id(),
+            "error_message": self.model.error_message,
+            "created_at": _iso(self.model.created_at),
+            "updated_at": _iso(self.model.updated_at),
+            "blog": (
+                resolved_blog_view.as_public_summary_payload()
+                if resolved_blog_view is not None
+                else None
+            ),
+        }
+
+
 def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     return {
         "id": int(model.id),
@@ -649,38 +731,11 @@ def _ingestion_request_payload(
     seed_blog: BlogModel | None = None,
     matched_blog: BlogModel | None = None,
 ) -> dict[str, Any]:
-    resolved_blog = matched_blog or seed_blog
-    seed_blog_view = _BlogPayloadView.from_model(seed_blog)
-    matched_blog_view = _BlogPayloadView.from_model(matched_blog)
-    resolved_blog_view = _BlogPayloadView.from_model(resolved_blog)
-    resolved_blog_id = None
-    if matched_blog is not None:
-        resolved_blog_id = _business_blog_id(matched_blog)
-    elif seed_blog is not None:
-        resolved_blog_id = _business_blog_id(seed_blog)
-    return {
-        "id": int(model.id),
-        "request_id": int(model.id),
-        "requested_url": model.requested_url,
-        "normalized_url": model.normalized_url,
-        "identity_key": model.identity_key,
-        "identity_reason_codes": _load_reason_codes(model.identity_reason_codes),
-        "identity_ruleset_version": model.identity_ruleset_version,
-        "email": model.requester_email,
-        "status": model.status,
-        "priority": int(model.priority),
-        "seed_blog_id": int(model.seed_blog_id) if model.seed_blog_id is not None else None,
-        "matched_blog_id": int(model.matched_blog_id) if model.matched_blog_id is not None else None,
-        "blog_id": resolved_blog_id,
-        "request_token": model.request_token,
-        "expires_at": _iso(model.expires_at),
-        "error_message": model.error_message,
-        "created_at": _iso(model.created_at),
-        "updated_at": _iso(model.updated_at),
-        "seed_blog": seed_blog_view.as_blog_payload() if seed_blog_view is not None else None,
-        "matched_blog": matched_blog_view.as_blog_payload() if matched_blog_view is not None else None,
-        "blog": resolved_blog_view.as_blog_payload() if resolved_blog_view is not None else None,
-    }
+    return _IngestionRequestPayloadView.from_model(
+        model,
+        seed_blog=seed_blog,
+        matched_blog=matched_blog,
+    ).as_full_payload()
 
 
 def _priority_ingestion_request_payload(
@@ -689,24 +744,11 @@ def _priority_ingestion_request_payload(
     seed_blog: BlogModel | None = None,
     matched_blog: BlogModel | None = None,
 ) -> dict[str, Any]:
-    resolved_blog = matched_blog or seed_blog
-    payload = _ingestion_request_payload(model, seed_blog=seed_blog, matched_blog=matched_blog)
-    for key in (
-        "id",
-        "email",
-        "identity_key",
-        "identity_reason_codes",
-        "identity_ruleset_version",
-        "priority",
-        "request_token",
-        "expires_at",
-        "seed_blog",
-        "matched_blog",
-    ):
-        payload.pop(key, None)
-    resolved_blog_view = _BlogPayloadView.from_model(resolved_blog)
-    payload["blog"] = resolved_blog_view.as_public_summary_payload() if resolved_blog_view is not None else None
-    return payload
+    return _IngestionRequestPayloadView.from_model(
+        model,
+        seed_blog=seed_blog,
+        matched_blog=matched_blog,
+    ).as_priority_payload()
 
 
 def _blog_lookup_payload(
@@ -746,55 +788,136 @@ def _blog_label_assignment_payload(
     }
 
 
-def _blog_label_state_payload(
-    *,
-    blog_id: int,
-    labels: list[dict[str, Any]],
-    last_labeled_at: datetime | None,
-) -> dict[str, Any]:
-    """Return the shared label-state payload used by labeling read/write flows."""
-    return {
-        "blog_id": blog_id,
-        "labels": labels,
-        "label_slugs": [label["slug"] for label in labels],
-        "last_labeled_at": _iso(last_labeled_at),
-        "is_labeled": len(labels) > 0,
-    }
+@dataclass(frozen=True, slots=True)
+class _BlogLabelStateView:
+    """Hold one blog's resolved label facts and expose the shared state payload."""
+
+    blog_id: int
+    labels: list[dict[str, Any]]
+    last_labeled_at: datetime | None
+
+    @classmethod
+    def empty(
+        cls,
+        *,
+        blog_id: int,
+        last_labeled_at: datetime | None = None,
+    ) -> _BlogLabelStateView:
+        """Return an empty label-state view for one blog."""
+        return cls(blog_id=blog_id, labels=[], last_labeled_at=last_labeled_at)
+
+    @classmethod
+    def from_assignment_rows(
+        cls,
+        *,
+        blog_id: int,
+        rows: list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]],
+        last_labeled_at: datetime | None = None,
+    ) -> _BlogLabelStateView:
+        """Return one label-state view built from ordered assignment/tag rows."""
+        labels = [_blog_label_assignment_payload(assignment, tag) for assignment, tag in rows]
+        resolved_last_labeled_at = last_labeled_at
+        if resolved_last_labeled_at is None and rows:
+            labeled_at_values = [
+                assignment.labeled_at for assignment, _ in rows if assignment.labeled_at is not None
+            ]
+            resolved_last_labeled_at = max(labeled_at_values) if labeled_at_values else None
+        return cls(
+            blog_id=blog_id,
+            labels=labels,
+            last_labeled_at=resolved_last_labeled_at,
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        """Return the shared label-state payload used by labeling read/write flows."""
+        return {
+            "blog_id": self.blog_id,
+            "labels": self.labels,
+            "label_slugs": [label["slug"] for label in self.labels],
+            "last_labeled_at": _iso(self.last_labeled_at),
+            "is_labeled": len(self.labels) > 0,
+        }
 
 
-def _labels_by_blog_payload(
+def _label_states_by_blog(
     *,
     blog_ids: list[int],
     rows: list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]],
-) -> dict[int, list[dict[str, Any]]]:
-    """Group labeled-tag payloads by business blog id."""
-    labels_by_blog: dict[int, list[dict[str, Any]]] = {blog_id: [] for blog_id in blog_ids}
+    last_labeled_at_by_blog: dict[int, datetime | None] | None = None,
+) -> dict[int, _BlogLabelStateView]:
+    """Group assignment rows into one label-state view per business blog id."""
+    grouped_rows: dict[int, list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]]] = {
+        blog_id: [] for blog_id in blog_ids
+    }
     for assignment, tag in rows:
-        labels_by_blog.setdefault(int(assignment.blog_id), []).append(
-            _blog_label_assignment_payload(assignment, tag)
+        grouped_rows.setdefault(int(assignment.blog_id), []).append((assignment, tag))
+    last_labeled_lookup = last_labeled_at_by_blog or {}
+    return {
+        blog_id: _BlogLabelStateView.from_assignment_rows(
+            blog_id=blog_id,
+            rows=grouped_rows.get(blog_id, []),
+            last_labeled_at=last_labeled_lookup.get(blog_id),
         )
-    return labels_by_blog
+        for blog_id in blog_ids
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _MaintenanceRunPayloadView:
+    """Hold the shared lifecycle facts exposed by maintenance run summaries."""
+
+    run_id: int
+    status: str
+    crawler_was_running: bool
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_message: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+    @classmethod
+    def from_model(
+        cls,
+        model: BlogDedupScanRunModel | UrlRefilterRunModel,
+    ) -> _MaintenanceRunPayloadView:
+        """Return the shared lifecycle view for one maintenance run row."""
+        return cls(
+            run_id=int(model.id),
+            status=str(model.status),
+            crawler_was_running=bool(model.crawler_was_running),
+            started_at=model.started_at,
+            completed_at=model.completed_at,
+            error_message=model.error_message,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        """Return the shared lifecycle payload used by maintenance run summaries."""
+        return {
+            "id": self.run_id,
+            "status": self.status,
+            "crawler_was_running": self.crawler_was_running,
+            "started_at": _iso(self.started_at),
+            "completed_at": _iso(self.completed_at),
+            "error_message": self.error_message,
+            "created_at": _iso(self.created_at),
+            "updated_at": _iso(self.updated_at),
+        }
 
 
 def _blog_dedup_scan_run_payload(model: BlogDedupScanRunModel) -> dict[str, Any]:
-    return {
-        "id": int(model.id),
-        "status": model.status,
+    run_view = _MaintenanceRunPayloadView.from_model(model)
+    return run_view.as_payload() | {
         "ruleset_version": model.ruleset_version,
-        "started_at": _iso(model.started_at),
-        "completed_at": _iso(model.completed_at),
         "duration_ms": int(model.duration_ms),
         "total_count": int(model.total_count),
         "scanned_count": int(model.scanned_count),
         "removed_count": int(model.removed_count),
         "kept_count": int(model.kept_count),
-        "crawler_was_running": bool(model.crawler_was_running),
         "crawler_restart_attempted": bool(model.crawler_restart_attempted),
         "crawler_restart_succeeded": bool(model.crawler_restart_succeeded),
         "search_reindexed": bool(model.search_reindexed),
-        "error_message": model.error_message,
-        "created_at": _iso(model.created_at),
-        "updated_at": _iso(model.updated_at),
     }
 
 
@@ -816,11 +939,9 @@ def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[
 
 
 def _url_refilter_run_payload(model: UrlRefilterRunModel) -> dict[str, Any]:
-    return {
-        "id": int(model.id),
-        "status": model.status,
+    run_view = _MaintenanceRunPayloadView.from_model(model)
+    return run_view.as_payload() | {
         "filter_chain_version": model.filter_chain_version,
-        "crawler_was_running": bool(model.crawler_was_running),
         "backup_path": model.backup_path,
         "total_count": int(model.total_count),
         "scanned_count": int(model.scanned_count),
@@ -829,11 +950,6 @@ def _url_refilter_run_payload(model: UrlRefilterRunModel) -> dict[str, Any]:
         "deactivated_count": int(model.deactivated_count),
         "retagged_count": int(model.retagged_count),
         "last_raw_url_id": int(model.last_raw_url_id) if model.last_raw_url_id is not None else None,
-        "started_at": _iso(model.started_at),
-        "completed_at": _iso(model.completed_at),
-        "error_message": model.error_message,
-        "created_at": _iso(model.created_at),
-        "updated_at": _iso(model.updated_at),
     }
 
 
@@ -869,8 +985,7 @@ def _filter_chain_version(settings: Settings) -> str:
 def _blog_labeling_payload(
     row: Any,
     *,
-    labels: list[dict[str, Any]],
-    last_labeled_at: datetime | None,
+    label_state: _BlogLabelStateView,
 ) -> dict[str, Any]:
     blog = row[0]
     blog_view = _BlogPayloadView.from_model(blog)
@@ -883,11 +998,7 @@ def _blog_labeling_payload(
             activity_at=row.activity_at,
             identity_complete=bool(row.identity_complete),
         ),
-        **_blog_label_state_payload(
-            blog_id=int(_business_blog_id(blog)),
-            labels=labels,
-            last_labeled_at=last_labeled_at,
-        ),
+        **label_state.as_payload(),
     }
 
 
@@ -2281,7 +2392,13 @@ class SQLAlchemyRepository:
                 blog_ids=blog_ids,
                 order_by_blog_id=True,
             )
-            labels_by_blog = _labels_by_blog_payload(blog_ids=blog_ids, rows=label_rows)
+            label_states_by_blog = _label_states_by_blog(
+                blog_ids=blog_ids,
+                rows=label_rows,
+                last_labeled_at_by_blog={
+                    int(_business_blog_id(row[0])): row.last_labeled_at for row in rows
+                },
+            )
             available_tags = self._ordered_row_payloads(
                 session,
                 statement=select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc()),
@@ -2291,8 +2408,13 @@ class SQLAlchemyRepository:
                 items=[
                     _blog_labeling_payload(
                         row,
-                        labels=labels_by_blog.get(int(_business_blog_id(row[0])), []),
-                        last_labeled_at=row.last_labeled_at,
+                        label_state=label_states_by_blog.get(
+                            int(_business_blog_id(row[0])),
+                            _BlogLabelStateView.empty(
+                                blog_id=int(_business_blog_id(row[0])),
+                                last_labeled_at=row.last_labeled_at,
+                            ),
+                        ),
                     )
                     for row in rows
                 ],
@@ -2401,12 +2523,11 @@ class SQLAlchemyRepository:
                 blog_ids=[resolved_blog_id],
                 order_by_blog_id=False,
             )
-            labels = [_blog_label_assignment_payload(assignment, tag) for assignment, tag in refreshed]
-            return _blog_label_state_payload(
+            return _BlogLabelStateView.from_assignment_rows(
                 blog_id=resolved_blog_id,
-                labels=labels,
-                last_labeled_at=timestamp if labels else None,
-            )
+                rows=refreshed,
+                last_labeled_at=timestamp if refreshed else None,
+            ).as_payload()
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:

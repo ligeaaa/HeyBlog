@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import tomllib
@@ -27,34 +28,48 @@ from crawler.domain.decision_outcome import DecisionOutcome
 from shared.config import Settings
 
 
-FilterFactory = Any
+FilterFactory = Callable[[Settings], BaseUrlFilter]
 
 
-def _build_non_http_scheme_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return NonHttpSchemeFilter()
+def _static_filter_factory(filter_cls: type[BaseUrlFilter]) -> FilterFactory:
+    """Build a registry factory for filters that ignore settings entirely.
+
+    Args:
+        filter_cls: Filter class instantiated without constructor arguments.
+
+    Returns:
+        Factory callable that discards settings and returns one filter instance.
+    """
+
+    def build_filter(settings: Settings) -> BaseUrlFilter:
+        del settings
+        return filter_cls()
+
+    return build_filter
 
 
-def _build_same_domain_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return SameDomainFilter()
+def _settings_value_filter_factory(
+    filter_cls: type[BaseUrlFilter],
+    *,
+    setting_attr: str,
+    constructor_kwarg: str,
+) -> FilterFactory:
+    """Build a registry factory for filters that forward one settings value.
 
+    Args:
+        filter_cls: Filter class instantiated with exactly one keyword argument.
+        setting_attr: Settings attribute name read from `Settings`.
+        constructor_kwarg: Keyword name forwarded into the filter constructor.
 
-def _build_exact_url_blocklist_filter(settings: Settings) -> BaseUrlFilter:
-    return ExactUrlBlocklistFilter(exact_url_blocklist=settings.friend_link_exact_url_blocklist)
+    Returns:
+        Factory callable that pulls one settings value and injects it into the
+        configured filter class.
+    """
 
+    def build_filter(settings: Settings) -> BaseUrlFilter:
+        return filter_cls(**{constructor_kwarg: getattr(settings, setting_attr)})
 
-def _build_prefix_blocklist_filter(settings: Settings) -> BaseUrlFilter:
-    return PrefixBlocklistFilter(prefix_blocklist=settings.friend_link_prefix_blocklist)
-
-
-def _build_platform_domain_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return PlatformDomainFilter()
-
-
-def _build_custom_domain_blocklist_filter(settings: Settings) -> BaseUrlFilter:
-    return CustomDomainBlocklistFilter(domain_blocklist=settings.friend_link_domain_blocklist)
+    return build_filter
 
 
 def _build_blocked_tld_filter(settings: Settings) -> BaseUrlFilter:
@@ -62,42 +77,34 @@ def _build_blocked_tld_filter(settings: Settings) -> BaseUrlFilter:
     return BlockedTldFilter(blocked_tlds=blocked_tlds)
 
 
-def _build_root_path_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return RootPathFilter()
-
-
-def _build_location_fragment_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return LocationFragmentFilter()
-
-
-def _build_asset_suffix_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return AssetSuffixFilter()
-
-
-def _build_blocked_path_filter(settings: Settings) -> BaseUrlFilter:
-    del settings
-    return BlockedPathFilter()
-
-
 def _build_model_consensus_filter(settings: Settings) -> BaseUrlFilter:
     return ModelConsensusFilter(model_root=settings.decision_model_root)
 
 
 FILTER_REGISTRY: dict[str, FilterFactory] = {
-    "non_http_scheme": _build_non_http_scheme_filter,
-    "same_domain": _build_same_domain_filter,
-    "exact_url_blocklist": _build_exact_url_blocklist_filter,
-    "prefix_blocklist": _build_prefix_blocklist_filter,
-    "platform_domain": _build_platform_domain_filter,
-    "custom_domain_blocklist": _build_custom_domain_blocklist_filter,
+    "non_http_scheme": _static_filter_factory(NonHttpSchemeFilter),
+    "same_domain": _static_filter_factory(SameDomainFilter),
+    "exact_url_blocklist": _settings_value_filter_factory(
+        ExactUrlBlocklistFilter,
+        setting_attr="friend_link_exact_url_blocklist",
+        constructor_kwarg="exact_url_blocklist",
+    ),
+    "prefix_blocklist": _settings_value_filter_factory(
+        PrefixBlocklistFilter,
+        setting_attr="friend_link_prefix_blocklist",
+        constructor_kwarg="prefix_blocklist",
+    ),
+    "platform_domain": _static_filter_factory(PlatformDomainFilter),
+    "custom_domain_blocklist": _settings_value_filter_factory(
+        CustomDomainBlocklistFilter,
+        setting_attr="friend_link_domain_blocklist",
+        constructor_kwarg="domain_blocklist",
+    ),
     "blocked_tld": _build_blocked_tld_filter,
-    "root_path": _build_root_path_filter,
-    "location_fragment": _build_location_fragment_filter,
-    "asset_suffix": _build_asset_suffix_filter,
-    "blocked_path": _build_blocked_path_filter,
+    "root_path": _static_filter_factory(RootPathFilter),
+    "location_fragment": _static_filter_factory(LocationFragmentFilter),
+    "asset_suffix": _static_filter_factory(AssetSuffixFilter),
+    "blocked_path": _static_filter_factory(BlockedPathFilter),
     "model_consensus": _build_model_consensus_filter,
 }
 

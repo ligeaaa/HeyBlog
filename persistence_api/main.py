@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 from typing import Any
+from typing import TypeVar
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -100,6 +102,89 @@ class UrlRefilterRunFailureRequest(BaseModel):
     error_message: str
 
 
+_T = TypeVar("_T")
+_ExceptionTranslation = tuple[type[Exception], int, str | None]
+
+
+def _call_with_http_exception_translation(
+    action: Callable[[], _T],
+    *,
+    exception_translations: tuple[_ExceptionTranslation, ...],
+) -> _T:
+    """Run a route-local action and translate declared exceptions into HTTP errors.
+
+    Args:
+        action: Zero-argument callable that executes the repository or graph action.
+        exception_translations: Ordered translation rules of
+            `(exception_type, status_code, detail_override)`. When
+            `detail_override` is `None`, the raised exception string is used.
+
+    Returns:
+        The result returned by `action` when no declared exception is raised.
+
+    Raises:
+        HTTPException: Raised when `action` raises one of the declared
+            exception types.
+        Exception: Re-raises undeclared exceptions unchanged.
+    """
+
+    try:
+        return action()
+    except Exception as exc:
+        for exception_type, status_code, detail_override in exception_translations:
+            if isinstance(exc, exception_type):
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=detail_override if detail_override is not None else str(exc),
+                ) from exc
+        raise
+
+
+def _call_with_value_error_http_translation(
+    action: Callable[[], _T],
+    *,
+    status_code: int,
+) -> _T:
+    """Run a route-local action and translate `ValueError` into `HTTPException`.
+
+    Args:
+        action: Zero-argument callable that executes the repository operation.
+        status_code: HTTP status code to expose when the repository raises
+            `ValueError`.
+
+    Returns:
+        The result returned by `action` when no exception is raised.
+
+    Raises:
+        HTTPException: Raised with `detail=str(exc)` when `action` raises
+            `ValueError`.
+    """
+
+    return _call_with_http_exception_translation(
+        action,
+        exception_translations=((ValueError, status_code, None),),
+    )
+
+
+def _require_payload(payload: _T | None, *, detail: str) -> _T:
+    """Return a route payload or raise a consistent 404 response.
+
+    Args:
+        payload: Optional payload loaded by a route handler.
+        detail: Error detail returned when the payload is missing.
+
+    Returns:
+        The resolved payload when it exists.
+
+    Raises:
+        HTTPException: Raised with `404` when `payload` is `None`.
+    """
+
+    if payload is None:
+        raise HTTPException(status_code=404, detail=detail)
+    return payload
+
+
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
     """Construct the persistence service state."""
     resolved = settings or Settings.from_env()
@@ -154,8 +239,8 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         has_icon: str | None = None,
         min_connections: str | None = None,
     ) -> dict[str, Any]:
-        try:
-            return get_state().repository.list_blogs_catalog(
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.list_blogs_catalog(
                 page=page,
                 page_size=page_size,
                 site=site,
@@ -167,16 +252,16 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 has_title=has_title,
                 has_icon=has_icon,
                 min_connections=min_connections,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            ),
+            status_code=422,
+        )
 
     @app.get("/internal/blogs/lookup")
     def lookup_blog_candidates(url: str) -> dict[str, Any]:
-        try:
-            return get_state().repository.lookup_blog_candidates(url=url)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.lookup_blog_candidates(url=url),
+            status_code=422,
+        )
 
     @app.get("/internal/ingestion-requests")
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
@@ -191,17 +276,17 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         labeled: str | None = None,
         sort: str = "id_desc",
     ) -> dict[str, Any]:
-        try:
-            return get_state().repository.list_blog_labeling_candidates(
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.list_blog_labeling_candidates(
                 page=page,
                 page_size=page_size,
                 q=q,
                 label=label,
                 labeled=labeled,
                 sort=sort,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            ),
+            status_code=422,
+        )
 
     @app.get("/internal/blog-labeling/tags")
     def list_blog_label_tags() -> list[dict[str, Any]]:
@@ -209,21 +294,24 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/blog-labeling/tags")
     def create_blog_label_tag(payload: CreateBlogLabelTagRequest) -> dict[str, Any]:
-        try:
-            return get_state().repository.create_blog_label_tag(name=payload.name)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.create_blog_label_tag(name=payload.name),
+            status_code=422,
+        )
 
     @app.put("/internal/blog-labeling/labels/{blog_id}")
     def replace_blog_labels(blog_id: int, payload: ReplaceBlogLabelsRequest) -> dict[str, Any]:
-        try:
-            return get_state().repository.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except BlogLabelingNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except BlogLabelingConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.replace_blog_link_labels(
+                blog_id=blog_id,
+                tag_ids=payload.tag_ids,
+            ),
+            exception_translations=(
+                (ValueError, 422, None),
+                (BlogLabelingNotFoundError, 404, None),
+                (BlogLabelingConflictError, 409, None),
+            ),
+        )
 
     @app.get("/internal/blog-labeling/export")
     def export_blog_label_training_csv() -> Response:
@@ -247,27 +335,27 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.get("/internal/blogs/{blog_id}/detail")
     def get_blog_detail(blog_id: int) -> dict[str, Any]:
-        payload = get_state().repository.get_blog_detail(blog_id)
-        if payload is None:
-            raise HTTPException(status_code=404, detail="blog_not_found")
-        return payload
+        return _require_payload(
+            get_state().repository.get_blog_detail(blog_id),
+            detail="blog_not_found",
+        )
 
     @app.post("/internal/ingestion-requests")
     def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
-        try:
-            return get_state().repository.create_ingestion_request(**payload.model_dump())
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.create_ingestion_request(**payload.model_dump()),
+            status_code=422,
+        )
 
     @app.get("/internal/ingestion-requests/{request_id}")
     def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        payload = get_state().repository.get_ingestion_request(
-            request_id=request_id,
-            request_token=request_token,
+        return _require_payload(
+            get_state().repository.get_ingestion_request(
+                request_id=request_id,
+                request_token=request_token,
+            ),
+            detail="ingestion_request_not_found",
         )
-        if payload is None:
-            raise HTTPException(status_code=404, detail="ingestion_request_not_found")
-        return payload
 
     @app.post("/internal/url-refilter-runs")
     def create_url_refilter_run(crawler_was_running: bool = False) -> dict[str, Any]:
@@ -275,34 +363,37 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/url-refilter-runs/{run_id}/events")
     def append_url_refilter_run_event(run_id: int, payload: UrlRefilterRunEventRequest) -> dict[str, Any]:
-        try:
-            return get_state().repository.append_url_refilter_run_event(run_id=run_id, message=payload.message)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.append_url_refilter_run_event(
+                run_id=run_id,
+                message=payload.message,
+            ),
+            status_code=404,
+        )
 
     @app.post("/internal/url-refilter-runs/{run_id}/failed")
     def mark_url_refilter_run_failed(run_id: int, payload: UrlRefilterRunFailureRequest) -> dict[str, Any]:
-        try:
-            return get_state().repository.mark_url_refilter_run_failed(
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.mark_url_refilter_run_failed(
                 run_id=run_id,
                 error_message=payload.error_message,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            ),
+            status_code=404,
+        )
 
     @app.post("/internal/url-refilter-runs/{run_id}/execute")
     def execute_url_refilter_run(run_id: int) -> dict[str, Any]:
-        try:
-            return get_state().repository.execute_url_refilter_run(run_id=run_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.execute_url_refilter_run(run_id=run_id),
+            status_code=404,
+        )
 
     @app.get("/internal/url-refilter-runs/latest")
     def get_latest_url_refilter_run() -> dict[str, Any]:
-        payload = get_state().repository.get_latest_url_refilter_run()
-        if payload is None:
-            raise HTTPException(status_code=404, detail="url_refilter_run_not_found")
-        return payload
+        return _require_payload(
+            get_state().repository.get_latest_url_refilter_run(),
+            detail="url_refilter_run_not_found",
+        )
 
     @app.get("/internal/url-refilter-runs/{run_id}/events")
     def list_url_refilter_run_events(run_id: int) -> list[dict[str, Any]]:
@@ -314,24 +405,27 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/blog-dedup-scans/{run_id}/execute")
     def execute_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
-        try:
-            return get_state().repository.execute_blog_dedup_scan_run(run_id=run_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.execute_blog_dedup_scan_run(run_id=run_id),
+            status_code=404,
+        )
 
     @app.post("/internal/blog-dedup-scans/{run_id}/finalize")
     def finalize_blog_dedup_scan_run(run_id: int, payload: FinalizeBlogDedupScanRunRequest) -> dict[str, Any]:
-        try:
-            return get_state().repository.finalize_blog_dedup_scan_run(run_id=run_id, **payload.model_dump())
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.finalize_blog_dedup_scan_run(
+                run_id=run_id,
+                **payload.model_dump(),
+            ),
+            status_code=404,
+        )
 
     @app.get("/internal/blog-dedup-scans/latest")
     def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
-        payload = get_state().repository.get_latest_blog_dedup_scan_run()
-        if payload is None:
-            raise HTTPException(status_code=404, detail="blog_dedup_scan_run_not_found")
-        return payload
+        return _require_payload(
+            get_state().repository.get_latest_blog_dedup_scan_run(),
+            detail="blog_dedup_scan_run_not_found",
+        )
 
     @app.get("/internal/blog-dedup-scans/{run_id}/items")
     def list_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
@@ -367,10 +461,13 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         record_id: int,
         payload: UpdateRawDiscoveredUrlStatusRequest,
     ) -> dict[str, bool]:
-        try:
-            get_state().repository.update_raw_discovered_url_status(record_id=record_id, status=payload.status)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _call_with_value_error_http_translation(
+            lambda: get_state().repository.update_raw_discovered_url_status(
+                record_id=record_id,
+                status=payload.status,
+            ),
+            status_code=404,
+        )
         return {"ok": True}
 
     @app.post("/internal/logs")
@@ -412,10 +509,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.get("/internal/graph/nodes/{blog_id}/neighbors")
     def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
-        try:
-            return get_state().graph_service.graph_neighbors(node_id=blog_id, hops=hops, limit=limit)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="graph_node_not_found") from exc
+        return _call_with_http_exception_translation(
+            lambda: get_state().graph_service.graph_neighbors(node_id=blog_id, hops=hops, limit=limit),
+            exception_translations=((KeyError, 404, "graph_node_not_found"),),
+        )
 
     @app.get("/internal/graph/snapshots/latest")
     def get_latest_graph_snapshot() -> dict[str, Any]:
@@ -423,10 +520,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.get("/internal/graph/snapshots/{version}")
     def get_graph_snapshot(version: str) -> dict[str, Any]:
-        payload = get_state().graph_service.snapshot(version)
-        if payload is None:
-            raise HTTPException(status_code=404, detail="graph_snapshot_not_found")
-        return payload
+        return _require_payload(
+            get_state().graph_service.snapshot(version),
+            detail="graph_snapshot_not_found",
+        )
 
     @app.get("/internal/search-snapshot")
     def get_search_snapshot() -> dict[str, list[dict[str, Any]]]:
