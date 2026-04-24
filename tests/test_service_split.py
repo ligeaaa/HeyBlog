@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from backend.main import BackendState
 from backend.main import create_app as create_backend_app
 from frontend.server import create_app as create_frontend_app
+from persistence_api.main import PersistenceState
 from persistence_api.main import build_persistence_state
 from persistence_api.main import create_app as create_persistence_app
 from search.main import SearchService
@@ -257,6 +258,243 @@ def test_persistence_service_removes_legacy_read_shortcuts(tmp_path: Path) -> No
     assert client.get("/internal/edges").status_code == 405
     assert client.get("/internal/logs").status_code == 405
     assert client.get("/internal/graph").status_code == 404
+
+
+def test_persistence_service_queue_routes_preserve_optional_row_serialization() -> None:
+    """Queue routes should keep dict payloads and null semantics unchanged."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.include_priority_calls: list[bool] = []
+
+        def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, object] | None:
+            self.include_priority_calls.append(include_priority)
+            return {
+                "id": 11,
+                "blog_id": 11,
+                "domain": "queued.example.com",
+                "crawl_status": "PROCESSING",
+            }
+
+        def get_next_priority_blog(self) -> dict[str, object] | None:
+            return None
+
+    repository = StubRepository()
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    waiting = client.get("/internal/queue/next", params={"include_priority": "false"})
+    priority = client.get("/internal/queue/priority-next")
+
+    assert waiting.status_code == 200
+    assert waiting.json() == {
+        "id": 11,
+        "blog_id": 11,
+        "domain": "queued.example.com",
+        "crawl_status": "PROCESSING",
+    }
+    assert repository.include_priority_calls == [False]
+
+    assert priority.status_code == 200
+    assert priority.json() is None
+
+
+def test_persistence_service_maintenance_run_create_routes_preserve_bool_passthrough() -> None:
+    """Maintenance create routes should keep bool passthrough and payload shape unchanged."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.url_refilter_calls: list[bool] = []
+            self.blog_dedup_calls: list[bool] = []
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.url_refilter_calls.append(crawler_was_running)
+            return {"id": 21, "status": "PENDING", "crawler_was_running": crawler_was_running}
+
+        def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.blog_dedup_calls.append(crawler_was_running)
+            return {"id": 34, "status": "RUNNING", "crawler_was_running": crawler_was_running}
+
+    repository = StubRepository()
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    url_refilter = client.post("/internal/url-refilter-runs", params={"crawler_was_running": "true"})
+    blog_dedup = client.post("/internal/blog-dedup-scans/runs")
+
+    assert url_refilter.status_code == 200
+    assert url_refilter.json() == {"id": 21, "status": "PENDING", "crawler_was_running": True}
+    assert repository.url_refilter_calls == [True]
+
+    assert blog_dedup.status_code == 200
+    assert blog_dedup.json() == {"id": 34, "status": "RUNNING", "crawler_was_running": False}
+    assert repository.blog_dedup_calls == [False]
+
+
+def test_persistence_service_maintenance_child_list_routes_preserve_run_id_passthrough() -> None:
+    """Maintenance child-list routes should keep run_id passthrough and list payloads unchanged."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.url_refilter_calls: list[int] = []
+            self.blog_dedup_calls: list[int] = []
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            self.url_refilter_calls.append(run_id)
+            return [{"id": 1, "run_id": run_id, "message": "started"}]
+
+        def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, object]]:
+            self.blog_dedup_calls.append(run_id)
+            return [{"id": 2, "run_id": run_id, "reason_code": "blog_alias_collapsed"}]
+
+    repository = StubRepository()
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    url_refilter = client.get("/internal/url-refilter-runs/7/events")
+    blog_dedup = client.get("/internal/blog-dedup-scans/9/items")
+
+    assert url_refilter.status_code == 200
+    assert url_refilter.json() == [{"id": 1, "run_id": 7, "message": "started"}]
+    assert repository.url_refilter_calls == [7]
+
+    assert blog_dedup.status_code == 200
+    assert blog_dedup.json() == [{"id": 2, "run_id": 9, "reason_code": "blog_alias_collapsed"}]
+    assert repository.blog_dedup_calls == [9]
+
+
+def test_persistence_service_zero_arg_list_routes_preserve_payload_passthrough() -> None:
+    """Zero-arg list routes should keep list payloads and ordering unchanged."""
+
+    class StubRepository:
+        def list_priority_ingestion_requests(self) -> list[dict[str, object]]:
+            return [
+                {"request_id": 2, "status": "QUEUED"},
+                {"request_id": 5, "status": "CRAWLING"},
+            ]
+
+        def list_blog_label_tags(self) -> list[dict[str, object]]:
+            return [
+                {"id": 7, "slug": "blog"},
+                {"id": 8, "slug": "official"},
+            ]
+
+    app = create_persistence_app(
+        PersistenceState(
+            repository=StubRepository(),  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    ingestion_requests = client.get("/internal/ingestion-requests")
+    blog_label_tags = client.get("/internal/blog-labeling/tags")
+
+    assert ingestion_requests.status_code == 200
+    assert ingestion_requests.json() == [
+        {"request_id": 2, "status": "QUEUED"},
+        {"request_id": 5, "status": "CRAWLING"},
+    ]
+
+    assert blog_label_tags.status_code == 200
+    assert blog_label_tags.json() == [
+        {"id": 7, "slug": "blog"},
+        {"id": 8, "slug": "official"},
+    ]
+
+
+def test_persistence_service_zero_arg_dict_routes_preserve_payload_passthrough() -> None:
+    """Zero-arg dict routes should keep dict payloads unchanged."""
+
+    class StubGraphService:
+        def graph_status(self) -> dict[str, object]:
+            return {"backend": "snapshot", "enabled": True}
+
+        def latest_snapshot_manifest(self) -> dict[str, object]:
+            return {"version": "v7", "total_nodes": 42}
+
+    app = create_persistence_app(
+        PersistenceState(
+            repository=object(),  # type: ignore[arg-type]
+            graph_service=StubGraphService(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    graph_status = client.get("/internal/graph/status")
+    latest_snapshot = client.get("/internal/graph/snapshots/latest")
+
+    assert graph_status.status_code == 200
+    assert graph_status.json() == {"backend": "snapshot", "enabled": True}
+
+    assert latest_snapshot.status_code == 200
+    assert latest_snapshot.json() == {"version": "v7", "total_nodes": 42}
+
+
+def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -> None:
+    """Stats routes should keep zero-arg dict payloads unchanged."""
+
+    class StubRepository:
+        def get_filter_stats_by_chain_order(self) -> dict[str, object]:
+            return {
+                "by_filter_reason": {
+                    "raw": 12,
+                    "rule:same_domain": 9,
+                }
+            }
+
+    class StubStatsService:
+        def stats(self) -> dict[str, object]:
+            return {
+                "total_blogs": 17,
+                "pending_tasks": 3,
+            }
+
+    app = create_persistence_app(
+        PersistenceState(
+            repository=StubRepository(),  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=StubStatsService(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    stats = client.get("/internal/stats")
+    filter_stats = client.get("/internal/filter-stats")
+
+    assert stats.status_code == 200
+    assert stats.json() == {
+        "total_blogs": 17,
+        "pending_tasks": 3,
+    }
+
+    assert filter_stats.status_code == 200
+    assert filter_stats.json() == {
+        "by_filter_reason": {
+            "raw": 12,
+            "rule:same_domain": 9,
+        }
+    }
 
 
 def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> None:

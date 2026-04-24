@@ -185,6 +185,37 @@ def _require_payload(payload: _T | None, *, detail: str) -> _T:
     return payload
 
 
+def _run_action_and_return_ok(action: Callable[[], object]) -> dict[str, bool]:
+    """Execute a side-effecting route action and return the canonical success body.
+
+    Args:
+        action: Zero-argument callable that performs the route side effect.
+
+    Returns:
+        The canonical success response payload for mutation routes.
+    """
+
+    action()
+    return {"ok": True}
+
+
+def _load_optional_row_as_dict(
+    loader: Callable[[], dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    """Load an optional row-like payload and normalize it to a plain dict.
+
+    Args:
+        loader: Zero-argument callable that loads the optional row payload.
+
+    Returns:
+        ``None`` when no row is available; otherwise a plain ``dict`` copy of
+        the loaded row payload.
+    """
+
+    row = loader()
+    return dict(row) if row else None
+
+
 def build_persistence_state(settings: Settings | None = None) -> PersistenceState:
     """Construct the persistence service state."""
     resolved = settings or Settings.from_env()
@@ -325,13 +356,15 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.get("/internal/queue/next")
     def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:
-        row = get_state().repository.get_next_waiting_blog(include_priority=include_priority)
-        return dict(row) if row else None
+        return _load_optional_row_as_dict(
+            lambda: get_state().repository.get_next_waiting_blog(include_priority=include_priority),
+        )
 
     @app.get("/internal/queue/priority-next")
     def next_priority_waiting() -> dict[str, Any] | None:
-        row = get_state().repository.get_next_priority_blog()
-        return dict(row) if row else None
+        return _load_optional_row_as_dict(
+            lambda: get_state().repository.get_next_priority_blog(),
+        )
 
     @app.get("/internal/blogs/{blog_id}/detail")
     def get_blog_detail(blog_id: int) -> dict[str, Any]:
@@ -433,8 +466,9 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/ingestion-requests/by-blog/{blog_id}/crawling")
     def mark_ingestion_request_crawling(blog_id: int) -> dict[str, bool]:
-        get_state().repository.mark_ingestion_request_crawling(blog_id=blog_id)
-        return {"ok": True}
+        return _run_action_and_return_ok(
+            lambda: get_state().repository.mark_ingestion_request_crawling(blog_id=blog_id),
+        )
 
     @app.post("/internal/blogs/upsert")
     def upsert_blog(payload: UpsertBlogRequest) -> dict[str, Any]:
@@ -443,13 +477,15 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/blogs/{blog_id}/result")
     def mark_blog_result(blog_id: int, payload: BlogResultRequest) -> dict[str, bool]:
-        get_state().repository.mark_blog_result(blog_id=blog_id, **payload.model_dump())
-        return {"ok": True}
+        return _run_action_and_return_ok(
+            lambda: get_state().repository.mark_blog_result(blog_id=blog_id, **payload.model_dump()),
+        )
 
     @app.post("/internal/edges")
     def add_edge(payload: AddEdgeRequest) -> dict[str, bool]:
-        get_state().repository.add_edge(**payload.model_dump())
-        return {"ok": True}
+        return _run_action_and_return_ok(
+            lambda: get_state().repository.add_edge(**payload.model_dump()),
+        )
 
     @app.post("/internal/raw-discovered-urls")
     def create_raw_discovered_url(payload: CreateRawDiscoveredUrlRequest) -> dict[str, int]:
@@ -461,19 +497,21 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         record_id: int,
         payload: UpdateRawDiscoveredUrlStatusRequest,
     ) -> dict[str, bool]:
-        _call_with_value_error_http_translation(
-            lambda: get_state().repository.update_raw_discovered_url_status(
-                record_id=record_id,
-                status=payload.status,
+        return _run_action_and_return_ok(
+            lambda: _call_with_value_error_http_translation(
+                lambda: get_state().repository.update_raw_discovered_url_status(
+                    record_id=record_id,
+                    status=payload.status,
+                ),
+                status_code=404,
             ),
-            status_code=404,
         )
-        return {"ok": True}
 
     @app.post("/internal/logs")
     def add_log(payload: AddLogRequest) -> dict[str, bool]:
-        get_state().repository.add_log(**payload.model_dump())
-        return {"ok": True}
+        return _run_action_and_return_ok(
+            lambda: get_state().repository.add_log(**payload.model_dump()),
+        )
 
     @app.get("/internal/stats")
     def get_stats() -> dict[str, Any]:
