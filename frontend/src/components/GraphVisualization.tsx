@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Graph } from "@antv/g6";
-import type { GraphData, GraphNode } from "../types/graph";
+import { RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
+import * as THREE from "three";
+import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
 interface GraphVisualizationProps {
   data: GraphData;
@@ -8,31 +10,24 @@ interface GraphVisualizationProps {
   highlightNodeId?: number;
 }
 
-type RendererNode = {
+interface RenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
   id: string;
-  type: "circle" | "image";
-  data: GraphNode;
-  style: {
-    x?: number;
-    y?: number;
-    size: number;
-    fill?: string;
-    stroke?: string;
-    lineWidth?: number;
-    src?: string;
-  };
-};
+  blogId: number;
+  original: GraphNode;
+  label: string;
+  val: number;
+  iconUrl?: string;
+}
 
-type RendererEdge = {
-  id: string;
-  source: string;
-  target: string;
-  style: {
-    stroke: string;
-    lineWidth: number;
-    endArrow: boolean;
-  };
-};
+interface RenderLink extends Omit<GraphEdge, "source" | "target"> {
+  source: string | RenderNode;
+  target: string | RenderNode;
+}
+
+interface RenderGraphData {
+  nodes: RenderNode[];
+  links: RenderLink[];
+}
 
 function resolveOriginFaviconUrl(node: GraphNode): string | undefined {
   if (!node.url) {
@@ -61,247 +56,320 @@ function resolveNodeIconUrl(node: GraphNode): string | undefined {
     return normalizedIconUrl;
   }
 
-  const duckDuckGoIconUrl = resolveDuckDuckGoIconUrl(node);
-  if (duckDuckGoIconUrl) {
-    return duckDuckGoIconUrl;
+  return resolveDuckDuckGoIconUrl(node) ?? normalizedIconUrl ?? originFaviconUrl ?? node.iconUrl ?? undefined;
+}
+
+function nodeTitle(node: GraphNode): string {
+  return node.title?.trim() || node.domain || node.url || `Blog ${node.id}`;
+}
+
+function sourceIdOf(link: RenderLink): string {
+  return typeof link.source === "object" ? link.source.id : String(link.source);
+}
+
+function targetIdOf(link: RenderLink): string {
+  return typeof link.target === "object" ? link.target.id : String(link.target);
+}
+
+function buildGraphData(data: GraphData): RenderGraphData {
+  const nodesById = new Map<string, RenderNode>();
+
+  for (const node of data.nodes) {
+    const id = String(node.id).trim();
+    if (!id) {
+      continue;
+    }
+    nodesById.set(id, {
+      ...node,
+      id,
+      blogId: node.id,
+      original: node,
+      label: nodeTitle(node),
+      val: 1,
+      iconUrl: resolveNodeIconUrl(node),
+    });
   }
 
-  if (normalizedIconUrl) {
-    return normalizedIconUrl;
+  const degreeById = new Map<string, number>();
+  const links: RenderLink[] = [];
+
+  for (const edge of data.edges) {
+    const source = String(edge.source).trim();
+    const target = String(edge.target).trim();
+    if (!source || !target || !nodesById.has(source) || !nodesById.has(target)) {
+      continue;
+    }
+
+    degreeById.set(source, (degreeById.get(source) ?? 0) + 1);
+    degreeById.set(target, (degreeById.get(target) ?? 0) + 1);
+    links.push({
+      ...edge,
+      source,
+      target,
+    });
   }
 
-  if (originFaviconUrl) {
-    return originFaviconUrl;
+  const nodes = Array.from(nodesById.values()).map((node) => ({
+    ...node,
+    val: Math.max(1, degreeById.get(node.id) ?? node.degree ?? 1),
+  }));
+
+  return { nodes, links };
+}
+
+function buildNeighborIds(graphData: RenderGraphData, highlightNodeId?: number): Set<string> {
+  const highlightId = highlightNodeId === undefined ? undefined : String(highlightNodeId);
+  const neighborIds = new Set<string>();
+  if (!highlightId) {
+    return neighborIds;
   }
+
+  for (const link of graphData.links) {
+    const source = sourceIdOf(link);
+    const target = targetIdOf(link);
+    if (source === highlightId) {
+      neighborIds.add(target);
+    }
+    if (target === highlightId) {
+      neighborIds.add(source);
+    }
+  }
+  return neighborIds;
+}
+
+function colorForNode(node: RenderNode, highlightNodeId?: number, neighborIds?: Set<string>): string {
+  const isSelected = node.blogId === highlightNodeId;
+  const isNeighbor = neighborIds?.has(node.id) ?? false;
+  if (isSelected) {
+    return "#38bdf8";
+  }
+  if (isNeighbor) {
+    return "#a7f3d0";
+  }
+  if (highlightNodeId !== undefined) {
+    return "#334155";
+  }
+  if ((node.incomingCount ?? 0) > (node.outgoingCount ?? 0)) {
+    return "#fbbf24";
+  }
+  if ((node.outgoingCount ?? 0) > 0) {
+    return "#818cf8";
+  }
+  return "#94a3b8";
+}
+
+function sizeForNode(node: RenderNode, highlightNodeId?: number): number {
+  const baseSize = Math.min(9, 3.5 + Math.sqrt(node.val));
+  return node.blogId === highlightNodeId ? baseSize + 2.5 : baseSize;
+}
+
+function createNodeObject(node: RenderNode, color: string, size: number): THREE.Object3D {
+  const group = new THREE.Group();
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(size * 1.9, 24, 24),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+    }),
+  );
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(size, 24, 24),
+    new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.35,
+      roughness: 0.55,
+    }),
+  );
+
+  group.add(glow);
+  group.add(core);
 
   if (node.iconUrl) {
-    return node.iconUrl;
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin("anonymous");
+    const texture = loader.load(
+      node.iconUrl,
+      () => {
+        core.visible = false;
+      },
+      undefined,
+      () => {
+        core.visible = true;
+      },
+    );
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const icon = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: texture,
+        color: "#ffffff",
+        transparent: true,
+      }),
+    );
+    icon.scale.set(size * 2.1, size * 2.1, 1);
+    icon.position.set(0, 0, size * 0.08);
+    group.add(icon);
   }
-  return undefined;
-}
 
-function buildNodeStyle(node: GraphNode, highlightNodeId?: number) {
-  const isHighlighted = node.id === highlightNodeId;
-  const iconUrl = resolveNodeIconUrl(node);
-  const size = isHighlighted ? 34 : 26;
-
-  if (iconUrl) {
-    return {
-      x: node.x,
-      y: node.y,
-      size,
-      src: iconUrl,
-      lineWidth: isHighlighted ? 3 : 1.5,
-    };
-  }
-
-  return {
-    x: node.x,
-    y: node.y,
-    size,
-    fill: isHighlighted ? "#3b82f6" : "#60a5fa",
-    stroke: isHighlighted ? "#1d4ed8" : "#2563eb",
-    lineWidth: isHighlighted ? 3 : 1.5,
-  };
-}
-
-function buildRendererNodes(data: GraphData, highlightNodeId?: number): RendererNode[] {
-  return data.nodes.map((node) => {
-    const style = buildNodeStyle(node, highlightNodeId);
-    return {
-      id: String(node.id),
-      type: style.src ? "image" : "circle",
-      data: node,
-      style,
-    };
-  });
-}
-
-function buildRendererEdges(data: GraphData): RendererEdge[] {
-  return data.edges.map((edge) => ({
-    // G6 requires globally unique element ids across nodes and edges.
-    // Backend edge ids are numeric and can collide with node ids, so we namespace them here.
-    id: `edge:${edge.id}`,
-    source: String(edge.source),
-    target: String(edge.target),
-    style: {
-      stroke: "#94a3b8",
-      lineWidth: 1.5,
-      endArrow: true,
-    },
-  }));
-}
-
-function buildLayout() {
-  return {
-    type: "d3-force" as const,
-    animation: true,
-    nodeSize: 24,
-    link: {
-      distance: 140,
-      strength: 0.2,
-    },
-    manyBody: {
-      strength: -220,
-    },
-    collide: {
-      radius: 28,
-      strength: 0.8,
-    },
-    center: {
-      strength: 0.08,
-    },
-    alpha: 0.9,
-    alphaMin: 0.002,
-    alphaDecay: 0.04,
-    velocityDecay: 0.3,
-  };
-}
-
-function buildBehaviors() {
-  return [
-    "drag-canvas",
-    "zoom-canvas",
-    {
-      type: "drag-element-force",
-      fixed: false,
-    },
-  ];
-}
-
-function resolveClickedNodeId(event: {
-  itemId?: string | number;
-  item?: { getID?: () => string | number };
-}) {
-  const rawId = event.itemId ?? event.item?.getID?.();
-  const nodeId = Number(rawId);
-  return Number.isFinite(nodeId) ? nodeId : null;
+  group.userData = { blogId: node.blogId, iconUrl: node.iconUrl };
+  return group;
 }
 
 /**
- * Render the graph canvas with AntV G6.
+ * Render an interactive 3D force graph for blog relationship exploration.
  *
  * @param data Graph payload normalized from backend APIs.
- * @param onNodeClick Optional callback for node selection.
- * @param highlightNodeId Selected node id.
- * @returns Graph container.
+ * @param onNodeClick Optional callback fired with the original graph node.
+ * @param highlightNodeId Selected node id to emphasize.
+ * @returns Graph container with 3D canvas and controls.
  */
 export function GraphVisualization({ data, onNodeClick, highlightNodeId }: GraphVisualizationProps) {
+  const graphRef = useRef<ForceGraphMethods<RenderNode, RenderLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const graphRef = useRef<Graph | null>(null);
-  const latestDataRef = useRef(data);
-  const latestOnNodeClickRef = useRef(onNodeClick);
   const [size, setSize] = useState({ width: 960, height: 720 });
-  const [renderError, setRenderError] = useState<string | null>(null);
-
-  const rendererEdges = useMemo(() => buildRendererEdges(data), [data]);
-  const styledRendererNodes = useMemo(() => buildRendererNodes(data, highlightNodeId), [data, highlightNodeId]);
-  const layout = useMemo(() => buildLayout(), []);
-  const behaviors = useMemo(() => buildBehaviors(), []);
-
-  useEffect(() => {
-    latestDataRef.current = data;
-    latestOnNodeClickRef.current = onNodeClick;
-  }, [data, onNodeClick]);
+  const [isMeasured, setIsMeasured] = useState(false);
+  const graphData = useMemo(() => buildGraphData(data), [data]);
+  const neighborIds = useMemo(() => buildNeighborIds(graphData, highlightNodeId), [graphData, highlightNodeId]);
+  const selectedGraphId = highlightNodeId === undefined ? undefined : String(highlightNodeId);
 
   useEffect(() => {
     if (!containerRef.current) {
       return undefined;
     }
+
     const observer = new ResizeObserver(([entry]) => {
       setSize({
-        width: Math.max(640, Math.floor(entry.contentRect.width)),
-        height: Math.max(480, Math.floor(entry.contentRect.height)),
+        width: Math.max(320, Math.floor(entry.contentRect.width)),
+        height: Math.max(360, Math.floor(entry.contentRect.height)),
       });
+      setIsMeasured(true);
     });
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
-    if (!containerRef.current || graphRef.current) {
-      return undefined;
+    const graph = graphRef.current;
+    if (!graph || !selectedGraphId) {
+      return;
     }
 
-    const graph = new Graph({
-      container: containerRef.current,
-      width: size.width,
-      height: size.height,
-      autoFit: "view",
-      data: {
-        nodes: [],
-        edges: [],
-      } as never,
-      edge: {
-        type: "line",
-      },
-    });
+    const node = graphData.nodes.find((item) => item.id === selectedGraphId) as
+      | (RenderNode & { x?: number; y?: number; z?: number })
+      | undefined;
+    if (!node || node.x === undefined || node.y === undefined || node.z === undefined) {
+      return;
+    }
 
-    graph.on("node:click", (event: any) => {
-      const targetId = resolveClickedNodeId(event);
-      if (targetId === null) {
-        return;
-      }
-      const node = latestDataRef.current.nodes.find((item) => item.id === targetId);
-      if (node) {
-        latestOnNodeClickRef.current?.(node);
-      }
-    });
+    const distance = 280;
+    const ratio = 1 + distance / Math.max(1, Math.hypot(node.x, node.y, node.z));
+    graph.cameraPosition(
+      { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
+      { x: node.x, y: node.y, z: node.z },
+      800,
+    );
+  }, [graphData.nodes, selectedGraphId]);
 
-    graphRef.current = graph;
-
-    return () => {
-      graphRef.current = null;
-      graph.destroy();
-    };
-  }, [size.height, size.width]);
-
-  useEffect(() => {
+  const handleZoom = useCallback((scale: number) => {
     const graph = graphRef.current;
     if (!graph) {
       return;
     }
-    let cancelled = false;
+    const camera = graph.camera();
+    const controls = graph.controls() as { update?: () => void };
+    const direction = camera.position.clone().normalize();
+    camera.position.copy(direction.multiplyScalar(camera.position.length() * scale));
+    controls.update?.();
+  }, []);
 
-    const renderGraph = async () => {
-      try {
-        graph.setSize(size.width, size.height);
-        graph.setOptions({
-          autoFit: "view",
-          data: {
-            nodes: styledRendererNodes,
-            edges: rendererEdges,
-          } as never,
-          behaviors,
-          layout,
-        });
-        await graph.render();
-        if (!cancelled) {
-          setRenderError(null);
-        }
-      } catch (error) {
-        console.error("graph_render_failed", error);
-        if (!cancelled) {
-          setRenderError("图谱渲染失败，请刷新页面重试");
-        }
-      }
-    };
-
-    void renderGraph();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [behaviors, layout, rendererEdges, size.height, size.width, styledRendererNodes]);
+  const handleResetView = useCallback(() => {
+    graphRef.current?.zoomToFit(650, 80);
+  }, []);
 
   return (
-    <div className="relative h-full w-full bg-gradient-to-br from-blue-50 to-indigo-50">
-      <div ref={containerRef} className="h-full w-full" />
-      {renderError ? (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/70 px-6 text-center text-sm text-red-700">
-          {renderError}
-        </div>
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-slate-950">
+      <div className="absolute inset-x-0 top-0 z-10 h-24 bg-gradient-to-b from-slate-950 via-slate-950/70 to-transparent" />
+      {isMeasured ? (
+        <ForceGraph3D<RenderNode, RenderLink>
+          ref={graphRef}
+          graphData={graphData}
+          nodeId="id"
+          width={size.width}
+          height={size.height}
+          backgroundColor="#020617"
+          showNavInfo={false}
+          nodeLabel={(node: RenderNode) => node.label}
+          nodeVal={(node: RenderNode) => sizeForNode(node, highlightNodeId)}
+          nodeThreeObject={(node: RenderNode) =>
+            createNodeObject(node, colorForNode(node, highlightNodeId, neighborIds), sizeForNode(node, highlightNodeId))
+          }
+          nodeThreeObjectExtend={false}
+          linkSource="source"
+          linkTarget="target"
+          linkColor={(link: RenderLink) => {
+            if (!selectedGraphId) {
+              return "rgba(148, 163, 184, 0.28)";
+            }
+            return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId
+              ? "rgba(125, 211, 252, 0.78)"
+              : "rgba(71, 85, 105, 0.16)";
+          }}
+          linkWidth={(link: RenderLink) => {
+            if (!selectedGraphId) {
+              return 0.8;
+            }
+            return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId ? 2 : 0.35;
+          }}
+          linkDirectionalArrowLength={3.5}
+          linkDirectionalArrowRelPos={1}
+          linkDirectionalParticles={0}
+          linkDirectionalParticleWidth={1.8}
+          enableNodeDrag={false}
+          enablePointerInteraction
+          onNodeClick={(node) => onNodeClick?.(node.original)}
+          onNodeDragEnd={(node) => {
+            node.fx = node.x;
+            node.fy = node.y;
+            node.fz = node.z;
+          }}
+          d3VelocityDecay={0.38}
+          d3AlphaDecay={0.025}
+          cooldownTicks={120}
+          controlType="orbit"
+        />
       ) : null}
+
+      <div className="absolute bottom-5 left-1/2 z-20 flex -translate-x-1/2 overflow-hidden rounded-lg border border-white/10 bg-slate-950/70 shadow-2xl backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => handleZoom(1.35)}
+          className="flex h-11 w-12 items-center justify-center border-r border-white/10 text-slate-100 transition-colors hover:bg-white/10"
+          aria-label="缩小图谱"
+          title="缩小"
+        >
+          <ZoomOut className="h-5 w-5" />
+        </button>
+        <button
+          type="button"
+          onClick={handleResetView}
+          className="flex h-11 w-12 items-center justify-center border-r border-white/10 text-slate-100 transition-colors hover:bg-white/10"
+          aria-label="重置图谱视角"
+          title="重置视角"
+        >
+          <RotateCcw className="h-5 w-5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => handleZoom(0.72)}
+          className="flex h-11 w-12 items-center justify-center text-slate-100 transition-colors hover:bg-white/10"
+          aria-label="放大图谱"
+          title="放大"
+        >
+          <ZoomIn className="h-5 w-5" />
+        </button>
+      </div>
     </div>
   );
 }

@@ -1,44 +1,72 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { GraphVisualization } from "./GraphVisualization";
 import type { GraphData } from "../types/graph";
 
-const { graphInstances, GraphMock } = vi.hoisted(() => {
-  const graphInstances: {
-    options: Record<string, unknown>;
-    setOptions: ReturnType<typeof vi.fn>;
-    setSize: ReturnType<typeof vi.fn>;
-    updateNodeData: ReturnType<typeof vi.fn>;
-    render: ReturnType<typeof vi.fn>;
-    draw: ReturnType<typeof vi.fn>;
-    destroy: ReturnType<typeof vi.fn>;
-    on: ReturnType<typeof vi.fn>;
-  }[] = [];
+const { forceGraphRenders, ForceGraph3DMock } = vi.hoisted(() => {
+  const forceGraphRenders: Record<string, any>[] = [];
 
-  class GraphMock {
-    options: Record<string, unknown>;
-    setOptions = vi.fn((nextOptions: Record<string, unknown>) => {
-      this.options = { ...this.options, ...nextOptions };
-    });
-    setSize = vi.fn();
-    updateNodeData = vi.fn();
-    render = vi.fn(() => Promise.resolve());
-    draw = vi.fn(() => Promise.resolve());
-    destroy = vi.fn();
-    on = vi.fn();
-
-    constructor(options: Record<string, unknown>) {
-      this.options = options;
-      graphInstances.push(this);
+  function ForceGraph3DMock(props: Record<string, any>) {
+    forceGraphRenders.push(props);
+    const { ref, onNodeClick, graphData } = props;
+    if (ref) {
+      ref.current = {
+        d3Force: vi.fn(() => ({
+          strength: vi.fn(),
+          distance: vi.fn(),
+        })),
+        d3ReheatSimulation: vi.fn(),
+        zoomToFit: vi.fn(),
+        camera: vi.fn(() => ({
+          position: {
+            clone: () => ({
+              normalize: () => ({
+                multiplyScalar: () => ({ x: 0, y: 0, z: 360 }),
+              }),
+            }),
+            length: () => 360,
+            copy: vi.fn(),
+          },
+        })),
+        controls: vi.fn(() => ({ update: vi.fn() })),
+        cameraPosition: vi.fn(),
+      };
     }
+
+    return (
+      <button
+        type="button"
+        data-testid="force-graph-3d"
+        onClick={() => onNodeClick?.(graphData.nodes[1], new MouseEvent("click"))}
+      >
+        3D graph
+      </button>
+    );
   }
 
-  return { graphInstances, GraphMock };
+  return { forceGraphRenders, ForceGraph3DMock };
 });
 
-vi.mock("@antv/g6", () => ({
-  Graph: GraphMock,
+vi.mock("react-force-graph-3d", () => ({
+  default: ForceGraph3DMock,
 }));
+
+vi.mock("three", async () => {
+  const actual = await vi.importActual<typeof import("three")>("three");
+  return {
+    ...actual,
+    TextureLoader: class {
+      setCrossOrigin = vi.fn();
+
+      load = vi.fn((url: string, onLoad?: () => void) => {
+        const texture = new actual.Texture();
+        texture.userData = { url };
+        onLoad?.();
+        return texture;
+      });
+    },
+  };
+});
 
 const forceGraphData: GraphData = {
   nodes: [
@@ -48,6 +76,8 @@ const forceGraphData: GraphData = {
       domain: "alpha.example.com",
       title: "Alpha Blog",
       iconUrl: "https://alpha.example.com/favicon.ico",
+      incomingCount: 1,
+      outgoingCount: 1,
     },
     {
       id: 2,
@@ -55,6 +85,8 @@ const forceGraphData: GraphData = {
       domain: "beta.example.com",
       title: "Beta Blog",
       iconUrl: null,
+      incomingCount: 1,
+      outgoingCount: 0,
     },
   ],
   edges: [
@@ -65,6 +97,13 @@ const forceGraphData: GraphData = {
       linkText: null,
       linkUrlRaw: "https://alpha.example.com/link",
     },
+    {
+      id: "missing-target",
+      source: 1,
+      target: 99,
+      linkText: null,
+      linkUrlRaw: "https://alpha.example.com/missing",
+    },
   ],
   meta: {
     strategy: "degree",
@@ -73,8 +112,32 @@ const forceGraphData: GraphData = {
   },
 };
 
+class TestResizeObserver {
+  callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe() {
+    this.callback(
+      [
+        {
+          contentRect: { width: 960, height: 720 },
+        } as ResizeObserverEntry,
+      ],
+      this,
+    );
+  }
+
+  unobserve() {}
+
+  disconnect() {}
+}
+
 beforeEach(() => {
-  graphInstances.length = 0;
+  forceGraphRenders.length = 0;
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
 });
 
 afterEach(() => {
@@ -83,75 +146,38 @@ afterEach(() => {
 });
 
 describe("GraphVisualization", () => {
-  test("uses drag-element-force for d3-force graphs", () => {
+  test("passes cleaned node-link data into the 3D force graph", () => {
     render(<GraphVisualization data={forceGraphData} />);
 
-    expect(graphInstances).toHaveLength(1);
-    expect(graphInstances[0].setOptions).toHaveBeenCalledWith(
+    const graphProps = forceGraphRenders.at(-1);
+    expect(graphProps).toBeDefined();
+
+    expect(graphProps).toEqual(
       expect.objectContaining({
-        layout: expect.objectContaining({ type: "d3-force" }),
-        behaviors: expect.arrayContaining([
-          "drag-canvas",
-          "zoom-canvas",
-          expect.objectContaining({
-            type: "drag-element-force",
-            fixed: false,
-          }),
-        ]),
-      }),
-    );
-    expect(graphInstances[0].setOptions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
+        backgroundColor: "#020617",
+        controlType: "orbit",
+        graphData: expect.objectContaining({
           nodes: expect.arrayContaining([
             expect.objectContaining({
               id: "1",
-              type: "image",
-              style: expect.objectContaining({
-                src: "https://icons.duckduckgo.com/ip3/alpha.example.com.ico",
-              }),
+              blogId: 1,
+              label: "Alpha Blog",
+              iconUrl: "https://icons.duckduckgo.com/ip3/alpha.example.com.ico",
+              val: 1,
             }),
             expect.objectContaining({
               id: "2",
-              type: "image",
-              style: expect.objectContaining({
-                src: "https://icons.duckduckgo.com/ip3/beta.example.com.ico",
-              }),
+              blogId: 2,
+              label: "Beta Blog",
+              iconUrl: "https://icons.duckduckgo.com/ip3/beta.example.com.ico",
+              val: 1,
             }),
           ]),
-        }),
-      }),
-    );
-  });
-
-  test("prefers domain icon service when backend only exposes synthesized /favicon.ico", () => {
-    const staleMetadataGraph: GraphData = {
-      ...forceGraphData,
-      nodes: [
-        {
-          id: 3,
-          url: "https://dusays.com/",
-          domain: "dusays.com",
-          title: "dusays.com",
-          iconUrl: "https://dusays.com/favicon.ico",
-        },
-      ],
-      edges: [],
-    };
-
-    render(<GraphVisualization data={staleMetadataGraph} />);
-
-    expect(graphInstances).toHaveLength(1);
-    expect(graphInstances[0].setOptions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          nodes: [
+          links: [
             expect.objectContaining({
-              id: "3",
-              type: "image",
-              style: expect.objectContaining({
-                src: "https://icons.duckduckgo.com/ip3/dusays.com.ico",
-              }),
+              id: "1-2",
+              source: "1",
+              target: "2",
             }),
           ],
         }),
@@ -159,64 +185,73 @@ describe("GraphVisualization", () => {
     );
   });
 
-  test("updates highlighted node styles without recreating the graph instance", () => {
-    const { rerender } = render(<GraphVisualization data={forceGraphData} />);
-
-    expect(graphInstances).toHaveLength(1);
-
-    rerender(<GraphVisualization data={forceGraphData} highlightNodeId={2} />);
-
-    expect(graphInstances).toHaveLength(1);
-    expect(graphInstances[0].destroy).not.toHaveBeenCalled();
-    expect(graphInstances[0].setOptions).toHaveBeenCalledTimes(2);
-  });
-
-  test("uses G6 item ids for node click callbacks", () => {
+  test("uses the original graph node for click callbacks", () => {
     const handleNodeClick = vi.fn();
     render(<GraphVisualization data={forceGraphData} onNodeClick={handleNodeClick} />);
 
-    expect(graphInstances).toHaveLength(1);
-    const nodeClickHandler = graphInstances[0].on.mock.calls.find(([eventName]) => eventName === "node:click")?.[1];
+    fireEvent.click(screen.getByTestId("force-graph-3d"));
 
-    expect(nodeClickHandler).toBeTypeOf("function");
-
-    nodeClickHandler?.({ itemId: "2" });
-    nodeClickHandler?.({ item: { getID: () => "1" } });
-
-    expect(handleNodeClick).toHaveBeenNthCalledWith(1, forceGraphData.nodes[1]);
-    expect(handleNodeClick).toHaveBeenNthCalledWith(2, forceGraphData.nodes[0]);
+    expect(handleNodeClick).toHaveBeenCalledWith(forceGraphData.nodes[1]);
   });
 
-  test("keeps preset graphs on ordinary drag-element behavior", () => {
-    const presetGraphData: GraphData = {
+  test("highlights selected-node links and dims unrelated links", () => {
+    const graphWithExtraEdge: GraphData = {
       ...forceGraphData,
-      meta: {
-        strategy: forceGraphData.meta?.strategy ?? "degree",
-        limit: forceGraphData.meta?.limit ?? 120,
-        hasStablePositions: true,
-      },
-      nodes: forceGraphData.nodes.map((node, index) => ({
-        ...node,
-        x: 100 + index * 40,
-        y: 200 + index * 40,
-      })),
+      nodes: [
+        ...forceGraphData.nodes,
+        {
+          id: 3,
+          url: "https://gamma.example.com/",
+          domain: "gamma.example.com",
+          title: "Gamma Blog",
+          iconUrl: null,
+        },
+      ],
+      edges: [
+        {
+          id: "1-2",
+          source: 1,
+          target: 2,
+          linkText: null,
+          linkUrlRaw: "https://alpha.example.com/link",
+        },
+        {
+          id: "2-3",
+          source: 2,
+          target: 3,
+          linkText: null,
+          linkUrlRaw: "https://beta.example.com/link",
+        },
+      ],
     };
 
-    render(<GraphVisualization data={presetGraphData} />);
+    render(<GraphVisualization data={graphWithExtraEdge} highlightNodeId={1} />);
 
-    expect(graphInstances).toHaveLength(1);
-    expect(graphInstances[0].setOptions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        layout: expect.objectContaining({ type: "d3-force" }),
-        behaviors: expect.arrayContaining([
-          "drag-canvas",
-          "zoom-canvas",
-          expect.objectContaining({
-            type: "drag-element-force",
-            fixed: false,
-          }),
-        ]),
-      }),
-    );
+    const graphProps = forceGraphRenders.at(-1);
+    const [selectedLink, unrelatedLink] = graphProps!.graphData.links;
+
+    expect(graphProps!.linkWidth(selectedLink)).toBe(2);
+    expect(graphProps!.linkColor(selectedLink)).toBe("rgba(125, 211, 252, 0.78)");
+    expect(graphProps!.linkWidth(unrelatedLink)).toBe(0.35);
+    expect(graphProps!.linkColor(unrelatedLink)).toBe("rgba(71, 85, 105, 0.16)");
+  });
+
+  test("exposes icon-only zoom and reset controls", () => {
+    render(<GraphVisualization data={forceGraphData} />);
+
+    expect(screen.getByRole("button", { name: "缩小图谱" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重置图谱视角" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "放大图谱" })).toBeInTheDocument();
+  });
+
+  test("uses blog icons as sprite textures when available", () => {
+    render(<GraphVisualization data={forceGraphData} />);
+
+    const graphProps = forceGraphRenders.at(-1);
+    const iconNode = graphProps!.graphData.nodes[0];
+    const nodeObject = graphProps!.nodeThreeObject(iconNode);
+
+    expect(nodeObject.children).toHaveLength(3);
+    expect(nodeObject.userData.iconUrl).toBe("https://icons.duckduckgo.com/ip3/alpha.example.com.ico");
   });
 });

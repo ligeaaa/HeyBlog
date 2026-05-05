@@ -1,26 +1,8 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-vi.mock("@antv/g6", () => ({
-  Graph: class {
-    on() {}
-
-    setOptions() {}
-
-    setSize() {}
-
-    updateNodeData() {}
-
-    render() {
-      return Promise.resolve();
-    }
-
-    draw() {
-      return Promise.resolve();
-    }
-
-    destroy() {}
-  },
+vi.mock("react-force-graph-3d", () => ({
+  default: () => <div data-testid="force-graph-3d" />,
 }));
 
 import App from "./App";
@@ -90,6 +72,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   window.history.replaceState({}, "", "/");
   catalogItems = [...baseCatalogItems, makeCatalogItem(33, "PROCESSING", "Newest Processing Blog")];
+  window.localStorage.clear();
   statusPayload = {
     is_running: true,
     pending_tasks: 3,
@@ -351,7 +334,7 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   });
 });
 
-test("locks visualization graph size at 200 and shows a maturity notice dialog", async () => {
+test("lets visualization users choose a deterministic sampled graph size", async () => {
   window.history.replaceState({}, "", "/visualization");
 
   render(<App />);
@@ -360,22 +343,57 @@ test("locks visualization graph size at 200 and shows a maturity notice dialog",
     expect(screen.getByRole("heading", { name: "博客关系图谱" })).toBeInTheDocument();
   });
 
+  expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "10000" })).toBeInTheDocument();
+  expect(screen.queryByText("该功能仍不成熟！")).not.toBeInTheDocument();
+  expect(screen.queryByText("数据统计")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "500" }));
+
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "选择图谱规模" })).not.toBeInTheDocument();
+  });
+
   expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/graph/views/core?strategy=degree&limit=200"),
+    expect.stringContaining(
+      "/api/graph/views/core?strategy=degree&limit=500&sample_mode=count&sample_value=500&sample_seed=42",
+    ),
     expect.anything(),
   );
-  expect(screen.getByText("当前仅展示200个节点，功能待完善qwq")).toBeInTheDocument();
+  expect(screen.getByText(/当前使用固定随机种子 42 展示 500 个节点，本次图谱数据约 0\.00 MB/)).toBeInTheDocument();
   expect(screen.queryByText("全图最大节点数")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /刷新全图|返回全图/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /搜索博客/i })).not.toBeInTheDocument();
-  expect(screen.getByRole("dialog")).toBeInTheDocument();
-  expect(screen.getByText("该功能仍不成熟！")).toBeInTheDocument();
+});
 
-  fireEvent.click(screen.getByRole("button", { name: "我知道了" }));
+test("uses cached visualization graph data for repeated sampled sizes", async () => {
+  window.history.replaceState({}, "", "/visualization");
+  window.localStorage.setItem(
+    "heyblog:visualization:3d-v1:seed-42:limit-200",
+    JSON.stringify({
+      nodes: [
+        {
+          id: 88,
+          url: "https://cached.example.com/",
+          domain: "cached.example.com",
+          title: "Cached Example",
+          iconUrl: null,
+        },
+      ],
+      edges: [],
+    }),
+  );
+
+  render(<App />);
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
   });
+
+  fireEvent.click(screen.getByRole("button", { name: "200" }));
+
+  expect(screen.getByText(/当前使用固定随机种子 42 展示 200 个节点，本次图谱数据约 0\.00 MB，已从本地缓存读取/)).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/graph/views/core"), expect.anything());
 });
 
 test("adds a public filter stats route that renders ordered remaining counts", async () => {

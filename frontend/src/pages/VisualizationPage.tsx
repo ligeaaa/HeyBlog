@@ -5,11 +5,47 @@ import { toast } from "sonner";
 import { BlogDetailPanel } from "../components/BlogDetailPanel";
 import { GraphVisualization } from "../components/GraphVisualization";
 import { Navigation } from "../components/Navigation";
-import { StatsPanel } from "../components/StatsPanel";
-import { fetchBlogDetail, fetchGraphData, fetchStats, fetchSubgraph } from "../lib/api";
-import type { BlogDetail, GraphData, GraphNode, StatsData } from "../types/graph";
+import { fetchBlogDetail, fetchGraphData, fetchSubgraph } from "../lib/api";
+import type { BlogDetail, GraphData, GraphNode } from "../types/graph";
 
-const DEFAULT_FULL_GRAPH_LIMIT = 200;
+const GRAPH_LIMIT_OPTIONS = [200, 500, 1000, 10000] as const;
+const GRAPH_SAMPLE_SEED = 42;
+const GRAPH_CACHE_VERSION = "3d-v1";
+
+type GraphLimit = (typeof GRAPH_LIMIT_OPTIONS)[number];
+
+function graphCacheKey(limit: GraphLimit): string {
+  return `heyblog:visualization:${GRAPH_CACHE_VERSION}:seed-${GRAPH_SAMPLE_SEED}:limit-${limit}`;
+}
+
+function readCachedGraph(limit: GraphLimit): GraphData | null {
+  try {
+    const raw = window.localStorage.getItem(graphCacheKey(limit));
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as GraphData;
+    if (Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
+      return parsed;
+    }
+  } catch {
+    window.localStorage.removeItem(graphCacheKey(limit));
+  }
+  return null;
+}
+
+function graphPayloadSizeMb(data: GraphData): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+  return (bytes / (1024 * 1024)).toFixed(2);
+}
+
+function writeCachedGraph(limit: GraphLimit, data: GraphData): void {
+  try {
+    window.localStorage.setItem(graphCacheKey(limit), JSON.stringify(data));
+  } catch {
+    // Browsers can reject large localStorage writes; graph rendering should still continue.
+  }
+}
 
 /**
  * Render the dedicated graph exploration route.
@@ -19,15 +55,12 @@ const DEFAULT_FULL_GRAPH_LIMIT = 200;
 export function VisualizationPage() {
   const [searchParams] = useSearchParams();
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
-  const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
   const [blogDetail, setBlogDetail] = useState<BlogDetail | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [selectedLimit, setSelectedLimit] = useState<GraphLimit | null>(null);
+  const [graphSizeMb, setGraphSizeMb] = useState<string | null>(null);
+  const [usedCachedGraph, setUsedCachedGraph] = useState(false);
   const [highlightNodeId, setHighlightNodeId] = useState<number | undefined>();
-  const [showMaturityNotice, setShowMaturityNotice] = useState(true);
-
-  useEffect(() => {
-    void loadFullGraph();
-  }, []);
 
   useEffect(() => {
     const highlight = searchParams.get("highlight");
@@ -42,20 +75,33 @@ export function VisualizationPage() {
   }, [searchParams]);
 
   /**
-   * Load the full graph view using the fixed default limit.
+   * Load the selected graph size using deterministic backend sampling.
    *
-   * @returns Promise resolved after the graph finishes loading.
+   * @param limit Requested node count.
+   * @returns Promise resolved after graph state updates.
    */
-  async function loadFullGraph() {
+  async function loadFullGraph(limit: GraphLimit) {
+    setSelectedLimit(limit);
+    setBlogDetail(null);
+    setHighlightNodeId(undefined);
+
+    const cachedGraph = readCachedGraph(limit);
+    if (cachedGraph) {
+      setGraphData(cachedGraph);
+      setGraphSizeMb(graphPayloadSizeMb(cachedGraph));
+      setUsedCachedGraph(true);
+      return;
+    }
+
     try {
+      setUsedCachedGraph(false);
       setIsLoading(true);
-      const [graphResponse, statsResponse] = await Promise.all([
-        fetchGraphData(DEFAULT_FULL_GRAPH_LIMIT),
-        fetchStats(),
-      ]);
+      const graphResponse = await fetchGraphData(limit, { sampleMode: "count", sampleSeed: GRAPH_SAMPLE_SEED });
       setGraphData(graphResponse);
-      setStats(statsResponse);
+      setGraphSizeMb(graphPayloadSizeMb(graphResponse));
+      writeCachedGraph(limit, graphResponse);
     } catch {
+      setSelectedLimit(null);
       toast.error("图谱加载失败，请刷新页面重试。");
     } finally {
       setIsLoading(false);
@@ -101,26 +147,19 @@ export function VisualizationPage() {
     setHighlightNodeId(undefined);
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_transparent_32%),linear-gradient(180deg,_#eef6ff_0%,_#ffffff_48%,_#f6fbff_100%)]">
-        <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-12 w-12 animate-spin text-sky-500" />
-          <div className="text-lg text-slate-600">加载博客关系图谱...</div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex min-h-screen flex-col bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_transparent_32%),linear-gradient(180deg,_#eef6ff_0%,_#ffffff_48%,_#f6fbff_100%)]">
+    <div className="flex h-screen min-h-screen flex-col overflow-hidden bg-slate-950">
       <Navigation />
 
-      <div className="border-b border-slate-200 bg-white/80 px-6 pb-6 pt-24 shadow-sm backdrop-blur-sm sm:px-8">
-        <div className="mx-auto max-w-6xl">
-          <h1 className="text-4xl text-slate-950">博客关系图谱</h1>
-          <p className="mt-4 text-sm leading-6 text-slate-500">当前仅展示200个节点，功能待完善qwq</p>
-        </div>
+      <div className="absolute left-6 top-24 z-20 max-w-sm text-white sm:left-8">
+        <h1 className="text-3xl font-semibold tracking-normal">博客关系图谱</h1>
+        {selectedLimit ? (
+          <p className="mt-2 text-sm leading-6 text-slate-300">
+            当前使用固定随机种子 {GRAPH_SAMPLE_SEED} 展示 {selectedLimit} 个节点
+            {graphSizeMb ? `，本次图谱数据约 ${graphSizeMb} MB` : ""}
+            {usedCachedGraph ? "，已从本地缓存读取" : ""}
+          </p>
+        ) : null}
       </div>
 
       <div className="relative min-h-0 flex-1">
@@ -128,31 +167,42 @@ export function VisualizationPage() {
         {blogDetail ? <BlogDetailPanel detail={blogDetail} onClose={handleCloseDetail} /> : null}
       </div>
 
-      <StatsPanel totalNodes={stats.totalNodes} totalEdges={stats.totalEdges} />
-
-      {showMaturityNotice ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4">
+      {!selectedLimit || isLoading ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
           <div
             role="dialog"
             aria-modal="true"
-            aria-labelledby="visualization-maturity-title"
-            className="w-full max-w-md rounded-[28px] bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.28)]"
+            aria-labelledby="visualization-limit-title"
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.36)]"
           >
-            <h2 id="visualization-maturity-title" className="text-2xl text-slate-950">
-              该功能仍不成熟！
+            <h2 id="visualization-limit-title" className="text-2xl font-semibold tracking-normal text-slate-950">
+              选择图谱规模
             </h2>
             <p className="mt-3 text-sm leading-6 text-slate-600">
-              当前图谱能力仍在持续打磨中，展示结果和交互体验都可能继续调整。
+              使用固定随机种子 {GRAPH_SAMPLE_SEED} 选择起点，并按 BFS 扩展关联节点。本地缓存命中时会直接读取已下载的数据。
             </p>
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowMaturityNotice(false)}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white transition-colors hover:bg-slate-700"
-              >
-                我知道了
-              </button>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              选择后会先获取图谱 JSON，并显示实际下载大小（MB）。
+            </p>
+            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {GRAPH_LIMIT_OPTIONS.map((limit) => (
+                <button
+                  key={limit}
+                  type="button"
+                  onClick={() => void loadFullGraph(limit)}
+                  disabled={isLoading}
+                  className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-900 transition-colors hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {limit}
+                </button>
+              ))}
             </div>
+            {isLoading ? (
+              <div className="mt-5 flex items-center gap-3 text-sm text-slate-600">
+                <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
+                正在加载图谱数据...
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

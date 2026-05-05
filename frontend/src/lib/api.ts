@@ -382,13 +382,22 @@ function adminHeaders(adminToken: string): HeadersInit {
  * Fetch the default core graph view.
  *
  * @param limit Maximum node count requested for the core graph.
+ * @param options Optional deterministic sampling settings for graph selection.
  * @returns Normalized graph data.
  */
-export async function fetchGraphData(limit = 200): Promise<GraphData> {
+export async function fetchGraphData(
+  limit = 200,
+  options: { sampleMode?: "off" | "count" | "percent"; sampleSeed?: number } = {},
+): Promise<GraphData> {
   const params = new URLSearchParams({
     strategy: "degree",
     limit: String(limit),
   });
+  if (options.sampleMode && options.sampleMode !== "off") {
+    params.set("sample_mode", options.sampleMode);
+    params.set("sample_value", String(limit));
+    params.set("sample_seed", String(options.sampleSeed ?? 42));
+  }
   const payload = await apiJson<BackendGraphPayload>(`/api/graph/views/core?${params.toString()}`);
   return toGraphData(payload);
 }

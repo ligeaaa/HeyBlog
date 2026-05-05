@@ -13,7 +13,7 @@ from typing import Any
 LATEST_SNAPSHOT_MANIFEST = "graph-layout-latest.json"
 DEFAULT_CORE_LIMIT = 180
 DEFAULT_NEIGHBOR_LIMIT = 120
-MAX_CORE_LIMIT = 1000
+MAX_CORE_LIMIT = 10000
 MAX_NEIGHBOR_LIMIT = 400
 
 
@@ -313,6 +313,7 @@ def build_graph_snapshot_payload(
 
 def _sample_node_ids(
     nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
     *,
     sample_mode: str,
     sample_value: float | None,
@@ -332,7 +333,27 @@ def _sample_node_ids(
     else:
         raise ValueError(f"unsupported sample mode: {sample_mode}")
     picker = random.Random(sample_seed)
-    return set(picker.sample(ordered_ids, count))
+    adjacency, _, _ = _build_adjacency(nodes, edges)
+    seed_order = picker.sample(ordered_ids, len(ordered_ids))
+    selected_ids: set[int] = set()
+
+    for seed_id in seed_order:
+        if seed_id in selected_ids:
+            continue
+        queue = [seed_id]
+        seen_in_walk = {seed_id}
+        while queue and len(selected_ids) < count:
+            current_id = queue.pop(0)
+            selected_ids.add(current_id)
+            for neighbor_id in sorted(adjacency.get(current_id, set())):
+                if neighbor_id in selected_ids or neighbor_id in seen_in_walk:
+                    continue
+                seen_in_walk.add(neighbor_id)
+                queue.append(neighbor_id)
+        if len(selected_ids) >= count:
+            break
+
+    return selected_ids
 
 
 def _selected_nodes_from_ids(
@@ -400,16 +421,17 @@ def build_core_graph_view(
     limit = _clamp_int(limit, 24, MAX_CORE_LIMIT)
     sampled_ids = _sample_node_ids(
         nodes,
+        edges,
         sample_mode=sample_mode,
         sample_value=sample_value,
         sample_seed=sample_seed,
     )
     if sample_mode != "off":
-        selected_ids = set(sorted(sampled_ids)[:limit])
+        selected_ids = set(list(sampled_ids)[:limit])
         return _build_view_payload(
             snapshot,
             selected_ids,
-            strategy="random",
+            strategy="sampled_bfs",
             limit=limit,
             sample_mode=sample_mode,
             sample_value=sample_value,
