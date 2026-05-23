@@ -1,5 +1,8 @@
 import type {
   AdminDedupSummary,
+  AdminBlogLabelingCandidate,
+  AdminBlogLabelingPage,
+  AdminBlogLabelTag,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
   AdminUrlRefilterRun,
@@ -199,6 +202,37 @@ interface BackendUrlRefilterRunEvent {
   created_at: string | null;
 }
 
+interface BackendBlogLabelTag {
+  id: number;
+  name: string;
+  slug: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BackendBlogLabelAssignment extends BackendBlogLabelTag {
+  labeled_at: string;
+}
+
+interface BackendBlogLabelingCandidate extends BackendGraphNode {
+  labels: BackendBlogLabelAssignment[];
+  label_slugs: string[];
+  last_labeled_at: string | null;
+  is_labeled: boolean;
+}
+
+interface BackendBlogLabelingPage {
+  items: BackendBlogLabelingCandidate[];
+  available_tags: BackendBlogLabelTag[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+  sort: string;
+}
+
 interface BlogCatalogQuery {
   page?: number;
   pageSize?: number;
@@ -211,6 +245,15 @@ interface BlogCatalogQuery {
   hasTitle?: boolean;
   hasIcon?: boolean;
   minConnections?: number;
+}
+
+interface BlogLabelingQuery {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  label?: string;
+  labeled?: boolean;
+  sort?: string;
 }
 
 /**
@@ -262,6 +305,43 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
     connectionCount: node.connection_count ?? (node.incoming_count ?? 0) + (node.outgoing_count ?? 0),
     activityAt: node.activity_at ?? null,
     identityComplete: node.identity_complete ?? false,
+  };
+}
+
+/**
+ * Convert one backend blog label tag into the frontend admin tag shape.
+ *
+ * @param tag Raw backend label tag payload.
+ * @returns Normalized admin label tag.
+ */
+function toAdminBlogLabelTag(tag: BackendBlogLabelTag): AdminBlogLabelTag {
+  return {
+    id: tag.id,
+    name: tag.name,
+    slug: tag.slug,
+    createdAt: tag.created_at,
+    updatedAt: tag.updated_at,
+  };
+}
+
+/**
+ * Convert one backend labeling candidate into the frontend admin candidate shape.
+ *
+ * @param candidate Raw backend labeling candidate payload.
+ * @returns Normalized admin labeling candidate.
+ */
+function toAdminBlogLabelingCandidate(
+  candidate: BackendBlogLabelingCandidate,
+): AdminBlogLabelingCandidate {
+  return {
+    ...toBlogCatalogItem(candidate),
+    labels: candidate.labels.map((label) => ({
+      ...toAdminBlogLabelTag(label),
+      labeledAt: label.labeled_at,
+    })),
+    labelSlugs: candidate.label_slugs,
+    lastLabeledAt: candidate.last_labeled_at,
+    isLabeled: candidate.is_labeled,
   };
 }
 
@@ -698,6 +778,100 @@ export async function fetchAdminUrlRefilterEvents(
     message: event.message,
     createdAt: event.created_at,
   }));
+}
+
+/**
+ * Fetch one page of protected blog labeling candidates.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param query Optional labeling query parameters.
+ * @returns Normalized labeling page payload.
+ */
+export async function fetchAdminBlogLabelingCandidates(
+  adminToken: string,
+  query: BlogLabelingQuery = {},
+): Promise<AdminBlogLabelingPage> {
+  const params = new URLSearchParams();
+  if (query.page) {
+    params.set("page", String(query.page));
+  }
+  if (query.pageSize) {
+    params.set("page_size", String(query.pageSize));
+  }
+  if (query.q) {
+    params.set("q", query.q);
+  }
+  if (query.label) {
+    params.set("label", query.label);
+  }
+  if (query.labeled !== undefined) {
+    params.set("labeled", String(query.labeled));
+  }
+  if (query.sort) {
+    params.set("sort", query.sort);
+  }
+  const payload = await apiJson<BackendBlogLabelingPage>(
+    `/api/admin/blog-labeling/candidates?${params.toString()}`,
+    {
+      headers: adminHeaders(adminToken),
+    },
+  );
+  return {
+    items: payload.items.map(toAdminBlogLabelingCandidate),
+    availableTags: payload.available_tags.map(toAdminBlogLabelTag),
+    page: payload.page,
+    pageSize: payload.page_size,
+    totalItems: payload.total_items,
+    totalPages: payload.total_pages,
+    hasNext: payload.has_next,
+    hasPrev: payload.has_prev,
+    sort: payload.sort,
+  };
+}
+
+/**
+ * Create or return an existing protected blog label tag.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param name Label name to create.
+ * @returns Normalized admin label tag.
+ */
+export async function postAdminBlogLabelTag(adminToken: string, name: string): Promise<AdminBlogLabelTag> {
+  const payload = await apiJson<BackendBlogLabelTag>("/api/admin/blog-labeling/tags", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+    body: JSON.stringify({ name }),
+  });
+  return toAdminBlogLabelTag(payload);
+}
+
+/**
+ * Replace one protected blog candidate's labels.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param blogId Target blog business id.
+ * @param tagIds Complete replacement tag id list.
+ * @returns Updated label state for the target blog.
+ */
+export async function putAdminBlogLabels(
+  adminToken: string,
+  blogId: number,
+  tagIds: number[],
+): Promise<{ labelSlugs: string[]; isLabeled: boolean; lastLabeledAt: string | null }> {
+  const payload = await apiJson<{
+    label_slugs: string[];
+    is_labeled: boolean;
+    last_labeled_at: string | null;
+  }>(`/api/admin/blog-labeling/labels/${blogId}`, {
+    method: "PUT",
+    headers: adminHeaders(adminToken),
+    body: JSON.stringify({ tag_ids: tagIds }),
+  });
+  return {
+    labelSlugs: payload.label_slugs,
+    isLabeled: payload.is_labeled,
+    lastLabeledAt: payload.last_labeled_at,
+  };
 }
 
 /**

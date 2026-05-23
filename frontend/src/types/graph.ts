@@ -174,6 +174,37 @@ export interface AdminUrlRefilterRunEvent {
   createdAt: string | null;
 }
 
+export interface AdminBlogLabelTag {
+  id: number;
+  name: string;
+  slug: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminBlogLabelAssignment extends AdminBlogLabelTag {
+  labeledAt: string;
+}
+
+export interface AdminBlogLabelingCandidate extends BlogCatalogItem {
+  labels: AdminBlogLabelAssignment[];
+  labelSlugs: string[];
+  lastLabeledAt: string | null;
+  isLabeled: boolean;
+}
+
+export interface AdminBlogLabelingPage {
+  items: AdminBlogLabelingCandidate[];
+  availableTags: AdminBlogLabelTag[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+  sort: string;
+}
+
 export interface FilterStatsData {
   byFilterReason: Record<string, number>;
 }

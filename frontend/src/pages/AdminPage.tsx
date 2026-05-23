@@ -2,6 +2,7 @@ import {
   Activity,
   AlertTriangle,
   Database,
+  ExternalLink,
   Loader2,
   Play,
   RefreshCcw,
@@ -11,24 +12,29 @@ import {
   Timer,
   Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
 import {
+  fetchAdminBlogLabelingCandidates,
   fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
   fetchAdminUrlRefilterEvents,
   fetchAdminUrlRefilterLatest,
   fetchStats,
+  postAdminBlogLabelTag,
   postAdminBootstrap,
   postAdminResetDatabase,
   postAdminRunBatch,
   postAdminRunUrlRefilter,
   postAdminRuntimeStart,
   postAdminRuntimeStop,
+  putAdminBlogLabels,
 } from "../lib/api";
 import type {
+  AdminBlogLabelingCandidate,
+  AdminBlogLabelTag,
   AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
@@ -38,6 +44,7 @@ import type {
 } from "../types/graph";
 
 const ADMIN_TOKEN_STORAGE_KEY = "heyblog_admin_token";
+const DEFAULT_LABELS = ["blog", "company", "other", "unknown"] as const;
 
 /**
  * Read the persisted admin token from local storage when available.
@@ -74,6 +81,19 @@ function clearStoredAdminToken() {
 }
 
 /**
+ * Resolve an icon URL for a labeling card.
+ *
+ * @param candidate Blog labeling candidate shown in the admin workbench.
+ * @returns Candidate icon URL or a deterministic favicon fallback.
+ */
+function resolveLabelingIconUrl(candidate: AdminBlogLabelingCandidate): string {
+  if (candidate.iconUrl) {
+    return candidate.iconUrl;
+  }
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(candidate.domain)}&sz=64`;
+}
+
+/**
  * Render the admin dashboard backed by the current backend admin APIs.
  *
  * @returns Admin page UI.
@@ -87,9 +107,17 @@ export function AdminPage() {
   const [latestDedup, setLatestDedup] = useState<AdminDedupSummary | null>(null);
   const [latestRefilterRun, setLatestRefilterRun] = useState<AdminUrlRefilterRun | null>(null);
   const [refilterEvents, setRefilterEvents] = useState<AdminUrlRefilterRunEvent[]>([]);
+  const [labelingCandidates, setLabelingCandidates] = useState<AdminBlogLabelingCandidate[]>([]);
+  const [labelTags, setLabelTags] = useState<AdminBlogLabelTag[]>([]);
+  const [labelingTotalItems, setLabelingTotalItems] = useState(0);
+  const [labelingTotalPages, setLabelingTotalPages] = useState(1);
+  const [labelingPage, setLabelingPage] = useState(1);
+  const [labelingQuery, setLabelingQuery] = useState("");
   const [batchSize, setBatchSize] = useState("10");
   const [isLoading, setIsLoading] = useState(true);
   const [isRunningAction, setIsRunningAction] = useState(false);
+  const [isLabelingLoading, setIsLabelingLoading] = useState(false);
+  const [labelingBlogId, setLabelingBlogId] = useState<number | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -126,21 +154,30 @@ export function AdminPage() {
         setLatestDedup(null);
         setLatestRefilterRun(null);
         setRefilterEvents([]);
+        setLabelingCandidates([]);
+        setLabelTags([]);
+        setLabelingTotalItems(0);
+        setLabelingTotalPages(1);
         setAdminError("请输入管理员 Token 以加载受保护接口。");
         return;
       }
 
-      const [runtimeStatusResponse, runtimeCurrentResponse, latestDedupResponse, latestRefilterResponse] =
+      const [runtimeStatusResponse, runtimeCurrentResponse, latestDedupResponse, latestRefilterResponse, labelingPageResponse] =
         await Promise.all([
-        fetchAdminRuntimeStatus(adminToken),
-        fetchAdminRuntimeCurrent(adminToken),
-        fetchAdminDedupLatest(adminToken),
+          fetchAdminRuntimeStatus(adminToken),
+          fetchAdminRuntimeCurrent(adminToken),
+          fetchAdminDedupLatest(adminToken),
           fetchAdminUrlRefilterLatest(adminToken),
+          loadLabelingCandidates(adminToken),
         ]);
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
       setLatestDedup(latestDedupResponse);
       setLatestRefilterRun(latestRefilterResponse);
+      setLabelingCandidates(labelingPageResponse.items);
+      setLabelTags(labelingPageResponse.availableTags);
+      setLabelingTotalItems(labelingPageResponse.totalItems);
+      setLabelingTotalPages(labelingPageResponse.totalPages);
       if (latestRefilterResponse !== null) {
         setRefilterEvents(await fetchAdminUrlRefilterEvents(adminToken, latestRefilterResponse.id));
       } else {
@@ -154,12 +191,106 @@ export function AdminPage() {
       setLatestDedup(null);
       setLatestRefilterRun(null);
       setRefilterEvents([]);
+      setLabelingCandidates([]);
+      setLabelTags([]);
+      setLabelingTotalItems(0);
+      setLabelingTotalPages(1);
       setAdminError("管理员接口加载失败，请确认 Token 是否正确。");
     } finally {
       if (!options?.silent) {
         setIsLoading(false);
       }
     }
+  }
+
+  /**
+   * Load one page of unlabeled blog candidates and ensure the default tags exist.
+   *
+   * @param adminToken Admin bearer token used for protected endpoints.
+   * @returns Labeling page with only the default label tags exposed to the UI.
+   */
+  async function loadLabelingCandidates(
+    adminToken: string,
+    options: { page?: number; query?: string } = {},
+  ) {
+    const page = options.page ?? labelingPage;
+    const query = options.query ?? labelingQuery;
+    const firstPage = await fetchAdminBlogLabelingCandidates(adminToken, {
+      page,
+      pageSize: 12,
+      q: query.trim() || undefined,
+      labeled: false,
+      sort: "id_desc",
+    });
+    const tagsBySlug = new Map(firstPage.availableTags.map((tag) => [tag.slug, tag]));
+    const defaultTags = await Promise.all(
+      DEFAULT_LABELS.map(async (label) => tagsBySlug.get(label) ?? postAdminBlogLabelTag(adminToken, label)),
+    );
+    return {
+      ...firstPage,
+      availableTags: defaultTags,
+    };
+  }
+
+  /**
+   * Refresh only the labeling workbench without disturbing the runtime panels.
+   */
+  async function refreshLabelingWorkbench(options: { page?: number; query?: string } = {}) {
+    if (!activeAdminToken.trim()) {
+      toast.error("请先输入管理员 Token。");
+      return;
+    }
+    try {
+      setIsLabelingLoading(true);
+      const response = await loadLabelingCandidates(activeAdminToken, options);
+      setLabelingCandidates(response.items);
+      setLabelTags(response.availableTags);
+      setLabelingTotalItems(response.totalItems);
+      setLabelingTotalPages(response.totalPages);
+    } catch (error) {
+      console.error(error);
+      toast.error("标注台加载失败，请检查 token 或服务状态。");
+    } finally {
+      setIsLabelingLoading(false);
+    }
+  }
+
+  /**
+   * Apply one of the default labels to a candidate and remove it from the unlabeled queue.
+   *
+   * @param candidate Blog candidate being labeled.
+   * @param tag Label tag selected by the operator.
+   * @returns Promise resolved after the label update finishes.
+   */
+  async function handleApplyCandidateLabel(candidate: AdminBlogLabelingCandidate, tag: AdminBlogLabelTag) {
+    if (!activeAdminToken.trim()) {
+      toast.error("请先输入管理员 Token。");
+      return;
+    }
+    try {
+      setLabelingBlogId(candidate.id);
+      await putAdminBlogLabels(activeAdminToken, candidate.id, [tag.id]);
+      setLabelingCandidates((current) => current.filter((item) => item.id !== candidate.id));
+      setLabelingTotalItems((current) => Math.max(0, current - 1));
+      setLabelingTotalPages((current) => Math.max(1, current));
+      toast.success(`已标注为 ${tag.name}。`);
+    } catch (error) {
+      console.error(error);
+      toast.error("标注写入失败，请检查服务状态。");
+    } finally {
+      setLabelingBlogId(null);
+    }
+  }
+
+  /**
+   * Submit the labeling search form and reload the first result page.
+   *
+   * @param event Form submission event.
+   */
+  function handleLabelingSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLabelingPage(1);
+    void refreshLabelingWorkbench({ page: 1 });
   }
 
   /**
@@ -287,6 +418,138 @@ export function AdminPage() {
             </div>
             <div className="text-sm text-slate-500">Runtime 状态</div>
             <div className="mt-2 text-2xl text-slate-950">{runtimeStatus?.runnerStatus ?? "未授权"}</div>
+          </div>
+        </section>
+
+        <section className="mb-8 rounded-[32px] border border-slate-200 bg-white/95 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
+          <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="text-2xl text-slate-950">数据标注台</h2>
+              <p className="mt-2 text-sm text-slate-500">
+                未标注 FINISHED 节点：{labelingTotalItems}。默认标签固定为 blog / company / other / unknown。
+              </p>
+            </div>
+            <form onSubmit={handleLabelingSearch} className="flex w-full flex-col gap-3 sm:flex-row lg:max-w-xl">
+              <input
+                type="search"
+                value={labelingQuery}
+                onChange={(event) => setLabelingQuery(event.target.value)}
+                placeholder="按 url、title、domain 搜索"
+                className="min-w-0 flex-1 rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="rounded-2xl bg-slate-900 px-5 py-3 text-sm text-white transition-colors hover:bg-sky-600"
+              >
+                搜索
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshLabelingWorkbench()}
+                className="rounded-2xl border border-slate-200 px-5 py-3 text-sm text-slate-700 transition-colors hover:bg-slate-50"
+              >
+                刷新
+              </button>
+            </form>
+          </div>
+
+          {isLabelingLoading ? (
+            <div className="flex items-center gap-3 rounded-3xl border border-dashed border-slate-200 px-5 py-8 text-sm text-slate-500">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              正在加载标注候选...
+            </div>
+          ) : labelingCandidates.length === 0 ? (
+            <div className="rounded-3xl border border-dashed border-slate-200 px-5 py-8 text-sm text-slate-500">
+              暂无可标注候选。请确认管理员 Token，或调整搜索条件后刷新。
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {labelingCandidates.map((candidate) => (
+                <article
+                  key={candidate.id}
+                  className="flex min-h-[260px] flex-col rounded-[28px] border border-slate-200 bg-slate-50 p-5"
+                >
+                  <div className="flex flex-1 gap-4">
+                    <img
+                      src={resolveLabelingIconUrl(candidate)}
+                      alt=""
+                      className="h-14 w-14 flex-shrink-0 rounded-2xl border border-white bg-white object-contain p-2 shadow-sm"
+                      loading="lazy"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="line-clamp-2 text-lg leading-6 text-slate-950">
+                        {candidate.title?.trim() || "Untitled"}
+                      </div>
+                      <a
+                        href={candidate.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 flex items-start gap-2 break-all text-sm leading-6 text-sky-700 hover:text-sky-900"
+                      >
+                        <span>{candidate.url}</span>
+                        <ExternalLink className="mt-1 h-3.5 w-3.5 flex-shrink-0" />
+                      </a>
+                      <div className="mt-3 text-xs text-slate-500">id: {candidate.id}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {labelTags.map((tag) => {
+                      const isActive = candidate.labelSlugs.includes(tag.slug);
+                      const isSaving = labelingBlogId === candidate.id;
+                      return (
+                        <button
+                          key={tag.slug}
+                          type="button"
+                          disabled={isSaving}
+                          onClick={() => void handleApplyCandidateLabel(candidate, tag)}
+                          className={[
+                            "rounded-2xl px-3 py-2.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                            isActive
+                              ? "bg-slate-900 text-white"
+                              : "border border-slate-200 bg-white text-slate-700 hover:border-sky-300 hover:bg-sky-50",
+                          ].join(" ")}
+                        >
+                          {isSaving ? "..." : tag.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-5 flex items-center justify-between text-sm text-slate-500">
+            <span>
+              第 {labelingPage} / {labelingTotalPages} 页
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={labelingPage <= 1 || isLabelingLoading}
+                onClick={() => {
+                  const nextPage = Math.max(1, labelingPage - 1);
+                  setLabelingPage(nextPage);
+                  void refreshLabelingWorkbench({ page: nextPage });
+                }}
+                className="rounded-2xl border border-slate-200 px-4 py-2 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                上一页
+              </button>
+              <button
+                type="button"
+                disabled={labelingPage >= labelingTotalPages || labelingCandidates.length === 0 || isLabelingLoading}
+                onClick={() => {
+                  const nextPage = Math.min(labelingTotalPages, labelingPage + 1);
+                  setLabelingPage(nextPage);
+                  void refreshLabelingWorkbench({ page: nextPage });
+                }}
+                className="rounded-2xl border border-slate-200 px-4 py-2 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                下一页
+              </button>
+            </div>
           </div>
         </section>
 
