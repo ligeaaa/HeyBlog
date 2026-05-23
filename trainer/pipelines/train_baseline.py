@@ -7,6 +7,7 @@ from datetime import timezone
 from pathlib import Path
 
 from trainer.config import ModelConfig
+from trainer.config import qwen_embedding_lr_model_config
 from trainer.config import structured_model_config
 from trainer.config import structured_lr_model_config
 from trainer.config import structured_rf_model_config
@@ -45,6 +46,8 @@ def _default_model_config(model_name: str) -> ModelConfig:
         return tfidf_svm_model_config()
     if model_name == "tfidf_nb":
         return tfidf_nb_model_config()
+    if model_name == "qwen_embedding_lr":
+        return qwen_embedding_lr_model_config()
     raise ValueError(f"Unsupported trainer model: {model_name}")
 
 
@@ -58,14 +61,19 @@ def run_train_baseline(
     dataset_dir: Path,
     model_name: str,
     output_dir: Path | None = None,
+    embedding_manifest: Path | None = None,
 ) -> dict[str, object]:
     model_config = _default_model_config(model_name)
+    print(f"[train] dataset_dir={dataset_dir}", flush=True)
+    print(f"[train] model={model_name}", flush=True)
     train_samples = _deserialize_samples(read_jsonl(dataset_dir / "train.jsonl"))
-    trained_model = train_model(model_name, train_samples, model_config)
+    print(f"[train] loaded train samples={len(train_samples)}", flush=True)
+    trained_model = train_model(model_name, train_samples, model_config, embedding_manifest=embedding_manifest)
     if output_dir:
         run_dir = ensure_dir(output_dir)
     else:
         run_dir = ensure_dir(model_config.run_root / model_name / default_run_id())
+    print(f"[train] writing artifacts to {run_dir}", flush=True)
     save_model(run_dir / "model.joblib", trained_model)
     write_json(
         run_dir / "config.json",
@@ -73,6 +81,7 @@ def run_train_baseline(
             "dataset_dir": str(dataset_dir),
             "model_name": model_name,
             "model_config": model_config.to_dict(),
+            "embedding_manifest": str(embedding_manifest) if embedding_manifest else None,
         },
     )
     write_json(run_dir / "feature_summary.json", trained_model.feature_summary())

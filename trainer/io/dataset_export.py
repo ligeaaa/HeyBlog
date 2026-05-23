@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import sys
 
 from trainer.constants import DEFAULT_DATA_ROOT
 from trainer.constants import DEFAULT_SOURCE_GLOB
@@ -19,6 +20,7 @@ def discover_latest_export(data_root: Path = DEFAULT_DATA_ROOT) -> Path:
 
 
 def load_raw_label_rows(path: Path) -> list[RawLabelRow]:
+    csv.field_size_limit(sys.maxsize)
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         rows: list[RawLabelRow] = []
@@ -28,6 +30,7 @@ def load_raw_label_rows(path: Path) -> list[RawLabelRow]:
                     url=str(raw.get("url", "")).strip(),
                     title=str(raw.get("title", "")).strip(),
                     label=str(raw.get("label", "")).strip(),
+                    text=str(raw.get("text", "")).strip(),
                 )
             )
     return rows

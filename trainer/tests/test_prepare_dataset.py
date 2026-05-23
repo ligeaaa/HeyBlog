@@ -60,3 +60,36 @@ def test_run_prepare_dataset_writes_expected_artifacts(tmp_path: Path) -> None:
     assert _read_json(dataset_dir / "dataset_config.json")["dataset_version"] == dataset_version
     assert _read_json(dataset_dir / "dataset_stats.json") == result["dataset_stats"]
     assert _read_json(dataset_dir / "split_manifest.json") == result["split_manifest"]
+
+
+def test_run_prepare_dataset_preserves_optional_text_column(tmp_path: Path) -> None:
+    source = tmp_path / "labels-with-text.csv"
+    source.write_text(
+        "\n".join(
+            [
+                "url,title,label,text",
+                "https://blog.alpha.example/,Alpha Blog,blog,alpha personal posts",
+                "https://alpha.example/company,Alpha Inc,others,alpha product page",
+                "https://notes.beta.example/,Beta Notes,blog,beta journal",
+                "https://beta.example/about,About Beta,others,beta company",
+                "https://journal.gamma.example/,Gamma Journal,blog,gamma essays",
+                "https://gamma.example/team,Gamma Team,others,gamma team page",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = DatasetConfig(source_csv=source, dataset_root=tmp_path / "datasets")
+
+    result = run_prepare_dataset(source_csv=source, config=config)
+
+    dataset_dir = Path(result["dataset_dir"])
+    supervised_rows = _read_jsonl(dataset_dir / "full_supervised.jsonl")
+    assert {row["text"] for row in supervised_rows} == {
+        "alpha personal posts",
+        "alpha product page",
+        "beta journal",
+        "beta company",
+        "gamma essays",
+        "gamma team page",
+    }

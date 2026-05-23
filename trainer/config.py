@@ -20,6 +20,11 @@ from trainer.constants import DEFAULT_MODEL_ROOT
 from trainer.constants import DEFAULT_SPLIT_RATIOS
 from trainer.constants import DEFAULT_STRUCTURED_EPOCHS
 from trainer.constants import DEFAULT_TFIDF_EPOCHS
+from trainer.constants import DEFAULT_TEXT_EMBEDDING_ROOT
+from trainer.constants import DEFAULT_TEXT_EMBEDDING_BATCH_SIZE
+from trainer.constants import DEFAULT_TEXT_EMBEDDING_MAX_LENGTH
+from trainer.constants import DEFAULT_TEXT_EMBEDDING_MAX_TEXT_CHARS
+from trainer.constants import DEFAULT_TEXT_EMBEDDING_MODEL_NAME
 from trainer.constants import DEFAULT_TITLE_TOKEN_CHUNK_SIZE
 from trainer.constants import DEFAULT_THRESHOLD
 from trainer.constants import DEFAULT_TITLE_WORD_NGRAM_RANGE
@@ -50,6 +55,7 @@ class DatasetConfig:
 class ModelConfig:
     model_name: str
     run_root: Path = DEFAULT_MODEL_ROOT
+    embedding_root: Path = DEFAULT_TEXT_EMBEDDING_ROOT
     seed: int = DEFAULT_RANDOM_SEED
     threshold: float = DEFAULT_THRESHOLD
     epochs: int = DEFAULT_STRUCTURED_EPOCHS
@@ -61,10 +67,15 @@ class ModelConfig:
     title_word_ngram_range: tuple[int, int] = DEFAULT_TITLE_WORD_NGRAM_RANGE
     title_token_chunk_size: int = DEFAULT_TITLE_TOKEN_CHUNK_SIZE
     min_df: int = DEFAULT_MIN_DF
+    text_embedding_model_name: str = DEFAULT_TEXT_EMBEDDING_MODEL_NAME
+    text_embedding_max_length: int = DEFAULT_TEXT_EMBEDDING_MAX_LENGTH
+    text_embedding_max_text_chars: int = DEFAULT_TEXT_EMBEDDING_MAX_TEXT_CHARS
+    text_embedding_batch_size: int = DEFAULT_TEXT_EMBEDDING_BATCH_SIZE
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["run_root"] = str(self.run_root)
+        payload["embedding_root"] = str(self.embedding_root)
         return payload
 
 
@@ -98,3 +109,7 @@ def tfidf_svm_model_config() -> ModelConfig:
 
 def tfidf_nb_model_config() -> ModelConfig:
     return ModelConfig(model_name="tfidf_nb", epochs=DEFAULT_TFIDF_EPOCHS)
+
+
+def qwen_embedding_lr_model_config() -> ModelConfig:
+    return ModelConfig(model_name="qwen_embedding_lr", epochs=DEFAULT_TFIDF_EPOCHS)

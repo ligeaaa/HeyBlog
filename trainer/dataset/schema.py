@@ -12,6 +12,7 @@ class RawLabelRow:
     url: str
     title: str
     label: str
+    text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -24,6 +25,7 @@ class AggregatedSample:
     normalized_url: str
     domain: str
     title: str
+    text: str
     raw_labels: list[str]
     title_missing: bool
 
@@ -38,6 +40,7 @@ class ResolutionRecord:
     normalized_url: str
     domain: str
     title: str
+    text: str
     raw_labels: list[str]
     binary_label: str | None
     resolution_status: str
@@ -61,6 +64,7 @@ class SupervisedSample:
     resolution_reason: str
     title_missing: bool
     split: str | None = None
+    text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

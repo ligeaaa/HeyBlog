@@ -7,9 +7,9 @@ from trainer.labeling.label_mapping import default_mapping
 
 def test_dataset_builder_aggregates_duplicate_urls_before_resolution() -> None:
     rows = [
-        RawLabelRow(url="https://blog.example.com/", title="Alpha", label="blog"),
-        RawLabelRow(url="https://blog.example.com/", title="", label="others"),
-        RawLabelRow(url="https://solo.example.com/", title="Solo", label="blog"),
+        RawLabelRow(url="https://blog.example.com/", title="Alpha", label="blog", text="short"),
+        RawLabelRow(url="https://blog.example.com/", title="", label="others", text="longer duplicate text"),
+        RawLabelRow(url="https://solo.example.com/", title="Solo", label="blog", text="solo blog text"),
     ]
     mapping = default_mapping()
 
@@ -20,4 +20,6 @@ def test_dataset_builder_aggregates_duplicate_urls_before_resolution() -> None:
     assert len(aggregated) == 2
     assert len(supervised) == 1
     assert supervised[0].url == "https://solo.example.com/"
+    assert supervised[0].text == "solo blog text"
+    assert next(sample for sample in aggregated if sample.url == "https://blog.example.com/").text == "longer duplicate text"
     assert any(record.resolution_status == "conflict_review" for record in resolutions)

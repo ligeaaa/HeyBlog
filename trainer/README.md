@@ -40,12 +40,34 @@
    - 串起 `prepare-dataset -> train -> evaluate`
    - 依次跑默认 baseline 集合
 
+### Graph GCN 实验入口
+
+`trainer/graph/` 是隔离的图实验 lane，不改写上面的 URL/title baseline 主流程。它读取 `data/dataset/graph.json` 和 `data/dataset/labels.csv`，只在“图中存在且有人工标签”的节点上做监督训练与评估。
+
+当前 GCN 入口：
+
+```bash
+python -m trainer.cli train-gcn --dataset-dir data/dataset
+```
+
+输出默认写入 `data/model/gcn/{YYMMDDHHMM}/`，包括：
+
+- `model.pt`
+- `config.json`
+- `dataset_summary.json`
+- `metrics.json`
+- `predictions_labeled.csv`
+- `report.md`
+
+当前第一版 GCN 使用 URL/title 字符 TF-IDF 作为节点特征，并在导出的友链图上做两层图卷积。评估报告中的指标是 graph-in 指标：只有同时出现在 `labels.csv` 和 `graph.json` 中的节点会进入 train / val / test。
+
 ## 特征工程
 
-当前有两条特征路径：
+当前有三条特征路径：
 
 - `structured` 路径：人工设计的数值/布尔特征
 - `tfidf` 路径：把 URL 和 title 转成 token 文档，再做稀疏 TF-IDF
+- `qwen_embedding_lr` 路径：把 URL、title 和抓取正文 text 拼成指令输入，再用 Qwen embedding 模型生成 dense semantic features
 
 ### URL 预处理
 
@@ -143,6 +165,28 @@ TF-IDF baseline 使用两路独立向量器：
 - URL 和 title 保持各自词表
 - 可以分别解释两路特征贡献
 - 后续更容易替换其中一路的特征工程
+
+### Qwen URL/Title/Text Embeddings
+
+`qwen_embedding_lr` 是可选语义 baseline，不进入默认 `full-run`，因为它会加载 `Qwen/Qwen3-Embedding-0.6B`，运行成本明显高于 TF-IDF。它适合配合带正文的训练 CSV 使用：
+
+```bash
+python -m trainer.cli qwen-embedding-run --source-csv data/blog-label-training-2026-04-11-with-text.csv
+```
+
+输入模板会包含：
+
+- `URL: <normalized_url>`
+- `Domain: <domain>`
+- `Title: <title>`
+- `Text: <cleaned extracted text>`
+
+每条样本会包装成 Qwen 推荐的 instruction/query 形式。默认最多取 `12000` 个正文字符，再交给 tokenizer 按 `max_length=8192` 截断。一键 pipeline 会为单次运行生成唯一 `run_id`，并将 train/val/test 全量样本的 embedding 保存到 `data/trainer/embeddings/qwen_embedding_lr/<run_id>/`，其中：
+
+- `embeddings.npz` 保存 dense matrix 和 `sample_ids`
+- `manifest.json` 保存模型名、输入字段、截断配置和矩阵路径
+
+之后训练阶段只读取本次 pipeline 生成的唯一 manifest，不需要人工复制路径，也不会重新跑 Qwen。训练和评估的 `model.joblib` 也只保存 manifest-backed encoder；预测时按 sample id 从同一份 embedding cache 中取向量。
 
 ## 当前支持的模型
 
@@ -275,6 +319,26 @@ TF-IDF baseline 使用两路独立向量器：
 - 对类别不均衡和稀疏特征通常有不错鲁棒性
 - 需要非负输入，因此放在 TF-IDF 路径上而不是 structured 路径上
 
+### Qwen Embedding Logistic Regression
+
+模型名：
+
+- `qwen_embedding_lr`
+
+输入：
+
+- Qwen embedding dense vector，来源于 `normalized_url + domain + title + text`
+
+算法：
+
+- `LogisticRegression`
+
+特点：
+
+- 能利用正文语义，比只看 URL/title 的 TF-IDF 更可能识别“个人博客、技术笔记、日志、文章列表”等内容信号
+- 对正文质量敏感；如果页面 text 主要是导航、页脚或模板噪声，收益会下降
+- 不作为默认模型运行，避免常规训练流程下载和加载大模型
+
 ## 默认 Full Run 模型集
 
 `full-run` 当前默认执行：
@@ -316,6 +380,7 @@ tfidf
 tfidf_lr
 tfidf_svm
 tfidf_nb
+qwen_embedding_lr
 ```
 
 评估单个模型 run：
@@ -329,6 +394,21 @@ python -m trainer.cli evaluate --run-dir data/model/<model_name>/<YYMMDDHHMM>
 ```bash
 python -m trainer.cli full-run --source-csv data/blog-label-training-2026-04-11.csv
 ```
+
+执行完整 Qwen URL/title/text embedding 流程：
+
+```bash
+python -m trainer.cli qwen-embedding-run --source-csv data/blog-label-training-2026-04-11-with-text.csv
+```
+
+该命令会依次执行：
+
+- `prepare-dataset`
+- `build-embeddings`
+- `train --model qwen_embedding_lr`
+- `evaluate`
+
+单次运行内部只产生一个 embedding manifest，并自动传给训练阶段。
 
 ## 输出产物
 
@@ -375,6 +455,8 @@ python -m trainer.cli full-run --source-csv data/blog-label-training-2026-04-11.
 - `numpy`
 - `scikit-learn`
 - `scipy`
+- `torch`
+- `transformers`
 
 当前训练代码已经不再依赖自实现的逻辑回归或 TF-IDF 向量器。
 

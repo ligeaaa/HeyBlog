@@ -21,9 +21,19 @@ def _pick_title(current: str, candidate: str) -> str:
     return current
 
 
+def _pick_text(current: str, candidate: str) -> str:
+    """Return the richest page text captured for a normalized URL."""
+
+    if candidate and not current:
+        return candidate
+    if candidate and len(candidate) > len(current):
+        return candidate
+    return current
+
+
 def aggregate_rows(rows: list[RawLabelRow], mapping: LabelMapping) -> list[AggregatedSample]:
     buckets: dict[str, dict[str, object]] = defaultdict(
-        lambda: {"url": "", "title": "", "labels": set(), "domain": "", "normalized_url": ""}
+        lambda: {"url": "", "title": "", "text": "", "labels": set(), "domain": "", "normalized_url": ""}
     )
     for row in rows:
         normalized = normalize_url(row.url)
@@ -32,6 +42,7 @@ def aggregate_rows(rows: list[RawLabelRow], mapping: LabelMapping) -> list[Aggre
         sample["normalized_url"] = normalized.normalized_url
         sample["domain"] = normalized.domain
         sample["title"] = _pick_title(str(sample["title"]), row.title)
+        sample["text"] = _pick_text(str(sample["text"]), row.text)
         if row.label.strip():
             labels = sample["labels"]
             assert isinstance(labels, set)
@@ -47,6 +58,7 @@ def aggregate_rows(rows: list[RawLabelRow], mapping: LabelMapping) -> list[Aggre
                 normalized_url=normalized_url,
                 domain=str(payload["domain"]),
                 title=title,
+                text=str(payload["text"]).strip(),
                 raw_labels=sorted(str(label) for label in payload["labels"]),
                 title_missing=not bool(title),
             )
@@ -68,6 +80,7 @@ def build_resolution_records(
                 normalized_url=sample.normalized_url,
                 domain=sample.domain,
                 title=sample.title,
+                text=sample.text,
                 raw_labels=list(sample.raw_labels),
                 binary_label=resolved.binary_label,
                 resolution_status=resolved.resolution_status,
@@ -90,6 +103,7 @@ def build_supervised_samples(resolution_records: list[ResolutionRecord]) -> list
                 normalized_url=record.normalized_url,
                 domain=record.domain,
                 title=record.title,
+                text=record.text,
                 raw_labels=list(record.raw_labels),
                 binary_label=record.binary_label,
                 resolution_status=record.resolution_status,

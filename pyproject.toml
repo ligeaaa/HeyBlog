@@ -38,7 +38,7 @@ trainer = [
   "scikit-learn>=1.5,<2",
   "scipy>=1.11,<2",
   "torch>=2.2,<3",
-  "transformers>=4.40,<5",
+  "transformers>=4.51,<5",
 ]
 dev = [
   "pytest>=8.3,<9",
