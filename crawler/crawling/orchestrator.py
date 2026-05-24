@@ -209,7 +209,7 @@ class CrawlOrchestrator:
                 normalized_url=normalized.normalized_url,
                 status="pending",
             )
-            status = self._evaluate_link_status(blog, normalized.normalized_url)
+            status = self._evaluate_link_status(blog, normalized.normalized_url, link)
             self.repository.update_raw_discovered_url_status(record_id=raw_record_id, status=status)
             if status != "success":
                 continue
@@ -241,12 +241,14 @@ class CrawlOrchestrator:
 
         return stored_count
 
-    def _evaluate_link_status(self, blog: BlogNode, normalized_url: str) -> str:
+    def _evaluate_link_status(self, blog: BlogNode, normalized_url: str, link: ExtractedLink) -> str:
         """Return the final filter-chain status for one normalized candidate URL.
 
         Args:
             blog: Source blog currently being crawled.
             normalized_url: Normalized candidate URL extracted from a friend-link page.
+            link: Extracted anchor carrying visible text and local section
+                context for model-based filters.
 
         Returns:
             The final status emitted by the configured filter chain.
@@ -256,6 +258,8 @@ class CrawlOrchestrator:
                 source_blog_id=blog.id,
                 source_domain=blog.domain,
                 normalized_url=normalized_url,
+                link_text=link.text,
+                context_text=link.context_text,
             )
         )
         return str(decision.status or "success")

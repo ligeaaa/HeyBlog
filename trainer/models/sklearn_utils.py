@@ -9,6 +9,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.naive_bayes import ComplementNB
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 
 
@@ -71,6 +72,35 @@ def build_random_forest(
         class_weight="balanced",
         random_state=seed,
         n_jobs=-1,
+    )
+
+
+def build_mlp_classifier(*, seed: int, epochs: int, sample_count: int) -> MLPClassifier:
+    """Create a deterministic MLP for fused sparse blog-classification features.
+
+    Args:
+        seed: Random seed controlling weight initialization and shuffling.
+        epochs: Maximum optimization iterations.
+        sample_count: Number of training samples available.
+
+    Returns:
+        A two-hidden-layer ``MLPClassifier`` suitable for densified sparse
+        feature matrices.
+    """
+
+    use_early_stopping = sample_count >= 20
+    return MLPClassifier(
+        hidden_layer_sizes=(128, 48),
+        activation="relu",
+        solver="adam",
+        alpha=1e-4,
+        batch_size="auto",
+        learning_rate_init=1e-3,
+        max_iter=max(150, epochs * 12),
+        early_stopping=use_early_stopping,
+        n_iter_no_change=12,
+        validation_fraction=0.15,
+        random_state=seed,
     )
 
 
@@ -161,16 +191,18 @@ def summarize_feature_importances(
     }
 
 
-def build_training_log(estimator: LogisticRegression, *, feature_count: int) -> str:
+def build_training_log(estimator: LogisticRegression | MLPClassifier, *, feature_count: int) -> str:
     """Emit a compact text summary for the saved train.log artifact."""
 
     iterations = np.asarray(estimator.n_iter_, dtype=int).tolist()
     classes = ",".join(str(value) for value in estimator.classes_.tolist())
-    return "\n".join(
-        [
-            f"solver={estimator.solver}",
-            f"iterations={iterations}",
-            f"feature_count={feature_count}",
-            f"classes={classes}",
-        ]
-    )
+    lines = [
+        f"solver={estimator.solver}",
+        f"iterations={iterations}",
+        f"feature_count={feature_count}",
+        f"classes={classes}",
+    ]
+    if isinstance(estimator, MLPClassifier):
+        lines.append(f"hidden_layer_sizes={estimator.hidden_layer_sizes}")
+        lines.append(f"loss={round(float(estimator.loss_), 6)}")
+    return "\n".join(lines)

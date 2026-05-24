@@ -20,6 +20,8 @@ from trainer.models.baseline_tfidf import TfidfBaseline
 from trainer.models.baseline_tfidf import train_tfidf_baseline
 from trainer.models.baseline_tfidf_svm import TfidfSVMBaseline
 from trainer.models.baseline_tfidf_svm import train_tfidf_svm_baseline
+from trainer.models.hybrid_mlp import HybridMlpBaseline
+from trainer.models.hybrid_mlp import train_hybrid_mlp_baseline
 
 
 SupportedModel = (
@@ -30,6 +32,7 @@ SupportedModel = (
     | TfidfSVMBaseline
     | TfidfNaiveBayesBaseline
     | EmbeddingBaseline
+    | HybridMlpBaseline
 )
 
 
@@ -58,4 +61,6 @@ def train_model(
         return train_tfidf_nb_baseline(train_samples, model_config)
     if model_name == "qwen_embedding_lr":
         return train_embedding_baseline(train_samples, model_config, embedding_manifest=embedding_manifest)
+    if model_name == "hybrid_mlp":
+        return train_hybrid_mlp_baseline(train_samples, model_config)
     raise ValueError(f"Unsupported trainer model: {model_name}")

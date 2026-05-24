@@ -54,6 +54,8 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST` | 空 | `crawler` | 逗号分隔的 URL 前缀黑名单 |
 | `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `data/model/` |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED` | `true` | `crawler`、`persistence-api` | 是否启用多模型负向共识决策层 |
+| `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` | `weighted_average` | `crawler`、`persistence-api` | 多模型共识策略。可选 `weighted_average`、`majority_blog`、`any_blog`；默认按模型评估指标加权平均概率 |
+| `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | `0.4` | `crawler`、`persistence-api` | `weighted_average` 策略下的全局保留阈值，加权平均 blog 概率低于该值时拒绝；当前值来自 `blog-classification-redesign-20260523` validation split 调优 |
 
 ## 3. Docker Compose 里的默认覆盖
 
@@ -69,10 +71,12 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `crawler` | `HEYBLOG_DOCKER_SEED_PATH` | 使用挂载后的种子文件 |
 | `crawler` | `HEYBLOG_DOCKER_EXPORT_DIR` | 导出目录映射到 `volumes/exports` |
 | `crawler` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 容器内运行时模型根目录，默认指向挂载后的 `/app/runtime_resources/models/url_decision/current` |
+| `crawler` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 容器内模型共识策略与 weighted 阈值 |
 | `search` | `HEYBLOG_DOCKER_PERSISTENCE_BASE_URL` | 获取搜索快照 |
 | `search` | `HEYBLOG_DOCKER_SEARCH_CACHE_DIR` | 搜索缓存映射到 `volumes/search-cache` |
 | `persistence-api` | `HEYBLOG_DB_DSN` | 启用 PostgreSQL 后端 |
 | `persistence-api` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 全库规则重扫读取的容器内运行时模型根目录 |
+| `persistence-api` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 全库规则重扫使用的模型共识策略与 weighted 阈值 |
 
 ## 3.1 运行时资源目录约定
 
@@ -106,6 +110,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 3. `frontend` 不是直接访问 `crawler` 或 `persistence-api`，它只认 `HEYBLOG_BACKEND_BASE_URL`。
 4. 只改 `HEYBLOG_DB_PATH` 不会启用 PostgreSQL；真正切换数据库后端要设置 `HEYBLOG_DB_DSN`。
 5. 如果 Docker 内启用了模型共识，而宿主机的 `runtime_resources/` 没有挂进去，服务会退化成 `model_consensus_skipped_no_models`，看起来像“规则开了”，实际不会过滤任何 URL。
+6. 默认模型共识策略是 `weighted_average`，会读取每个模型 run 的 `metrics.json` 并优先用 F1 作为权重；旧的“任意模型投 blog 即保留”行为需要显式设置 `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY=any_blog`。
 
 ## 6. 相关文档
 

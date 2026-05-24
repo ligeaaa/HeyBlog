@@ -7,6 +7,7 @@ def test_label_mapping_defaults_resolve_blog_non_blog_and_excluded() -> None:
 
     blog = resolve_labels(["blog"], mapping)
     non_blog = resolve_labels(["others"], mapping)
+    unknown = resolve_labels(["unknown"], mapping)
     excluded = resolve_labels(["company"], mapping)
     conflict = resolve_labels(["blog", "others"], mapping)
 
@@ -14,6 +15,8 @@ def test_label_mapping_defaults_resolve_blog_non_blog_and_excluded() -> None:
     assert blog.resolution_status == "mapped"
     assert non_blog.binary_label == "non_blog"
     assert non_blog.resolution_status == "mapped"
+    assert unknown.binary_label == "non_blog"
+    assert unknown.resolution_status == "mapped"
     assert excluded.binary_label == "non_blog"
     assert excluded.resolution_status == "mapped"
     assert conflict.binary_label is None

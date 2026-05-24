@@ -73,6 +73,8 @@ services:
       HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST:-}
       HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST: ${HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST:-}
       HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
+      HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY: ${HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY:-weighted_average}
+      HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD: ${HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD:-0.4}
     command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_CRAWLER_PORT:-8010}"]
     healthcheck:
       test:
@@ -129,6 +131,8 @@ services:
       HEYBLOG_DB_DSN: ${HEYBLOG_DB_DSN:-postgresql+psycopg://heyblog:heyblog@persistence-db:5432/heyblog}
       HEYBLOG_EXPORT_DIR: ${HEYBLOG_DOCKER_EXPORT_DIR:-/data/exports}
       HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
+      HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY: ${HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY:-weighted_average}
+      HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD: ${HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD:-0.4}
     command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_PERSISTENCE_API_PORT:-8030}"]
     healthcheck:
       test:

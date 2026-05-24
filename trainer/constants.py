@@ -22,8 +22,9 @@ SUPPORTED_MODELS = (
     "tfidf_svm",
     "tfidf_nb",
     "qwen_embedding_lr",
+    "hybrid_mlp",
 )
-DEFAULT_MODELS = ("structured", "structured_svm", "structured_rf", "tfidf", "tfidf_svm", "tfidf_nb")
+DEFAULT_MODELS = ("structured", "structured_svm", "structured_rf", "tfidf", "tfidf_svm", "tfidf_nb", "hybrid_mlp")
 DEFAULT_DATA_ROOT = Path("data")
 DEFAULT_TRAINER_ROOT = DEFAULT_DATA_ROOT / "trainer"
 DEFAULT_DATASET_ROOT = DEFAULT_TRAINER_ROOT / "datasets"
@@ -31,7 +32,7 @@ DEFAULT_RUN_ROOT = DEFAULT_TRAINER_ROOT / "runs"
 DEFAULT_MODEL_ROOT = DEFAULT_DATA_ROOT / "model"
 DEFAULT_TEXT_EMBEDDING_ROOT = DEFAULT_TRAINER_ROOT / "embeddings"
 DEFAULT_POSITIVE_LABELS = ("blog",)
-DEFAULT_NEGATIVE_LABELS = ("others","company")
+DEFAULT_NEGATIVE_LABELS = ("others", "company", "other", "unknown")
 DEFAULT_STRUCTURED_EPOCHS = 30
 DEFAULT_TFIDF_EPOCHS = 24
 DEFAULT_LEARNING_RATE = 0.35

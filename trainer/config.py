@@ -113,3 +113,7 @@ def tfidf_nb_model_config() -> ModelConfig:
 
 def qwen_embedding_lr_model_config() -> ModelConfig:
     return ModelConfig(model_name="qwen_embedding_lr", epochs=DEFAULT_TFIDF_EPOCHS)
+
+
+def hybrid_mlp_model_config() -> ModelConfig:
+    return ModelConfig(model_name="hybrid_mlp", epochs=DEFAULT_TFIDF_EPOCHS)

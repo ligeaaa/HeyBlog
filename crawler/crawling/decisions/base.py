@@ -15,11 +15,15 @@ class UrlCandidateContext:
             candidate URL.
         source_domain: Lower-cased domain of the source blog.
         normalized_url: Normalized candidate URL evaluated by the filter chain.
+        link_text: Visible anchor text associated with the candidate.
+        context_text: Nearby section text around the candidate anchor.
     """
 
     source_blog_id: int
     source_domain: str
     normalized_url: str
+    link_text: str = ""
+    context_text: str = ""
 
 
 @dataclass(slots=True, frozen=True)

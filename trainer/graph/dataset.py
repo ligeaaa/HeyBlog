@@ -12,14 +12,17 @@ from urllib.parse import urlparse
 
 import numpy as np
 from scipy import sparse
+from sklearn.feature_extraction import DictVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 
 from crawler.crawling.normalization import normalize_url
+from trainer.dataset.schema import SupervisedSample
+from trainer.features.assemble import build_structured_feature_rows
 
 
 POSITIVE_LABELS = {"blog"}
-NEGATIVE_LABELS = {"company", "others"}
+NEGATIVE_LABELS = {"company", "others", "other", "unknown"}
 
 
 @dataclass(slots=True)
@@ -102,13 +105,28 @@ def _edge_endpoints(edge: dict[str, Any]) -> tuple[int, int]:
     return int(edge["from_blog_id"]), int(edge["to_blog_id"])
 
 
+def _node_text(node: dict[str, Any]) -> str:
+    """Build a compact text field from graph node metadata.
+
+    Args:
+        node: Raw graph node payload.
+
+    Returns:
+        Text combining URL, domain, title, identity, and crawl metadata.
+    """
+
+    url = str(node.get("normalized_url") or node.get("url") or "")
+    title = str(node.get("title") or "")
+    domain = str(node.get("domain") or _domain_from_url(url))
+    identity_codes = " ".join(str(value) for value in node.get("identity_reason_codes") or [])
+    crawl_status = str(node.get("crawl_status") or "")
+    return f"url {url} domain {domain} title {title} identity {identity_codes} status {crawl_status}"
+
+
 def _build_text_features(nodes: list[dict[str, Any]], *, max_features: int) -> sparse.csr_matrix:
-    documents = []
-    for node in nodes:
-        url = str(node.get("normalized_url") or node.get("url") or "")
-        title = str(node.get("title") or "")
-        domain = str(node.get("domain") or _domain_from_url(url))
-        documents.append(f"url {url} domain {domain} title {title}")
+    """Build sparse URL/title/metadata character TF-IDF node features."""
+
+    documents = [_node_text(node) for node in nodes]
     vectorizer = TfidfVectorizer(
         analyzer="char_wb",
         ngram_range=(3, 5),
@@ -117,6 +135,148 @@ def _build_text_features(nodes: list[dict[str, Any]], *, max_features: int) -> s
         dtype=np.float32,
     )
     return vectorizer.fit_transform(documents).tocsr()
+
+
+def _safe_float(value: Any) -> float:
+    """Convert graph payload values to finite floats for structured features."""
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_graph_stat_rows(
+    *,
+    nodes: list[dict[str, Any]],
+    in_degree_by_id: dict[int, int],
+    out_degree_by_id: dict[int, int],
+) -> list[dict[str, float]]:
+    """Build graph metadata and degree features for each node."""
+
+    rows: list[dict[str, float]] = []
+    for node in nodes:
+        node_id = _node_key(node)
+        incoming = float(in_degree_by_id.get(node_id, 0))
+        outgoing = float(out_degree_by_id.get(node_id, 0))
+        persisted_incoming = _safe_float(node.get("incoming_count"))
+        persisted_outgoing = _safe_float(node.get("outgoing_count"))
+        friend_links = _safe_float(node.get("friend_links_count"))
+        connection_count = _safe_float(node.get("connection_count"))
+        rows.append(
+            {
+                "graph:in_degree": incoming,
+                "graph:out_degree": outgoing,
+                "graph:total_degree": incoming + outgoing,
+                "graph:has_incoming": 1.0 if incoming > 0 else 0.0,
+                "graph:has_outgoing": 1.0 if outgoing > 0 else 0.0,
+                "graph:reciprocity_proxy": min(incoming, outgoing) / max(incoming, outgoing, 1.0),
+                "graph:persisted_incoming_count": persisted_incoming,
+                "graph:persisted_outgoing_count": persisted_outgoing,
+                "graph:friend_links_count": friend_links,
+                "graph:connection_count": connection_count,
+                "graph:identity_complete": 1.0 if bool(node.get("identity_complete")) else 0.0,
+                "graph:has_icon": 1.0 if node.get("icon_url") else 0.0,
+                "graph:status_code_ok": 1.0 if int(_safe_float(node.get("status_code"))) == 200 else 0.0,
+            }
+        )
+    return rows
+
+
+def _nodes_to_supervised_like_samples(nodes: list[dict[str, Any]]) -> list[SupervisedSample]:
+    """Convert graph nodes into trainer sample objects for shared features."""
+
+    samples: list[SupervisedSample] = []
+    for node in nodes:
+        url = str(node.get("url") or node.get("normalized_url") or "")
+        normalized_url = _normalized_url_value(str(node.get("normalized_url") or url))
+        title = str(node.get("title") or "")
+        samples.append(
+            SupervisedSample(
+                sample_id=normalized_url,
+                url=url,
+                normalized_url=normalized_url,
+                domain=str(node.get("domain") or _domain_from_url(normalized_url)),
+                title=title,
+                text=_node_text(node),
+                raw_labels=[],
+                binary_label="non_blog",
+                resolution_status="graph_inference",
+                resolution_reason="graph_node_features",
+                title_missing=not bool(title),
+            )
+        )
+    return samples
+
+
+def _degree_counts(node_ids: list[int], edges: list[dict[str, Any]]) -> tuple[dict[int, int], dict[int, int]]:
+    """Count incoming and outgoing graph edges for each known node id."""
+
+    known = set(node_ids)
+    in_degree: dict[int, int] = {node_id: 0 for node_id in node_ids}
+    out_degree: dict[int, int] = {node_id: 0 for node_id in node_ids}
+    for edge in edges:
+        source, target = _edge_endpoints(edge)
+        if source in known and target in known:
+            out_degree[source] += 1
+            in_degree[target] += 1
+    return in_degree, out_degree
+
+
+def _build_node_features(
+    *,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    node_ids: list[int],
+    max_features: int,
+) -> sparse.csr_matrix:
+    """Build fused graph node features from text, page semantics, and topology."""
+
+    text_features = _build_text_features(nodes, max_features=max_features)
+    in_degree, out_degree = _degree_counts(node_ids, edges)
+    structured_rows = build_structured_feature_rows(_nodes_to_supervised_like_samples(nodes))
+    graph_rows = _build_graph_stat_rows(nodes=nodes, in_degree_by_id=in_degree, out_degree_by_id=out_degree)
+    fused_rows = []
+    for structured, graph_stats in zip(structured_rows, graph_rows, strict=True):
+        structured.update(graph_stats)
+        fused_rows.append(structured)
+    structured_features = DictVectorizer(sparse=True).fit_transform(fused_rows).astype(np.float32)
+    return sparse.hstack([text_features, structured_features], format="csr", dtype=np.float32)
+
+
+def _filter_edges_for_mode(
+    edges: list[dict[str, Any]],
+    *,
+    mode: str,
+    edge_dropout: float,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Select graph edges according to one ablation mode.
+
+    Args:
+        edges: Raw graph edges from the export.
+        mode: ``full`` keeps all edges, ``self_loop`` removes all message
+            passing edges, and ``dropout`` keeps a deterministic subset.
+        edge_dropout: Fraction of edges to drop in ``dropout`` mode.
+        seed: Random seed used for deterministic edge dropout.
+
+    Returns:
+        Edge list used for adjacency construction.
+    """
+
+    if mode == "full":
+        return edges
+    if mode == "self_loop":
+        return []
+    if mode != "dropout":
+        raise ValueError(f"Unsupported graph ablation mode: {mode}")
+    if edge_dropout <= 0:
+        return edges
+    if edge_dropout >= 1:
+        return []
+    rng = np.random.default_rng(seed)
+    keep_mask = rng.random(len(edges)) >= edge_dropout
+    return [edge for edge, keep in zip(edges, keep_mask, strict=True) if bool(keep)]
 
 
 def _build_normalized_adjacency(
@@ -186,6 +346,8 @@ def load_graph_dataset(
     seed: int = 7,
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
+    graph_mode: str = "full",
+    edge_dropout: float = 0.0,
 ) -> GraphDataset:
     """Load graph export files and build a supervised graph dataset.
 
@@ -195,6 +357,9 @@ def load_graph_dataset(
         seed: Random seed for stratified train/val/test splitting.
         val_ratio: Fraction of labeled nodes assigned to validation.
         test_ratio: Fraction of labeled nodes assigned to test.
+        graph_mode: Graph ablation mode: ``full``, ``self_loop``, or ``dropout``.
+        edge_dropout: Fraction of raw graph edges dropped when
+            ``graph_mode='dropout'``.
 
     Returns:
         A ``GraphDataset`` ready for GCN training and evaluation.
@@ -205,6 +370,7 @@ def load_graph_dataset(
     graph_path = dataset_dir / "graph.json"
     labels_path = dataset_dir / "labels.csv"
     nodes, edges = _load_graph(graph_path)
+    adjacency_edges = _filter_edges_for_mode(edges, mode=graph_mode, edge_dropout=edge_dropout, seed=seed)
     label_by_url, raw_labels_by_url, raw_label_counts = _load_binary_labels(labels_path)
 
     node_ids = [_node_key(node) for node in nodes]
@@ -226,8 +392,8 @@ def load_graph_dataset(
         val_ratio=val_ratio,
         test_ratio=test_ratio,
     )
-    features = _build_text_features(nodes, max_features=max_features)
-    adjacency = _build_normalized_adjacency(node_ids=node_ids, edges=edges)
+    features = _build_node_features(nodes=nodes, edges=edges, node_ids=node_ids, max_features=max_features)
+    adjacency = _build_normalized_adjacency(node_ids=node_ids, edges=adjacency_edges)
     split_counts = {
         split: dict(Counter(labels[mask].tolist()))
         for split, mask in split_masks.items()
@@ -236,6 +402,9 @@ def load_graph_dataset(
         "dataset_dir": str(dataset_dir),
         "graph_nodes": len(nodes),
         "graph_edges": len(edges),
+        "adjacency_edges": len(adjacency_edges),
+        "graph_mode": graph_mode,
+        "edge_dropout": edge_dropout,
         "labeled_nodes": int(labeled_indices.size),
         "unlabeled_nodes": int(len(nodes) - labeled_indices.size),
         "label_overlap_ratio": round(float(labeled_indices.size / max(len(nodes), 1)), 6),
@@ -246,6 +415,7 @@ def load_graph_dataset(
         },
         "split_counts": split_counts,
         "feature_shape": list(features.shape),
+        "feature_sources": ["char_tfidf_url_title_metadata", "structured_url_title_page", "graph_degree_metadata"],
         "raw_labeled_unique_urls": len(raw_labels_by_url),
         "seed": seed,
         "val_ratio": val_ratio,

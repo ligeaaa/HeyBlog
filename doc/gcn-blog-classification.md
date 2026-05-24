@@ -76,15 +76,19 @@ H_next = activation(A_norm × H_current × W)
 - `trainer/graph/gcn.py`
 - `trainer/graph/pipeline.py`
 
-当前模型是两层 GCN：
+当前模型已从第一版两层 GCN 升级为 residual multi-hop GCN：
 
 ```text
-TF-IDF URL/title features
-  -> normalized graph aggregation
+TF-IDF URL/title/metadata features
+  + structured URL/title/page-signals
+  + graph degree metadata
   -> Linear(input_dim, hidden_dim)
-  -> ReLU
-  -> Dropout
-  -> normalized graph aggregation
+  -> repeated residual graph blocks:
+       normalized graph aggregation
+       Linear(hidden_dim, hidden_dim)
+       ReLU
+       Dropout
+       residual add + LayerNorm
   -> Linear(hidden_dim, 2)
   -> softmax blog probability
 ```
@@ -93,6 +97,7 @@ TF-IDF URL/title features
 
 - `max_features = 4096`
 - `hidden_dim = 64`
+- `layers = 3`
 - `epochs = 200`
 - `learning_rate = 0.01`
 - `weight_decay = 5e-4`
@@ -113,12 +118,14 @@ TF-IDF URL/title features
 
 ## 5. 节点特征
 
-当前第一版不抓正文、不使用大语言模型 embedding，只使用 URL/title 的字符级 TF-IDF。
+当前图模型使用三类节点特征：
 
-每个节点的文本被拼成：
+- URL/title/metadata 字符级 TF-IDF
+- 复用 trainer 的结构化 URL、title、页面语义特征
+- graph degree / in-degree / out-degree / reciprocity proxy / icon / status metadata
 
 ```text
-url <normalized_url> domain <domain> title <title>
+url <normalized_url> domain <domain> title <title> identity <identity_reason_codes> status <crawl_status>
 ```
 
 然后用 `TfidfVectorizer` 做字符 n-gram：
@@ -127,12 +134,12 @@ url <normalized_url> domain <domain> title <title>
 - ngram_range: `(3, 5)`
 - max_features: CLI 控制
 
-这样做的优点是：
+结构化部分会补充：
 
-- 对中英文 title 都比较稳。
-- 对 URL 模式敏感。
-- 不需要额外模型下载。
-- 可以快速跑完第一版图实验。
+- URL path/query/domain 形态
+- title 关键词
+- RSS、归档、标签、友链、评论、公司/产品/招聘等 page semantic signals
+- 图度数和已持久化连接数
 
 ## 6. 图构建
 
@@ -232,6 +239,64 @@ data/model/gcn/2605051437
 ```
 
 这说明第一版 GCN 已经可以学到有用信号。不过这还不能证明 GCN 稳定优于现有 baseline，因为当前只跑了一个 seed，也还没有同 split 下的 `tfidf_lr` 对照。
+
+### Residual GCN 更新结果
+
+更新后的 residual GCN 运行命令：
+
+```bash
+.venv/bin/python -m trainer.cli train-gcn \
+  --dataset-dir data/dataset \
+  --epochs 40 \
+  --patience 10 \
+  --max-features 2048 \
+  --hidden-dim 64 \
+  --layers 3
+```
+
+输出目录：
+
+```text
+data/model/gcn/2605231511
+```
+
+测试集指标：
+
+```json
+{
+  "accuracy": 0.714286,
+  "precision": 0.702128,
+  "recall": 0.916667,
+  "f1": 0.795181,
+  "pr_auc": 0.882051,
+  "roc_auc": 0.825946,
+  "threshold": 0.574603,
+  "tp": 66,
+  "fp": 28,
+  "tn": 19,
+  "fn": 6
+}
+```
+
+这次结果是一个重要的负向发现：更复杂的 residual GCN 和更多结构化图特征并没有自动超过第一版两层 GCN，也没有超过增强后的 `tfidf_svm`。当前最可能的问题是 graph-in split 太小、非博客节点图结构分布偏窄、全图 transductive message passing 容易把多数 blog 邻域信号扩散到非博客点。下一步应做边消融、community holdout、同 split 文本 baseline、GraphSAGE/GAT 或 stacking，而不是直接发布这个 residual GCN。
+
+### Graph Edge Ablation
+
+为了判断 friend-link 边是否真的提供增益，新增了：
+
+- `--graph-mode full`：使用完整图边。
+- `--graph-mode self_loop`：只保留 self-loop，相当于同样网络结构但不做邻居 message passing。
+- `--graph-mode dropout --edge-dropout 0.5`：确定性丢弃 50% 图边，检查边噪声影响。
+
+同一配置下的测试集对比：
+
+| Mode | Run | Edges Used | Precision | Recall | F1 | PR-AUC | Accuracy |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `full` | `data/model/gcn/2605231511` | `46836` | `0.702128` | `0.916667` | `0.795181` | `0.882051` | `0.714286` |
+| `self_loop` | `data/model/gcn/2605231518` | `0` | `0.683168` | `0.958333` | `0.797688` | `0.878203` | `0.705882` |
+| `dropout 0.5` | `data/model/gcn/2605231519` | `23496` | `0.835821` | `0.777778` | `0.805755` | `0.872559` | `0.773109` |
+
+结论：完整图边没有明显正增益；50% edge dropout 稍微改善 F1 和 precision，但 PR-AUC 没有超过 full graph。这说明 friend-link 图存在信号，但边噪声较大，单纯全图 message passing 会把 blog-majority 邻域信号扩散到非博客节点。下一轮应优先做边质量建模、社区 holdout 和 stacking，而不是继续加深 GCN。
 
 ## 10. 已知限制
 

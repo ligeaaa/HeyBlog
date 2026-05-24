@@ -41,5 +41,7 @@ def test_direct_script_launch_supports_help() -> None:
     assert result.returncode == 0, result.stderr
     assert "prepare-dataset" in result.stdout
     assert "build-embeddings" in result.stdout
+    assert "evaluate-graph-runtime-overlap" in result.stdout
+    assert "evaluate-runtime-consensus" in result.stdout
     assert "qwen-embedding-run" in result.stdout
     assert "full-run" in result.stdout

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from dataclasses import field
 import logging
@@ -17,6 +18,8 @@ from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
 
 DEFAULT_MODEL_THRESHOLD = 0.5
+DEFAULT_MODEL_WEIGHT = 1.0
+SUPPORTED_CONSENSUS_STRATEGIES = frozenset({"any_blog", "majority_blog", "weighted_average"})
 LOGGER = logging.getLogger(__name__)
 
 
@@ -66,19 +69,21 @@ def load_model(path: Path) -> Any:
 
 @dataclass(slots=True, frozen=True)
 class LoadedConsensusModel:
-    """Bundle one loaded trainer model with the threshold used for voting.
+    """Bundle one loaded trainer model with threshold and quality weight.
 
     Attributes:
         model_name: Name of the model directory under the trainer model root.
         run_dir: Concrete run directory containing the serialized model.
         predictor: Loaded model object exposing ``predict_proba``.
         threshold: Probability threshold above which the model votes ``blog``.
+        weight: Runtime consensus weight derived from validation metrics.
     """
 
     model_name: str
     run_dir: Path
     predictor: Any
     threshold: float
+    weight: float = DEFAULT_MODEL_WEIGHT
 
 
 def _latest_child(path: Path) -> Path | None:
@@ -142,20 +147,59 @@ def _read_threshold(run_dir: Path, predictor: Any) -> float:
     return float(DEFAULT_MODEL_THRESHOLD)
 
 
+def _read_model_weight(run_dir: Path) -> float:
+    """Resolve one model's consensus weight from validation metrics.
+
+    Args:
+        run_dir: Run directory that may contain a ``metrics.json`` file.
+
+    Returns:
+        A positive consensus weight. F1 is preferred because the runtime
+        decision is thresholded classification; PR-AUC is used as the fallback
+        ranking metric, then ``1.0`` when no usable metric exists.
+    """
+    metrics_path = run_dir / "metrics.json"
+    if not metrics_path.exists():
+        return DEFAULT_MODEL_WEIGHT
+
+    try:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return DEFAULT_MODEL_WEIGHT
+
+    for key in ("f1", "pr_auc", "accuracy"):
+        value = payload.get(key)
+        if isinstance(value, int | float) and math.isfinite(float(value)) and float(value) > 0:
+            return float(value)
+    return DEFAULT_MODEL_WEIGHT
+
+
 @dataclass(slots=True)
 class ModelConsensusFilter(StaticStatusUrlFilter):
     """Vote across the latest trainer models before keeping crawler candidates.
 
     Attributes:
         model_root: Root directory containing serialized trainer model runs.
+        strategy: Consensus strategy used to combine individual model scores.
+        consensus_threshold: Threshold used by the weighted-average strategy.
         loaded_models: Cached loaded models discovered lazily on first use.
     """
 
     model_root: Path
+    strategy: str = "weighted_average"
+    consensus_threshold: float = DEFAULT_MODEL_THRESHOLD
     kind: str = field(init=False, default="model_consensus")
     filter_kind: str = field(init=False, default="model")
     filter_reason: str = field(init=False, default="model_consensus_all_non_blog")
     loaded_models: tuple[LoadedConsensusModel, ...] | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Normalize and validate the configured model-consensus strategy."""
+        normalized_strategy = self.strategy.strip().lower()
+        if normalized_strategy not in SUPPORTED_CONSENSUS_STRATEGIES:
+            raise ValueError(f"unknown_model_consensus_strategy:{self.strategy}")
+        self.strategy = normalized_strategy
+        self.consensus_threshold = float(self.consensus_threshold)
 
     def _ensure_models_loaded(self) -> tuple[LoadedConsensusModel, ...]:
         """Load and cache the latest available trainer models on demand.
@@ -180,6 +224,7 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
                         run_dir=run_dir,
                         predictor=predictor,
                         threshold=_read_threshold(run_dir, predictor),
+                        weight=_read_model_weight(run_dir),
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -240,28 +285,53 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
             split="crawler",
         )
 
+    def _should_reject(self, probabilities: list[tuple[float, LoadedConsensusModel]]) -> bool:
+        """Return whether combined model evidence rejects the candidate URL.
+
+        Args:
+            probabilities: Usable ``(probability, loaded_model)`` pairs.
+
+        Returns:
+            ``True`` when the configured consensus strategy classifies the
+            candidate as non-blog strongly enough to reject it.
+        """
+        if self.strategy == "any_blog":
+            return all(probability < loaded.threshold for probability, loaded in probabilities)
+
+        if self.strategy == "majority_blog":
+            blog_votes = sum(1 for probability, loaded in probabilities if probability >= loaded.threshold)
+            required_votes = math.ceil(len(probabilities) / 2)
+            return blog_votes < required_votes
+
+        total_weight = sum(loaded.weight for _, loaded in probabilities)
+        if total_weight <= 0:
+            return False
+        weighted_probability = sum(probability * loaded.weight for probability, loaded in probabilities) / total_weight
+        return weighted_probability < self.consensus_threshold
+
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
-        """Keep a URL unless every available model votes ``non_blog``."""
+        """Keep or reject a URL using the configured model consensus strategy."""
         models = self._ensure_models_loaded()
         if not models:
             return self.accept()
 
-        sample = self._build_sample(candidate.normalized_url, link_text="", context_text="")
-        blog_votes = 0
-        usable_models = 0
+        sample = self._build_sample(
+            candidate.normalized_url,
+            link_text=candidate.link_text,
+            context_text=candidate.context_text,
+        )
+        probabilities: list[tuple[float, LoadedConsensusModel]] = []
         for loaded in models:
             try:
                 probability = float(loaded.predictor.predict_proba([sample])[0])
             except Exception:  # noqa: BLE001
                 continue
-            usable_models += 1
-            if probability >= loaded.threshold:
-                blog_votes += 1
+            probabilities.append((probability, loaded))
 
-        if usable_models == 0:
+        if not probabilities:
             return self.accept()
 
-        return self.decision_for(rejected=blog_votes == 0)
+        return self.decision_for(rejected=self._should_reject(probabilities))
 
 
 @dataclass(slots=True)
@@ -269,10 +339,16 @@ class ModelConsensusDecider:
     """Expose the legacy decision-step interface on top of the new filter."""
 
     model_root: Path
+    strategy: str = "weighted_average"
+    consensus_threshold: float = DEFAULT_MODEL_THRESHOLD
     _filter: ModelConsensusFilter = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._filter = ModelConsensusFilter(model_root=self.model_root)
+        self._filter = ModelConsensusFilter(
+            model_root=self.model_root,
+            strategy=self.strategy,
+            consensus_threshold=self.consensus_threshold,
+        )
 
     def decide(
         self,
@@ -283,13 +359,13 @@ class ModelConsensusDecider:
         context_text: str = "",
     ) -> DecisionOutcome:
         """Return a compatibility decision payload for older call sites."""
-        del link_text
-        del context_text
         decision = self._filter.apply(
             UrlCandidateContext(
                 source_blog_id=0,
                 source_domain=source_domain,
                 normalized_url=normalize_url(url).normalized_url,
+                link_text=link_text,
+                context_text=context_text,
             )
         )
         if not decision.accepted:

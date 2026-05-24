@@ -78,7 +78,11 @@ def _build_blocked_tld_filter(settings: Settings) -> BaseUrlFilter:
 
 
 def _build_model_consensus_filter(settings: Settings) -> BaseUrlFilter:
-    return ModelConsensusFilter(model_root=settings.decision_model_root)
+    return ModelConsensusFilter(
+        model_root=settings.decision_model_root,
+        strategy=settings.decision_model_consensus_strategy,
+        consensus_threshold=settings.decision_model_consensus_threshold,
+    )
 
 
 FILTER_REGISTRY: dict[str, FilterFactory] = {
@@ -181,13 +185,13 @@ class ConfiguredUrlFilterChain:
         context_text: str = "",
     ) -> DecisionOutcome:
         """Provide the legacy decision outcome for older call sites."""
-        del link_text
-        del context_text
         decision = self.evaluate(
             UrlCandidateContext(
                 source_blog_id=0,
                 source_domain=source_domain,
                 normalized_url=normalize_url(url).normalized_url,
+                link_text=link_text,
+                context_text=context_text,
             )
         )
         if decision.accepted:

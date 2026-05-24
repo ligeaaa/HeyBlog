@@ -5,7 +5,7 @@
 - `url`
 - `title`
 
-目标是在不抓取正文内容的前提下，用轻量、可解释、可快速迭代的 baseline 比较不同特征工程与模型组合。
+目标是在保留轻量、可解释 baseline 的同时，逐步纳入页面正文、HTML/DOM 线索、友链上下文与图结构，比较不同特征工程与模型组合。
 
 ## 任务定义
 
@@ -14,6 +14,7 @@
   - `blog -> blog`
   - `others -> non_blog`
   - `company -> non_blog`
+  - `unknown -> non_blog`
   - 其他未映射标签 -> `excluded`
 - 训练目标：二分类，判断一个 URL + title 样本是否为博客页
 - 切分方式：domain-aware 的 `train / val / test`
@@ -63,10 +64,11 @@ python -m trainer.cli train-gcn --dataset-dir data/dataset
 
 ## 特征工程
 
-当前有三条特征路径：
+当前有四条特征路径：
 
 - `structured` 路径：人工设计的数值/布尔特征
 - `tfidf` 路径：把 URL 和 title 转成 token 文档，再做稀疏 TF-IDF
+- `hybrid_mlp` 路径：融合 URL/title/page 结构化特征、URL TF-IDF、标题与页面信号 TF-IDF 后训练多层感知机
 - `qwen_embedding_lr` 路径：把 URL、title 和抓取正文 text 拼成指令输入，再用 Qwen embedding 模型生成 dense semantic features
 
 ### URL 预处理
@@ -119,8 +121,25 @@ python -m trainer.cli train-gcn --dataset-dir data/dataset
 
 - URL 结构化特征
 - Title 结构化特征
+- 页面/上下文博客语义特征
 
 直接 merge 成一个 `dict[str, float]`，然后交给 `DictVectorizer` 做稀疏向量化。实现位于 [`trainer/features/assemble.py`](/Users/lige/code/HeyBlog/trainer/features/assemble.py)。
+
+### Page / Blog Semantic Features
+
+页面语义特征来自 [`trainer/features/page_features.py`](/Users/lige/code/HeyBlog/trainer/features/page_features.py)，用于捕捉论文和真实博客页面中反复出现的稳定信号：
+
+- feed / RSS / Atom / 订阅入口
+- archive / 归档 / 日期列表
+- tag / category / 标签 / 分类
+- post / article / entry / 文章 / 日志
+- friend links / blogroll / 友链
+- comments / 评论 / 留言
+- about / profile / 关于我
+- h-entry / h-feed / h-card / rel-tag 等 microformat / IndieWeb 线索
+- 与博客相反的 company / product / pricing / careers / legal 页面线索
+
+训练 CSV 若带 `text` 列，这些特征会从正文或 HTML-like 文本里抽取；crawler runtime 做 URL 过滤时，也会把 anchor text 和友链区块上下文传给模型，避免模型只看 URL。
 
 ### TF-IDF URL Documents
 
@@ -152,6 +171,31 @@ Title 文档路径也来自 [`trainer/features/assemble.py`](/Users/lige/code/He
 最终 title 文档约等于：
 
 - `title_word_ngrams(tokenize_title_char_chunks(title, 2), 1, 2)`
+- `+ page_signal_tokens(text)`，包括 RSS、归档、标签、友链、评论、公司/产品/招聘等页面信号 token
+
+### Hybrid MLP
+
+模型名：
+
+- `hybrid_mlp`
+
+输入：
+
+- URL/title/page 结构化特征
+- URL TF-IDF
+- title + page signal TF-IDF
+
+算法：
+
+- `MLPClassifier`
+- 两层隐藏层 `(128, 48)`
+- `relu + adam + early_stopping`
+
+特点：
+
+- 比线性模型更能表达 URL 词片段、标题、正文/DOM 信号之间的非线性交互
+- 保留 sklearn 训练/评估/序列化契约，可以直接进入 runtime model consensus
+- 当前仍是轻量 MLP，不替代后续更完整的 Transformer / GNN 融合模型
 
 ### TF-IDF Vectorization
 

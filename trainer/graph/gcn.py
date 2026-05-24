@@ -21,33 +21,47 @@ from torch.nn import functional as F
 from trainer.graph.dataset import GraphDataset
 
 
-class GCN(nn.Module):
-    """Two-layer graph convolutional network.
+class ResidualGCN(nn.Module):
+    """Residual multi-hop graph convolutional network.
 
     Args:
         input_dim: Number of node input features.
         hidden_dim: Hidden representation size.
         output_dim: Number of output classes.
         dropout: Dropout probability applied before each layer.
+        layers: Number of graph message-passing blocks.
 
     Returns:
         Logits for each node and class when called.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int = 2, dropout: float = 0.35) -> None:
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int = 2,
+        dropout: float = 0.35,
+        layers: int = 3,
+    ) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        self.graph_layers = nn.ModuleList(nn.Linear(hidden_dim, hidden_dim) for _ in range(max(1, layers)))
+        self.layer_norms = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in self.graph_layers)
+        self.output_projection = nn.Linear(hidden_dim, output_dim)
         self.dropout = dropout
 
     def forward(self, features: torch.Tensor, adjacency: torch.Tensor) -> torch.Tensor:
-        hidden = torch.sparse.mm(adjacency, features)
-        hidden = self.fc1(hidden)
-        hidden = F.relu(hidden)
-        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
-        hidden = torch.sparse.mm(adjacency, hidden)
-        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
-        return self.fc2(hidden)
+        hidden = F.relu(self.input_projection(features))
+        for layer, layer_norm in zip(self.graph_layers, self.layer_norms, strict=True):
+            residual = hidden
+            hidden = torch.sparse.mm(adjacency, hidden)
+            hidden = F.relu(layer(hidden))
+            hidden = F.dropout(hidden, p=self.dropout, training=self.training)
+            hidden = layer_norm(hidden + residual)
+        return self.output_projection(hidden)
+
+
+GCN = ResidualGCN
 
 
 @dataclass(slots=True)
@@ -56,6 +70,7 @@ class GCNTrainingConfig:
 
     seed: int = 7
     hidden_dim: int = 64
+    layers: int = 3
     epochs: int = 200
     learning_rate: float = 0.01
     weight_decay: float = 5e-4
@@ -86,17 +101,18 @@ def _safe_auc(y_true: np.ndarray, scores: np.ndarray, *, kind: str) -> float:
     return float(average_precision_score(y_true, scores))
 
 
-def compute_binary_metrics(y_true: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
+def compute_binary_metrics(y_true: np.ndarray, probabilities: np.ndarray, *, threshold: float = 0.5) -> dict[str, Any]:
     """Compute binary blog/non-blog classification metrics.
 
     Args:
         y_true: Gold labels where ``1`` means blog.
         probabilities: Blog class probabilities.
+        threshold: Probability threshold used for the binary prediction.
 
     Returns:
         Serializable metrics and confusion counts.
     """
-    predicted = (probabilities >= 0.5).astype(np.int64)
+    predicted = (probabilities >= threshold).astype(np.int64)
     labels = [0, 1]
     matrix = confusion_matrix(y_true, predicted, labels=labels)
     tn, fp, fn, tp = [int(value) for value in matrix.ravel()]
@@ -107,6 +123,7 @@ def compute_binary_metrics(y_true: np.ndarray, probabilities: np.ndarray) -> dic
         "f1": round(float(f1_score(y_true, predicted, zero_division=0)), 6),
         "pr_auc": round(_safe_auc(y_true, probabilities, kind="pr"), 6),
         "roc_auc": round(_safe_auc(y_true, probabilities, kind="roc"), 6),
+        "threshold": round(float(threshold), 6),
         "tp": tp,
         "fp": fp,
         "tn": tn,
@@ -114,15 +131,35 @@ def compute_binary_metrics(y_true: np.ndarray, probabilities: np.ndarray) -> dic
     }
 
 
-def _evaluate_logits(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> dict[str, Any]:
+def _evaluate_logits(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    threshold: float = 0.5,
+) -> dict[str, Any]:
     with torch.no_grad():
         probs = torch.softmax(logits[mask], dim=1)[:, 1].detach().cpu().numpy()
         gold = labels[mask].detach().cpu().numpy()
-    return compute_binary_metrics(gold, probs)
+    return compute_binary_metrics(gold, probs, threshold=threshold)
 
 
-def train_gcn(dataset: GraphDataset, config: GCNTrainingConfig) -> tuple[GCN, dict[str, Any], np.ndarray]:
-    """Train a two-layer GCN on graph-in labeled nodes.
+def select_threshold(y_true: np.ndarray, probabilities: np.ndarray) -> tuple[float, float]:
+    """Select the validation F1-optimal threshold for graph probabilities."""
+
+    candidates = sorted({0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9} | {round(float(value), 6) for value in probabilities})
+    best_threshold = 0.5
+    best_f1 = -1.0
+    for threshold in candidates:
+        score = float(compute_binary_metrics(y_true, probabilities, threshold=threshold)["f1"])
+        if score > best_f1 or (score == best_f1 and abs(threshold - 0.5) < abs(best_threshold - 0.5)):
+            best_threshold = threshold
+            best_f1 = score
+    return best_threshold, best_f1
+
+
+def train_gcn(dataset: GraphDataset, config: GCNTrainingConfig) -> tuple[ResidualGCN, dict[str, Any], np.ndarray]:
+    """Train a residual GCN on graph-in labeled nodes.
 
     Args:
         dataset: Loaded graph dataset.
@@ -138,11 +175,12 @@ def train_gcn(dataset: GraphDataset, config: GCNTrainingConfig) -> tuple[GCN, di
     labels = _labels_to_tensor(dataset.labels)
     train_mask = _mask_to_tensor(dataset.split_masks["train"])
     val_mask = _mask_to_tensor(dataset.split_masks["val"])
-    model = GCN(
+    model = ResidualGCN(
         input_dim=features.shape[1],
         hidden_dim=config.hidden_dim,
         output_dim=2,
         dropout=config.dropout,
+        layers=config.layers,
     )
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -181,14 +219,20 @@ def train_gcn(dataset: GraphDataset, config: GCNTrainingConfig) -> tuple[GCN, di
     with torch.no_grad():
         final_logits = model(features, adjacency)
         probabilities = torch.softmax(final_logits, dim=1)[:, 1].detach().cpu().numpy()
+    val_probabilities = probabilities[dataset.split_masks["val"]]
+    val_labels = dataset.labels[dataset.split_masks["val"]]
+    selected_threshold, selected_val_f1 = select_threshold(val_labels, val_probabilities)
     summary = {
         "best_epoch": best_epoch,
         "best_val_f1": best_val_f1,
+        "selected_threshold": selected_threshold,
+        "selected_threshold_val_f1": round(float(selected_val_f1), 6),
         "epochs_ran": len(history),
         "history": history,
         "config": {
             "seed": config.seed,
             "hidden_dim": config.hidden_dim,
+            "layers": config.layers,
             "epochs": config.epochs,
             "learning_rate": config.learning_rate,
             "weight_decay": config.weight_decay,

@@ -62,6 +62,18 @@ def test_load_graph_dataset_builds_splits(tmp_path: Path) -> None:
     assert dataset.metadata["labeled_nodes"] == 40
     assert dataset.split_masks["train"].sum() > dataset.split_masks["val"].sum()
     assert dataset.features.shape[0] == 40
+    assert "graph_degree_metadata" in dataset.metadata["feature_sources"]
+
+
+def test_load_graph_dataset_supports_self_loop_ablation(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "dataset"
+    _write_fixture_dataset(dataset_dir)
+
+    dataset = load_graph_dataset(dataset_dir=dataset_dir, max_features=128, seed=7, graph_mode="self_loop")
+
+    assert dataset.metadata["graph_mode"] == "self_loop"
+    assert dataset.metadata["adjacency_edges"] == 0
+    assert dataset.adjacency.nnz == dataset.metadata["graph_nodes"]
 
 
 def test_run_train_gcn_writes_metrics(tmp_path: Path) -> None:
@@ -69,8 +81,20 @@ def test_run_train_gcn_writes_metrics(tmp_path: Path) -> None:
     output_dir = tmp_path / "run"
     _write_fixture_dataset(dataset_dir)
 
-    payload = run_train_gcn(dataset_dir=dataset_dir, output_dir=output_dir, max_features=128, epochs=3, patience=2)
+    payload = run_train_gcn(
+        dataset_dir=dataset_dir,
+        output_dir=output_dir,
+        max_features=128,
+        hidden_dim=16,
+        layers=2,
+        epochs=3,
+        patience=2,
+        graph_mode="dropout",
+        edge_dropout=0.5,
+    )
 
     assert payload["model_name"] == "gcn"
     assert (output_dir / "metrics.json").exists()
     assert (output_dir / "predictions_labeled.csv").exists()
+    assert payload["metrics"]["test"]["count"] > 0
+    assert payload["dataset_summary"]["graph_mode"] == "dropout"

@@ -38,7 +38,7 @@ def test_full_run_smoke(tmp_path: Path) -> None:
     assert (full_run_dir / "summary.json").exists()
     assert (full_run_dir / "report.md").exists()
 
-    expected_models = {"structured", "structured_rf", "structured_svm", "tfidf", "tfidf_svm", "tfidf_nb"}
+    expected_models = {"structured", "structured_rf", "structured_svm", "tfidf", "tfidf_svm", "tfidf_nb", "hybrid_mlp"}
     seen_models: set[str] = set()
     for entry in result["results"]:
         run_dir = Path(entry["run_dir"])

@@ -15,9 +15,13 @@ from trainer.constants import DEFAULT_DATASET_ROOT
 from trainer.constants import DEFAULT_MODEL_ROOT
 from trainer.constants import SUPPORTED_MODELS
 from trainer.pipelines.evaluate_run import run_evaluate_run
+from trainer.pipelines.evaluate_graph_runtime_overlap import run_evaluate_graph_runtime_overlap
+from trainer.pipelines.evaluate_runtime_consensus import DEFAULT_CONSENSUS_STRATEGIES
+from trainer.pipelines.evaluate_runtime_consensus import run_evaluate_runtime_consensus
 from trainer.pipelines.build_embeddings import run_build_embeddings
 from trainer.pipelines.full_run import run_full_pipeline
 from trainer.pipelines.prepare_dataset import run_prepare_dataset
+from trainer.pipelines.publish_runtime_model import publish_runtime_model
 from trainer.pipelines.qwen_embedding_run import run_qwen_embedding_pipeline
 from trainer.pipelines.train_baseline import run_train_baseline
 from trainer.graph.pipeline import run_train_gcn
@@ -68,6 +72,34 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate", help="Evaluate one trained run directory")
     evaluate.add_argument("--run-dir", type=Path, default=_latest_model_run(DEFAULT_MODEL_ROOT))
 
+    runtime_consensus = subparsers.add_parser(
+        "evaluate-runtime-consensus",
+        help="Evaluate runtime model-consensus strategies on a prepared dataset split",
+    )
+    runtime_consensus.add_argument("--dataset-dir", type=Path, default=_latest_child(DEFAULT_DATASET_ROOT))
+    runtime_consensus.add_argument("--model-root", type=Path, default=Path("runtime_resources/models/url_decision/current"))
+    runtime_consensus.add_argument("--output-dir", type=Path, default=Path("data/model/runtime_consensus_eval"))
+    runtime_consensus.add_argument("--split", type=str, default="test")
+    runtime_consensus.add_argument("--consensus-threshold", type=float, default=0.5)
+    runtime_consensus.add_argument("--tune-weighted-threshold-split", type=str, default=None)
+    runtime_consensus.add_argument("--strategies", nargs="+", default=list(DEFAULT_CONSENSUS_STRATEGIES))
+
+    graph_runtime_overlap = subparsers.add_parser(
+        "evaluate-graph-runtime-overlap",
+        help="Measure whether runtime and GCN prediction artifacts overlap enough for fusion",
+    )
+    graph_runtime_overlap.add_argument("--runtime-predictions", type=Path, required=True)
+    graph_runtime_overlap.add_argument("--graph-predictions", type=Path, required=True)
+    graph_runtime_overlap.add_argument("--output-dir", type=Path, default=Path("data/model/graph_runtime_overlap"))
+    graph_runtime_overlap.add_argument("--graph-split", type=str, default="test")
+    graph_runtime_overlap.add_argument("--runtime-strategy", type=str, default="weighted_average")
+    graph_runtime_overlap.add_argument("--min-overlap-for-fusion", type=int, default=50)
+
+    publish = subparsers.add_parser("publish-runtime-model", help="Publish one trained model run to runtime_resources")
+    publish.add_argument("--run-dir", type=Path, required=True)
+    publish.add_argument("--runtime-root", type=Path, default=Path("runtime_resources/models/url_decision/current"))
+    publish.add_argument("--model-name", type=str, default=None)
+
     full = subparsers.add_parser("full-run", help="Prepare dataset, train both baselines, and evaluate both")
     full.add_argument("--source-csv", type=Path, default=None)
     full.add_argument("--dataset-version", type=str, default=None)
@@ -82,12 +114,15 @@ def build_parser() -> argparse.ArgumentParser:
     gcn.add_argument("--output-dir", type=Path, default=None)
     gcn.add_argument("--max-features", type=int, default=4096)
     gcn.add_argument("--hidden-dim", type=int, default=64)
+    gcn.add_argument("--layers", type=int, default=3)
     gcn.add_argument("--epochs", type=int, default=200)
     gcn.add_argument("--learning-rate", type=float, default=0.01)
     gcn.add_argument("--weight-decay", type=float, default=5e-4)
     gcn.add_argument("--dropout", type=float, default=0.35)
     gcn.add_argument("--patience", type=int, default=25)
     gcn.add_argument("--seed", type=int, default=7)
+    gcn.add_argument("--graph-mode", choices=["full", "self_loop", "dropout"], default="full")
+    gcn.add_argument("--edge-dropout", type=float, default=0.0)
     return parser
 
 
@@ -119,18 +154,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.run_dir is None:
             raise SystemExit(f"No run directory found under {DEFAULT_MODEL_ROOT}. Run train or full-run first.")
         payload = run_evaluate_run(run_dir=args.run_dir)
+    elif args.command == "evaluate-runtime-consensus":
+        if args.dataset_dir is None:
+            raise SystemExit(f"No dataset directory found under {DEFAULT_DATASET_ROOT}. Run prepare-dataset first.")
+        payload = run_evaluate_runtime_consensus(
+            dataset_dir=args.dataset_dir,
+            model_root=args.model_root,
+            output_dir=args.output_dir,
+            split=args.split,
+            strategies=tuple(args.strategies),
+            consensus_threshold=args.consensus_threshold,
+            tune_weighted_threshold_split=args.tune_weighted_threshold_split,
+        )
+    elif args.command == "evaluate-graph-runtime-overlap":
+        payload = run_evaluate_graph_runtime_overlap(
+            runtime_predictions=args.runtime_predictions,
+            graph_predictions=args.graph_predictions,
+            output_dir=args.output_dir,
+            graph_split=args.graph_split,
+            runtime_strategy=args.runtime_strategy,
+            min_overlap_for_fusion=args.min_overlap_for_fusion,
+        )
+    elif args.command == "publish-runtime-model":
+        payload = publish_runtime_model(
+            run_dir=args.run_dir,
+            runtime_root=args.runtime_root,
+            model_name=args.model_name,
+        )
     elif args.command == "train-gcn":
         payload = run_train_gcn(
             dataset_dir=args.dataset_dir,
             output_dir=args.output_dir,
             max_features=args.max_features,
             hidden_dim=args.hidden_dim,
+            layers=args.layers,
             epochs=args.epochs,
             learning_rate=args.learning_rate,
             weight_decay=args.weight_decay,
             dropout=args.dropout,
             patience=args.patience,
             seed=args.seed,
+            graph_mode=args.graph_mode,
+            edge_dropout=args.edge_dropout,
         )
     elif args.command == "qwen-embedding-run":
         payload = run_qwen_embedding_pipeline(

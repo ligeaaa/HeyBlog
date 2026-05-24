@@ -29,6 +29,8 @@ DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_GRAPH_BACKEND = "legacy"
 DEFAULT_GRAPH_SNAPSHOT_NAMESPACE = "legacy"
 DEFAULT_AGE_GRAPH_NAME = "heyblog_graph"
+DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY = "weighted_average"
+DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD = 0.4
 _ENV_LOADED = False
 
 
@@ -111,6 +113,8 @@ class Settings:
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
     filter_chain_config_path: Path = DEFAULT_FILTER_CHAIN_CONFIG_PATH
     decision_model_consensus_enabled: bool = True
+    decision_model_consensus_strategy: str = DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY
+    decision_model_consensus_threshold: float = DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD
     graph_backend: str = DEFAULT_GRAPH_BACKEND
     graph_snapshot_namespace: str = DEFAULT_GRAPH_SNAPSHOT_NAMESPACE
     age_enabled: bool = False
@@ -210,6 +214,19 @@ class Settings:
             decision_model_consensus_enabled=_parse_bool_env(
                 "HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED",
                 default=True,
+            ),
+            decision_model_consensus_strategy=(
+                os.getenv(
+                    "HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY",
+                    DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY,
+                ).strip().lower()
+                or DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY
+            ),
+            decision_model_consensus_threshold=float(
+                os.getenv(
+                    "HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD",
+                    str(DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD),
+                )
             ),
             graph_backend=os.getenv("HEYBLOG_GRAPH_BACKEND", DEFAULT_GRAPH_BACKEND).strip().lower() or DEFAULT_GRAPH_BACKEND,
             graph_snapshot_namespace=(

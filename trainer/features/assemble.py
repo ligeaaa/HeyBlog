@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from trainer.dataset.schema import SupervisedSample
+from trainer.features.page_features import extract_page_features
+from trainer.features.page_features import page_signal_tokens
 from trainer.features.title_features import extract_title_features
 from trainer.features.title_features import title_word_ngrams
 from trainer.features.title_features import tokenize_title_char_chunks
@@ -27,6 +29,7 @@ def build_structured_feature_rows(samples: list[SupervisedSample]) -> list[dict[
             merge_feature_maps(
                 extract_url_features(sample.normalized_url),
                 extract_title_features(sample.title),
+                extract_page_features(sample.text),
             )
         )
     return rows
@@ -45,5 +48,5 @@ def build_tfidf_documents(
     for sample in samples:
         url_docs.append(url_char_ngrams(sample.normalized_url, *url_char_ngram_range) + tokenize_url(sample.normalized_url))
         title_tokens = tokenize_title_char_chunks(sample.title, title_token_chunk_size)
-        title_docs.append(title_word_ngrams(title_tokens, *title_word_ngram_range))
+        title_docs.append(title_word_ngrams(title_tokens, *title_word_ngram_range) + page_signal_tokens(sample.text))
     return url_docs, title_docs
