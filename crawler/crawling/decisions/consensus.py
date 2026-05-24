@@ -9,6 +9,7 @@ from dataclasses import field
 import logging
 from pathlib import Path
 import pickle
+import sys
 from typing import Any
 
 from crawler.crawling.decisions.base import FilterDecision
@@ -63,8 +64,29 @@ def load_model(path: Path) -> Any:
     Returns:
         The deserialized model object.
     """
+    _add_legacy_model_package_path()
     with path.open("rb") as handle:
         return pickle.load(handle)
+
+
+def _add_legacy_model_package_path() -> None:
+    """Expose migrated training modules for legacy pickle artifacts.
+
+    Existing ``model.joblib`` files were serialized before the model code moved
+    to ``HeyBlog_model/`` and still reference modules such as
+    ``trainer.models.baseline_tfidf_svm``. Adding the model repository root to
+    ``sys.path`` lets those legacy artifacts load while keeping the package out
+    of the business runtime's install metadata.
+    """
+    project_root = Path(__file__).resolve().parents[3]
+    candidate_roots = (
+        project_root / "HeyBlog_model",
+        project_root.parent / "HeyBlog_model",
+    )
+    for model_repo_root in candidate_roots:
+        if model_repo_root.exists() and str(model_repo_root) not in sys.path:
+            sys.path.append(str(model_repo_root))
+            return
 
 
 @dataclass(slots=True, frozen=True)

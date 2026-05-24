@@ -47,7 +47,7 @@ crawler/
 │   │   ├── __init__.py               # decisions 子包标记文件
 │   │   ├── base.py                   # 过滤器公共接口与候选上下文类型
 │   │   ├── chain.py                  # TOML 驱动的配置化过滤链
-│   │   ├── consensus.py              # 基于最新 trainer 模型的多模型交叉验证过滤器
+│   │   ├── consensus.py              # 基于已发布运行时模型的多模型交叉验证过滤器
 │   │   ├── filters.py                # 拆分后的独立规则过滤器类
 │   │   └── rules.py                  # 旧规则决策包装层（兼容面）
 │   └── fetching/                     # 网络抓取抽象与 HTTPX 实现
@@ -257,9 +257,8 @@ crawler/
 下把每个模型的最新 run 加载出来，对候选 URL 做一次轻量推理。
 
 如果你想覆盖默认运行时资源目录，可以设置
-`HEYBLOG_DECISION_MODEL_ROOT`。训练产物仍然建议先写到 `data/model/`，
-再手动挑选并发布到 `runtime_resources/`，这样本地 debug、pytest 和
-Docker 服务都能走同一条运行时资源链路。
+`HEYBLOG_DECISION_MODEL_ROOT`。训练产物由 `HeyBlog_model/` 生成并手动挑选发布到
+`runtime_resources/`，这样本地 debug、pytest 和 Docker 服务都能走同一条运行时资源链路。
 
 规则是严格负向共识：
 

@@ -52,7 +52,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST` | 空 | `crawler` | 逗号分隔的顶级域黑名单 |
 | `HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST` | 空 | `crawler` | 逗号分隔的精确 URL 黑名单 |
 | `HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST` | 空 | `crawler` | 逗号分隔的 URL 前缀黑名单 |
-| `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `data/model/` |
+| `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `HeyBlog_model/data/model/` |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED` | `true` | `crawler`、`persistence-api` | 是否启用多模型负向共识决策层 |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` | `weighted_average` | `crawler`、`persistence-api` | 多模型共识策略。可选 `weighted_average`、`majority_blog`、`any_blog`；默认按模型评估指标加权平均概率 |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | `0.4` | `crawler`、`persistence-api` | `weighted_average` 策略下的全局保留阈值，加权平均 blog 概率低于该值时拒绝；当前值来自 `blog-classification-redesign-20260523` validation split 调优 |
@@ -82,7 +82,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 
 推荐把模型和类似资源拆成两层：
 
-- `data/`：训练输出、实验报表、人工观察数据
+- `HeyBlog_model/data/`：训练输出、实验报表、人工观察数据
 - `runtime_resources/`：已经被选中、准备给服务真正加载的运行时资源
 
 当前推荐的 URL 决策模型发布目录是：
@@ -90,7 +90,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 - `runtime_resources/models/url_decision/current/`
 
 这样本地 debug、pytest 和 Docker 只需要统一设置
-`HEYBLOG_DECISION_MODEL_ROOT`，不需要直接依赖 `data/model/` 的实验输出结构。
+`HEYBLOG_DECISION_MODEL_ROOT`，不需要直接依赖 `HeyBlog_model/data/model/` 的实验输出结构。
 
 ## 4. Postgres 容器级变量
 

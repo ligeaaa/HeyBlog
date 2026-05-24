@@ -143,26 +143,12 @@ cd frontend && npm run dev
 
 你需要自己准备 `/api` 反向代理，或者使用 mock API。
 
-### 4. 离线训练基线路径
+### 4. 运行时模型资源
 
-如果你想运行当前基于 `url + title` 的离线博客分类 baseline，可以用导出的标注 CSV 启动训练：
-
-```bash
-python -m trainer.cli full-run --source-csv data/blog-label-training-2026-04-11.csv
-```
-
-训练输出会落在：
-
-- `data/trainer/datasets/`
-- `data/model/`
-
-需要注意，运行时服务不会直接读取 `data/model/` 下的训练输出。
-
-真正供运行时加载的模型应当被发布到：
+模型训练代码已迁移到仓库内的 `HeyBlog_model/`，后续可作为独立仓库维护。业务服务只消费已经发布好的运行时模型资源：
 
 - `runtime_resources/models/url_decision/current/`
 
-然后通过把 `HEYBLOG_DECISION_MODEL_ROOT` 指向这个运行时资源目录，让本地调试、测试和 Docker 运行时保持一致。
-
+本地调试、测试和 Docker 运行时都通过 `HEYBLOG_DECISION_MODEL_ROOT` 指向这个目录。训练仓库生成新的模型后，应只把经过选择的发布产物同步到 `runtime_resources/`，业务仓库不再直接依赖训练输出目录。
 
 

@@ -93,6 +93,7 @@ services:
       - ./volumes/exports:/data/exports
       - ./seed.csv:/data/seeds/seed.csv:ro
       - ./runtime_resources:/app/runtime_resources:ro
+      - ../HeyBlog_model/trainer:/app/trainer:ro
     networks:
       - heyblog_net
 
@@ -149,6 +150,7 @@ services:
         condition: service_healthy
     volumes:
       - ./runtime_resources:/app/runtime_resources:ro
+      - ../HeyBlog_model/trainer:/app/trainer:ro
     networks:
       - heyblog_net
 
