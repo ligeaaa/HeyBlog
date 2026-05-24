@@ -12,6 +12,14 @@ from fastapi import HTTPException
 
 from shared.config import Settings
 from shared.http_clients.persistence_http import PersistenceHttpClient
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_logging
+from shared.observability import get_logger
+from shared.observability import log_event
+
+
+SERVICE_NAME = "search"
+LOGGER = get_logger(__name__)
 
 
 def _normalize(value: str) -> str:
@@ -44,12 +52,23 @@ class SearchService:
             json.dumps(snapshot, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return {
+        result = {
             "blogs": len(snapshot["blogs"]),
             "edges": len(snapshot["edges"]),
             "logs": 0,
             "cache_path": str(self.cache_path),
         }
+        log_event(
+            LOGGER,
+            event="search.reindex.succeeded",
+            message="search index rebuilt",
+            stage="search_reindex",
+            blogs=result["blogs"],
+            edges=result["edges"],
+            logs=result["logs"],
+            cache_path=result["cache_path"],
+        )
+        return result
 
     def search(self, query: str, *, kind: str = "all", limit: int = 10) -> dict[str, Any]:
         normalized = _normalize(query)
@@ -143,7 +162,18 @@ def build_search_service(settings: Settings | None = None) -> SearchService:
 
 def create_app(service: SearchService | None = None) -> FastAPI:
     """Create the search service app."""
+    settings = Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Search Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.search_service = service or build_search_service()
 
     def get_service() -> SearchService:

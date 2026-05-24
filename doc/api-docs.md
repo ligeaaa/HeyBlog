@@ -736,7 +736,9 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 ### 3.4 搜索与日志现状
 
 - 当前 public API 已不再暴露 legacy 的 `/api/logs` 与 `/api/search`。
-- 日志写入仍由 crawler 通过 persistence 内部接口完成；但 public 浏览面不再提供日志列表读取端点。
+- 运行日志统一由 `shared.observability` 输出到类型目录，默认是 `logs/app/`、`logs/error/`、`logs/access/`；每个类型目录下再按服务分目录，保存 `<service>-YYYYMMDD-HH.log` 小时切片，Docker Compose 中对应 `volumes/logs`。
+- legacy `/internal/logs` 仍保留兼容入口，但当前不会把 crawl log 写入业务数据库。
+- URL refilter、blog dedup scan 这类维护任务的进度属于 domain event，仍通过各自 run/event 接口持久化，不混入通用 application log。
 - `search` 服务仍保留为内部可重建索引组件，供 health 检查与 reindex 维护链路使用，并在缓存为空时回退到 `persistence-api /internal/search-snapshot`。
 - 浏览器当前没有直接依赖的 public 搜索页；public 发现主路径已经收敛到 `catalog / lookup / detail / graph views`。
 
@@ -1321,7 +1323,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 ### `POST /internal/logs`
 
-用途：写入一条日志。
+用途：legacy 兼容入口。当前实现会接收该请求并返回成功，但不会再把 crawl log
+写入业务数据库；运行日志请查看统一日志目录。
 
 请求体：
 
@@ -1335,6 +1338,12 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 ```
 
 响应：
+
+```json
+{
+  "ok": true
+}
+```
 
 ```json
 {

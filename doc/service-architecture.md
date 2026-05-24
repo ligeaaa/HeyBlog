@@ -57,8 +57,8 @@ search  -> persistence-api
 | `frontend` | `backend` | HTTP 代理 | 转发浏览器的公共 API 请求 |
 | `backend` | `crawler` | HTTP client | 执行种子导入、同步 crawl、运行时控制 |
 | `backend` | `search` | HTTP client | 搜索查询、重建索引 |
-| `backend` | `persistence-api` | HTTP client | 读取 blogs、edges、logs、stats、graph、snapshot |
-| `crawler` | `persistence-api` | HTTP client | 领取任务、写 blog、写 edge、写日志、导出图 |
+| `backend` | `persistence-api` | HTTP client | 读取 blogs、edges、stats、graph、snapshot |
+| `crawler` | `persistence-api` | HTTP client | 领取任务、写 blog、写 edge、导出图 |
 | `search` | `persistence-api` | HTTP client | 拉取搜索快照 |
 | `persistence-api` | SQLite / PostgreSQL | Repository | 持久化事实数据与聚合读模型 |
 
@@ -119,7 +119,7 @@ search  -> persistence-api
   -> backend -> crawler /internal/crawl/bootstrap
   -> crawler.crawling.bootstrap 读取 seed.csv
   -> crawler -> persistence-api /internal/blogs/upsert
-  -> crawler -> persistence-api /internal/logs
+  -> crawler -> logs/app/crawler/crawler-YYYYMMDD-HH.log
 ```
 
 ### 4.3 执行一次同步 crawl
@@ -134,7 +134,7 @@ search  -> persistence-api
   -> crawler -> persistence-api /internal/blogs/upsert
   -> crawler -> persistence-api /internal/edges
   -> crawler -> persistence-api /internal/blogs/{id}/result
-  -> crawler -> persistence-api /internal/logs
+  -> crawler -> logs/app/crawler/ 或 logs/error/crawler/ 下的小时切片
   -> crawler 写出 nodes.csv / edges.csv / graph.json
   -> backend 尝试调用 search /internal/search/reindex
 ```
@@ -181,7 +181,7 @@ backend health / crawl-run / runtime-run-batch / database-reset
   -> backend 先读取 crawler /internal/runtime/status
   -> 若 crawler 忙碌则返回 409 crawler_busy
   -> 否则 backend -> persistence-api /internal/database/reset
-  -> persistence-api 清空 blogs / edges / crawl_logs
+  -> persistence-api 清空 blogs / edges 和维护任务记录
   -> backend 再尽力调用 search /internal/search/reindex
 ```
 
@@ -189,7 +189,9 @@ backend health / crawl-run / runtime-run-batch / database-reset
 
 | 数据 / 状态 | 归属服务 | 说明 |
 | --- | --- | --- |
-| `blogs` / `edges` / `crawl_logs` | `persistence-api` | 系统事实来源 |
+| `blogs` / `edges` | `persistence-api` | 系统事实来源 |
+| application/access/error logs | 统一日志目录 | 默认按类型和服务写到 `logs/app/<service>`、`logs/error/<service>`、`logs/access/<service>` 的小时切片，Docker 中映射到 `volumes/logs` |
+| maintenance run events | `persistence-api` | URL refilter、blog dedup scan 等后台维护进度 |
 | `stats` / `graph` / graph snapshots | `persistence-api` | 基于事实数据组装出的读模型 |
 | `search-index.json` | `search` | 可重建缓存 |
 | `RuntimeSnapshot` | `crawler` | 进程内内存态，不是持久化状态 |

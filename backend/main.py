@@ -18,6 +18,14 @@ from shared.config import Settings
 from shared.http_clients.crawler_http import CrawlerHttpClient
 from shared.http_clients.persistence_http import PersistenceHttpClient
 from shared.http_clients.search_http import SearchHttpClient
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_logging
+from shared.observability import get_logger
+from shared.observability import log_event
+
+
+SERVICE_NAME = "backend"
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -151,8 +159,23 @@ def _best_effort_search_reindex(search: Any) -> bool:
     """Try to rebuild search state and report whether it succeeded."""
     try:
         search.reindex()
+        log_event(
+            LOGGER,
+            event="search.reindex.succeeded",
+            message="search reindex succeeded",
+            stage="search_reindex",
+        )
         return True
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            LOGGER,
+            event="search.reindex.failed",
+            message="search reindex failed",
+            level=30,
+            stage="search_reindex",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         return False
 
 
@@ -296,7 +319,18 @@ def _build_maintenance_start_error_handlers(
 
 def create_app(state: BackendState | None = None) -> FastAPI:
     """Create the public backend app."""
+    settings = Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Backend Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.backend_state = state or build_backend_state()
 
     def get_state() -> BackendState:
@@ -524,9 +558,18 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.post("/api/ingestion-requests")
     def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
-        return _call_upstream_with_http_error_translation(
+        result = _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.create_ingestion_request(**payload.model_dump())
         )
+        log_event(
+            LOGGER,
+            event="ingestion.request.created",
+            message="ingestion request created",
+            stage="ingestion",
+            run_id=result.get("request_id"),
+            url=payload.homepage_url,
+        )
+        return result
 
     @app.get("/api/ingestion-requests")
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
@@ -554,6 +597,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 wait_for_idle=ensure_runtime_idle,
             )
             payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
+            log_event(
+                LOGGER,
+                event="maintenance.blog_dedup.started",
+                message="blog dedup scan started",
+                stage="blog_dedup",
+                run_id=int(payload["id"]),
+                crawler_was_running=crawler_was_running,
+            )
             return payload, {
                 "run_id": int(payload["id"]),
                 "crawler_was_running": crawler_was_running,
@@ -585,6 +636,14 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             payload = state.persistence.create_url_refilter_run(crawler_was_running=crawler_was_running)
             run_id = int(payload["id"])
             run_context["run_id"] = run_id
+            log_event(
+                LOGGER,
+                event="maintenance.url_refilter.started",
+                message="url refilter run started",
+                stage="url_refilter",
+                run_id=run_id,
+                crawler_was_running=crawler_was_running,
+            )
             state.persistence.append_url_refilter_run_event(run_id=run_id, message="停止爬虫中")
             if crawler_was_running:
                 _stop_active_crawler(

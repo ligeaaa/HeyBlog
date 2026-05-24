@@ -37,6 +37,12 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_SEED_PATH` | `./seed.csv` | `crawler` | 种子文件路径 |
 | `HEYBLOG_EXPORT_DIR` | `./data/exports` | `crawler`、`persistence-api` | 导出图文件目录，也是 graph snapshot 的落盘目录 |
 | `HEYBLOG_SEARCH_CACHE_DIR` | `./data/search-cache` | `search` | 搜索缓存目录，默认会写 `search-index.json` |
+| `HEYBLOG_LOG_DIR` | `./logs` | 全部 Python 服务 | 统一日志根目录；服务会按类型写入 `<log_dir>/app/`、`error/`、`access/` |
+| `HEYBLOG_LOG_LEVEL` | `INFO` | 全部 Python 服务 | 应用日志级别，例如 `DEBUG`、`INFO`、`WARNING` |
+| `HEYBLOG_LOG_FORMAT` | `json` | 全部 Python 服务 | 日志格式；生产建议 `json`，也可设为其他值使用可读文本格式 |
+| `HEYBLOG_LOG_FILE_ENABLED` | `true` | 全部 Python 服务 | 是否写入分目录日志文件 |
+| `HEYBLOG_LOG_CONSOLE_ENABLED` | `true` | 全部 Python 服务 | 是否同时输出到控制台，方便 Docker logs 查看 |
+| `HEYBLOG_LOG_RETENTION_DAYS` | `7` | 全部 Python 服务 | 自动清理超过该天数的小时切片日志 |
 | `HEYBLOG_BACKEND_BASE_URL` | `http://127.0.0.1:8000` | `frontend` | 浏览器代理层转发到公共 API 的目标地址 |
 | `HEYBLOG_CRAWLER_BASE_URL` | `http://127.0.0.1:8010` | `backend` | `backend` 调用 `crawler` 的内部地址 |
 | `HEYBLOG_SEARCH_BASE_URL` | `http://127.0.0.1:8020` | `backend` | `backend` 调用 `search` 的内部地址 |
@@ -64,6 +70,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | 服务 | Compose 中设置的变量 | 作用 |
 | --- | --- | --- |
 | `frontend` | `HEYBLOG_DOCKER_BACKEND_BASE_URL` | 浏览器代理到 `backend` |
+| 全部 Python 服务 | `HEYBLOG_DOCKER_LOG_DIR` / `HEYBLOG_LOG_LEVEL` / `HEYBLOG_LOG_FORMAT` | 容器内日志默认写到 `/data/logs`，并挂载到 `volumes/logs` |
 | `backend` | `HEYBLOG_DOCKER_PERSISTENCE_BASE_URL` | 读取持久化边界 |
 | `backend` | `HEYBLOG_DOCKER_CRAWLER_BASE_URL` | 控制 `crawler` |
 | `backend` | `HEYBLOG_DOCKER_SEARCH_BASE_URL` | 调用 `search` |
@@ -79,6 +86,38 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `persistence-api` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 全库规则重扫使用的模型共识策略与 weighted 阈值 |
 
 ## 3.1 运行时资源目录约定
+
+## 3.1 日志目录约定
+
+所有 Python 服务都通过 `shared.observability` 配置标准库 logging。日志先按类型分目录，
+再按服务分目录，每个服务目录内保存该服务所有小时切片。默认本地写入：
+
+```text
+logs/
+  app/
+    backend/
+      backend-20260524-18.log
+      backend-20260524-19.log
+    crawler/
+      crawler-20260524-18.log
+  error/
+    crawler/
+      crawler-20260524-18.log
+  access/
+    backend/
+      backend-20260524-18.log
+    frontend/
+      frontend-20260524-18.log
+```
+
+Docker Compose 默认把容器内 `/data/logs` 映射到 `volumes/logs`。`app/`
+记录正常应用事件，`error/` 记录 warning/error/exception，`access/`
+记录 HTTP 请求事实。每个类型目录下按服务单独分目录；每个文件以小时为单位切片，超过
+`HEYBLOG_LOG_RETENTION_DAYS` 的旧切片会在写日志时自动清理。跨服务 HTTP
+client 会转发 `x-request-id`，用于串联一次 `frontend -> backend -> internal service`
+调用。
+
+## 3.2 运行时资源目录约定
 
 推荐把模型和类似资源拆成两层：
 

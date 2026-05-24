@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from shared.http_clients.context import context_header_kwargs
+
 
 class PersistenceHttpClient:
     """Expose repository-like methods backed by the persistence API."""
@@ -37,22 +39,22 @@ class PersistenceHttpClient:
         return str(value).lower()
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
-        response = self.client.post(path, json=payload)
+        response = self.client.post(path, json=payload, **context_header_kwargs())
         response.raise_for_status()
         return response.json()
 
     def _put(self, path: str, payload: dict[str, Any]) -> Any:
-        response = self.client.put(path, json=payload)
+        response = self.client.put(path, json=payload, **context_header_kwargs())
         response.raise_for_status()
         return response.json()
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        response = self.client.get(path, params=params)
+        response = self.client.get(path, params=params, **context_header_kwargs())
         response.raise_for_status()
         return response.json()
 
     def _get_text(self, path: str, params: dict[str, Any] | None = None) -> str:
-        response = self.client.get(path, params=params)
+        response = self.client.get(path, params=params, **context_header_kwargs())
         response.raise_for_status()
         return response.text
 

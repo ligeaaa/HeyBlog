@@ -17,11 +17,13 @@ from crawler.crawling.decisions.base import StaticStatusUrlFilter
 from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
+from shared.observability import get_logger
+from shared.observability import log_event
 
 DEFAULT_MODEL_THRESHOLD = 0.5
 DEFAULT_MODEL_WEIGHT = 1.0
 SUPPORTED_CONSENSUS_STRATEGIES = frozenset({"any_blog", "majority_blog", "weighted_average"})
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -252,18 +254,29 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
             except Exception as exc:  # noqa: BLE001
                 # One corrupt or incompatible model artifact should not block
                 # the crawler from evaluating the rest of the available runs.
-                LOGGER.warning(
-                    "Skipping consensus model load for %s from %s: %s: %s",
-                    model_name,
-                    model_path,
-                    type(exc).__name__,
-                    exc,
+                log_event(
+                    LOGGER,
+                    event="model.consensus.load_failed",
+                    message="skipping consensus model load",
+                    level=logging.WARNING,
+                    stage="model_consensus",
+                    model_name=model_name,
+                    model_path=str(model_path),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                 )
                 continue
 
         self.loaded_models = tuple(models)
         if not self.loaded_models:
-            LOGGER.warning("No consensus models were loaded from %s", self.model_root)
+            log_event(
+                LOGGER,
+                event="model.consensus.no_models_loaded",
+                message="no consensus models were loaded",
+                level=logging.WARNING,
+                stage="model_consensus",
+                model_root=str(self.model_root),
+            )
         return self.loaded_models
 
     def _build_sample(

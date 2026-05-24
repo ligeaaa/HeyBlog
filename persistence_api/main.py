@@ -23,6 +23,14 @@ from persistence_api.repository import RepositoryProtocol
 from persistence_api.repository import build_repository
 from persistence_api.stats_service import StatsService
 from shared.config import Settings
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_logging
+from shared.observability import get_logger
+from shared.observability import log_event
+
+
+SERVICE_NAME = "persistence-api"
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -244,7 +252,18 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
 
 def create_app(state: PersistenceState | None = None) -> FastAPI:
     """Create the persistence API app."""
+    settings = Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Persistence Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.persistence_state = state
 
     def get_state() -> PersistenceState:
@@ -396,23 +415,41 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/url-refilter-runs/{run_id}/events")
     def append_url_refilter_run_event(run_id: int, payload: UrlRefilterRunEventRequest) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
+        event = _call_with_value_error_http_translation(
             lambda: get_state().repository.append_url_refilter_run_event(
                 run_id=run_id,
                 message=payload.message,
             ),
             status_code=404,
         )
+        log_event(
+            LOGGER,
+            event="maintenance.url_refilter.progress",
+            message=payload.message,
+            stage="url_refilter",
+            run_id=run_id,
+        )
+        return event
 
     @app.post("/internal/url-refilter-runs/{run_id}/failed")
     def mark_url_refilter_run_failed(run_id: int, payload: UrlRefilterRunFailureRequest) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
+        result = _call_with_value_error_http_translation(
             lambda: get_state().repository.mark_url_refilter_run_failed(
                 run_id=run_id,
                 error_message=payload.error_message,
             ),
             status_code=404,
         )
+        log_event(
+            LOGGER,
+            event="maintenance.url_refilter.failed",
+            message="url refilter run failed",
+            level=30,
+            stage="url_refilter",
+            run_id=run_id,
+            error_message=payload.error_message,
+        )
+        return result
 
     @app.post("/internal/url-refilter-runs/{run_id}/execute")
     def execute_url_refilter_run(run_id: int) -> dict[str, Any]:
@@ -509,6 +546,14 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
 
     @app.post("/internal/logs")
     def add_log(payload: AddLogRequest) -> dict[str, bool]:
+        log_event(
+            LOGGER,
+            event="legacy.log.write_ignored",
+            message="legacy crawl log write ignored",
+            stage=payload.stage,
+            blog_id=payload.blog_id,
+            result=payload.result,
+        )
         return _run_action_and_return_ok(
             lambda: get_state().repository.add_log(**payload.model_dump()),
         )

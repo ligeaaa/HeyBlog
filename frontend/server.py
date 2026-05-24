@@ -12,6 +12,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from shared.config import Settings
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_logging
+from shared.observability import get_request_id
+
+
+SERVICE_NAME = "frontend"
 
 
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent / "dist"
@@ -61,7 +67,17 @@ def _should_serve_spa_entry(path: str) -> bool:
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the frontend app."""
     resolved = settings or Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=resolved.log_dir,
+        level=resolved.log_level,
+        file_enabled=resolved.log_file_enabled,
+        console_enabled=resolved.log_console_enabled,
+        log_format=resolved.log_format,
+        retention_days=resolved.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Frontend Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.backend_base_url = resolved.backend_base_url.rstrip("/")
     if FRONTEND_ASSETS_DIR.exists():
         app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS_DIR), name="assets")
@@ -89,6 +105,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         authorization = request.headers.get("authorization")
         if authorization:
             headers["authorization"] = authorization
+        request_id = get_request_id()
+        if request_id:
+            headers["x-request-id"] = request_id
         async with httpx.AsyncClient(timeout=60.0) as client:
             forwarded = await client.request(
                 request.method,

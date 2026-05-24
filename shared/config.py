@@ -20,6 +20,7 @@ DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "heyblog.sqlite"
 DEFAULT_SEED_PATH = PROJECT_ROOT / "seed.csv"
 DEFAULT_EXPORT_DIR = PROJECT_ROOT / "data" / "exports"
 DEFAULT_SEARCH_CACHE_DIR = PROJECT_ROOT / "data" / "search-cache"
+DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_DECISION_MODEL_ROOT = PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
 DEFAULT_FILTER_CHAIN_CONFIG_PATH = PROJECT_ROOT / "runtime_resources" / "filter_chain.toml"
 DEFAULT_PERSISTENCE_BASE_URL = "http://127.0.0.1:8030"
@@ -120,6 +121,12 @@ class Settings:
     age_enabled: bool = False
     age_graph_name: str = DEFAULT_AGE_GRAPH_NAME
     age_shadow_reads: bool = False
+    log_dir: Path = DEFAULT_LOG_DIR
+    log_level: str = "INFO"
+    log_format: str = "json"
+    log_file_enabled: bool = True
+    log_console_enabled: bool = True
+    log_retention_days: int = 7
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -236,4 +243,10 @@ class Settings:
             age_enabled=_parse_bool_env("HEYBLOG_AGE_ENABLED"),
             age_graph_name=os.getenv("HEYBLOG_AGE_GRAPH_NAME", DEFAULT_AGE_GRAPH_NAME).strip() or DEFAULT_AGE_GRAPH_NAME,
             age_shadow_reads=_parse_bool_env("HEYBLOG_AGE_SHADOW_READS"),
+            log_dir=Path(os.getenv("HEYBLOG_LOG_DIR", str(DEFAULT_LOG_DIR))),
+            log_level=os.getenv("HEYBLOG_LOG_LEVEL", "INFO").strip().upper() or "INFO",
+            log_format=os.getenv("HEYBLOG_LOG_FORMAT", "json").strip().lower() or "json",
+            log_file_enabled=_parse_bool_env("HEYBLOG_LOG_FILE_ENABLED", default=True),
+            log_console_enabled=_parse_bool_env("HEYBLOG_LOG_CONSOLE_ENABLED", default=True),
+            log_retention_days=max(1, int(os.getenv("HEYBLOG_LOG_RETENTION_DAYS", "7"))),
         )

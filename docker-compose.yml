@@ -5,6 +5,10 @@ services:
       - "${HEYBLOG_FRONTEND_PORT:-3000}:${HEYBLOG_FRONTEND_PORT:-3000}"
     environment:
       HEYBLOG_BACKEND_BASE_URL: ${HEYBLOG_DOCKER_BACKEND_BASE_URL:-http://backend:8000}
+      HEYBLOG_LOG_DIR: ${HEYBLOG_DOCKER_LOG_DIR:-/data/logs}
+      HEYBLOG_LOG_LEVEL: ${HEYBLOG_LOG_LEVEL:-INFO}
+      HEYBLOG_LOG_FORMAT: ${HEYBLOG_LOG_FORMAT:-json}
+      HEYBLOG_LOG_RETENTION_DAYS: ${HEYBLOG_LOG_RETENTION_DAYS:-7}
     command: ["uvicorn", "frontend.server:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_FRONTEND_PORT:-3000}"]
     healthcheck:
       test:
@@ -19,6 +23,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    volumes:
+      - ./volumes/logs:/data/logs
     networks:
       - heyblog_net
 
@@ -33,6 +39,10 @@ services:
       HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
       HEYBLOG_ADMIN_TOKEN: ${HEYBLOG_ADMIN_TOKEN:-}
       HEYBLOG_ADMIN_DEV_BYPASS: ${HEYBLOG_ADMIN_DEV_BYPASS:-}
+      HEYBLOG_LOG_DIR: ${HEYBLOG_DOCKER_LOG_DIR:-/data/logs}
+      HEYBLOG_LOG_LEVEL: ${HEYBLOG_LOG_LEVEL:-INFO}
+      HEYBLOG_LOG_FORMAT: ${HEYBLOG_LOG_FORMAT:-json}
+      HEYBLOG_LOG_RETENTION_DAYS: ${HEYBLOG_LOG_RETENTION_DAYS:-7}
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_BACKEND_PORT:-8000}"]
     healthcheck:
       test:
@@ -51,6 +61,8 @@ services:
         condition: service_healthy
       search:
         condition: service_healthy
+    volumes:
+      - ./volumes/logs:/data/logs
     networks:
       - heyblog_net
 
@@ -75,6 +87,10 @@ services:
       HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
       HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY: ${HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY:-weighted_average}
       HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD: ${HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD:-0.4}
+      HEYBLOG_LOG_DIR: ${HEYBLOG_DOCKER_LOG_DIR:-/data/logs}
+      HEYBLOG_LOG_LEVEL: ${HEYBLOG_LOG_LEVEL:-INFO}
+      HEYBLOG_LOG_FORMAT: ${HEYBLOG_LOG_FORMAT:-json}
+      HEYBLOG_LOG_RETENTION_DAYS: ${HEYBLOG_LOG_RETENTION_DAYS:-7}
     command: ["uvicorn", "crawler.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_CRAWLER_PORT:-8010}"]
     healthcheck:
       test:
@@ -91,6 +107,7 @@ services:
         condition: service_healthy
     volumes:
       - ./volumes/exports:/data/exports
+      - ./volumes/logs:/data/logs
       - ./seed.csv:/data/seeds/seed.csv:ro
       - ./runtime_resources:/app/runtime_resources:ro
       - ../HeyBlog_model/trainer:/app/trainer:ro
@@ -105,6 +122,10 @@ services:
       HEYBLOG_PERSISTENCE_BASE_URL: ${HEYBLOG_DOCKER_PERSISTENCE_BASE_URL:-http://persistence-api:8030}
       HEYBLOG_SEARCH_CACHE_DIR: ${HEYBLOG_DOCKER_SEARCH_CACHE_DIR:-/data/search-cache}
       HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
+      HEYBLOG_LOG_DIR: ${HEYBLOG_DOCKER_LOG_DIR:-/data/logs}
+      HEYBLOG_LOG_LEVEL: ${HEYBLOG_LOG_LEVEL:-INFO}
+      HEYBLOG_LOG_FORMAT: ${HEYBLOG_LOG_FORMAT:-json}
+      HEYBLOG_LOG_RETENTION_DAYS: ${HEYBLOG_LOG_RETENTION_DAYS:-7}
     command: ["uvicorn", "search.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_SEARCH_PORT:-8020}"]
     healthcheck:
       test:
@@ -121,6 +142,7 @@ services:
         condition: service_healthy
     volumes:
       - ./volumes/search-cache:/data/search-cache
+      - ./volumes/logs:/data/logs
     networks:
       - heyblog_net
 
@@ -134,6 +156,10 @@ services:
       HEYBLOG_DECISION_MODEL_ROOT: ${HEYBLOG_DOCKER_DECISION_MODEL_ROOT:-/app/runtime_resources/models/url_decision/current}
       HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY: ${HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY:-weighted_average}
       HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD: ${HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD:-0.4}
+      HEYBLOG_LOG_DIR: ${HEYBLOG_DOCKER_LOG_DIR:-/data/logs}
+      HEYBLOG_LOG_LEVEL: ${HEYBLOG_LOG_LEVEL:-INFO}
+      HEYBLOG_LOG_FORMAT: ${HEYBLOG_LOG_FORMAT:-json}
+      HEYBLOG_LOG_RETENTION_DAYS: ${HEYBLOG_LOG_RETENTION_DAYS:-7}
     command: ["uvicorn", "persistence_api.main:app", "--host", "0.0.0.0", "--port", "${HEYBLOG_PERSISTENCE_API_PORT:-8030}"]
     healthcheck:
       test:
@@ -149,6 +175,7 @@ services:
       persistence-db:
         condition: service_healthy
     volumes:
+      - ./volumes/logs:/data/logs
       - ./runtime_resources:/app/runtime_resources:ro
       - ../HeyBlog_model/trainer:/app/trainer:ro
     networks:

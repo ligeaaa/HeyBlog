@@ -2242,6 +2242,7 @@ def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) 
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+    assert captured["headers"].pop("x-request-id")
     assert captured == {
         "timeout": 60.0,
         "method": "PUT",
@@ -2305,4 +2306,5 @@ def test_frontend_service_does_not_forward_empty_authorization_headers(tmp_path:
     response = client.post("/api/ingestion-requests", json={"homepage_url": "https://blog.example.com"})
 
     assert response.status_code == 200
+    assert captured["headers"].pop("x-request-id")
     assert captured["headers"] == {"content-type": "application/json"}
