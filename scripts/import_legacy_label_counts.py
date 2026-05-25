@@ -4,7 +4,8 @@ The legacy CSV is expected to contain ``url,title,label`` columns. Unlike the
 older importer, this command writes directly to ``blog_labels`` by normalized
 URL, so labels can be restored before or after a recrawl. The command is a
 dry-run by default; pass ``--apply`` to write data and ``--clear-existing`` to
-empty ``blog_labels`` before importing.
+empty ``blog_labels`` before importing. Use ``--titles-only`` to quickly
+backfill titles on existing ``blog_labels`` rows without changing label counts.
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ class ImportSummary:
         importable_rows: Number of rows with supported labels and valid URLs.
         imported_urls: Number of URL label rows written.
         imported_label_counts: Number of label votes written across all URLs.
+        updated_titles: Number of existing URL label rows whose title was updated.
+        title_updates_available: Number of existing URL label rows that can
+            receive a non-empty title from the CSV.
         cleared_existing: Number of existing ``blog_labels`` rows cleared.
         skipped_bad_label: Rows whose label is not supported by the map.
         skipped_bad_url: Rows whose URL could not be normalized.
@@ -59,6 +63,8 @@ class ImportSummary:
     importable_rows: int = 0
     imported_urls: int = 0
     imported_label_counts: int = 0
+    updated_titles: int = 0
+    title_updates_available: int = 0
     cleared_existing: int = 0
     skipped_bad_label: int = 0
     skipped_bad_url: int = 0
@@ -93,6 +99,14 @@ def parse_args() -> argparse.Namespace:
         "--clear-existing",
         action="store_true",
         help="Delete all rows from blog_labels before importing. Requires --apply.",
+    )
+    parser.add_argument(
+        "--titles-only",
+        action="store_true",
+        help=(
+            "Only backfill title on existing blog_labels rows from the CSV. "
+            "Does not create rows or change label counts."
+        ),
     )
     parser.add_argument(
         "--rebuild-parquet",
@@ -180,6 +194,7 @@ def import_legacy_label_counts(
     source_csv: Path,
     apply: bool,
     clear_existing: bool,
+    titles_only: bool = False,
 ) -> ImportSummary:
     """Scan and optionally import legacy URL label counts.
 
@@ -188,6 +203,8 @@ def import_legacy_label_counts(
         source_csv: CSV file containing legacy labels.
         apply: Whether to write changes. ``False`` performs a dry-run.
         clear_existing: Whether to clear ``blog_labels`` before importing.
+        titles_only: Whether to update only existing ``blog_labels.title``
+            values from the CSV.
 
     Returns:
         Import summary counters.
@@ -195,6 +212,8 @@ def import_legacy_label_counts(
 
     if clear_existing and not apply:
         raise ValueError("--clear-existing requires --apply")
+    if titles_only and clear_existing:
+        raise ValueError("--titles-only cannot be combined with --clear-existing")
     summary = ImportSummary()
     label_ids_by_slug = _normalized_label_lookup(repository)
     counts_by_url, titles_by_url = _load_csv_counts(
@@ -202,6 +221,26 @@ def import_legacy_label_counts(
         label_ids_by_slug=label_ids_by_slug,
         summary=summary,
     )
+    if titles_only:
+        with session_scope(repository.session_factory) as session:
+            existing_rows = session.scalars(
+                select(BlogLabelModel).where(BlogLabelModel.normalized_url.in_(list(titles_by_url)))
+            ).all()
+            rows_to_update = [
+                row
+                for row in existing_rows
+                if titles_by_url.get(row.normalized_url)
+                and (row.title or "").strip() != titles_by_url[row.normalized_url]
+            ]
+            summary.title_updates_available = len(rows_to_update)
+            if apply:
+                timestamp = now_utc()
+                for row in rows_to_update:
+                    row.title = titles_by_url[row.normalized_url]
+                    row.updated_time = timestamp
+                summary.updated_titles = len(rows_to_update)
+        return summary
+
     if not apply:
         summary.imported_urls = len(counts_by_url)
         summary.imported_label_counts = sum(sum(label_counts.values()) for label_counts in counts_by_url.values())
@@ -253,6 +292,8 @@ def print_summary(summary: ImportSummary, *, apply: bool) -> None:
     print(f"importable_rows={summary.importable_rows}")
     print(f"imported_urls={summary.imported_urls}")
     print(f"imported_label_counts={summary.imported_label_counts}")
+    print(f"title_updates_available={summary.title_updates_available}")
+    print(f"updated_titles={summary.updated_titles}")
     print(f"cleared_existing={summary.cleared_existing}")
     print(f"skipped_bad_label={summary.skipped_bad_label}")
     print(f"skipped_bad_url={summary.skipped_bad_url}")
@@ -290,6 +331,7 @@ def main() -> int:
             source_csv=args.source_csv,
             apply=args.apply,
             clear_existing=args.clear_existing,
+            titles_only=args.titles_only,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

@@ -895,7 +895,12 @@ export async function putAdminBlogLabels(
   blogId: number,
   tagIds: number[],
   labelId?: Record<string, number>,
+  title?: string | null,
 ): Promise<{ labelSlugs: string[]; isLabeled: boolean; lastLabeledAt: string | null }> {
+  const body =
+    labelId === undefined
+      ? { tag_ids: tagIds, title: title?.trim() || undefined }
+      : { label_id: labelId, title: title?.trim() || undefined };
   const payload = await apiJson<{
     label_slugs: string[];
     is_labeled: boolean;
@@ -903,7 +908,7 @@ export async function putAdminBlogLabels(
   }>(`/api/admin/blog-labeling/labels/${blogId}`, {
     method: "PUT",
     headers: adminHeaders(adminToken),
-    body: JSON.stringify(labelId === undefined ? { tag_ids: tagIds } : { label_id: labelId }),
+    body: JSON.stringify(body),
   });
   return {
     labelSlugs: payload.label_slugs,
@@ -913,35 +918,40 @@ export async function putAdminBlogLabels(
 }
 
 /**
+ * Fetch one candidate URL title for temporary labeling display.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param url Candidate URL to inspect.
+ * @returns Extracted title, or null when no title is present.
+ */
+export async function fetchAdminBlogLabelTitlePreview(
+  adminToken: string,
+  url: string,
+): Promise<string | null> {
+  const payload = await apiJson<{ title: string | null }>("/api/admin/blog-labeling/title-preview", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+    body: JSON.stringify({ url }),
+  });
+  return payload.title?.trim() || null;
+}
+
+/**
  * Fetch label counts for every current label slug.
  *
  * @param adminToken Bearer token used for the protected endpoint.
  * @returns Count summary grouped by label slug.
  */
 export async function fetchAdminBlogLabelCounts(adminToken: string): Promise<AdminBlogLabelCounts> {
-  const response = await fetchAdminBlogLabelingCandidates(adminToken, {
-    page: 1,
-    pageSize: 1,
-    labeled: true,
-    sort: "recently_labeled",
-  });
-  const counts = Object.fromEntries(
-    await Promise.all(
-      response.availableTags.map(async (tag) => {
-        const labeled = await fetchAdminBlogLabelingCandidates(adminToken, {
-          page: 1,
-          pageSize: 1,
-          label: tag.slug,
-          labeled: true,
-          sort: "recently_labeled",
-        });
-        return [tag.slug, labeled.totalItems] as const;
-      }),
-    ),
+  const payload = await apiJson<{ total_labeled: number; by_label: Record<string, number> }>(
+    "/api/admin/blog-labeling/counts",
+    {
+      headers: adminHeaders(adminToken),
+    },
   );
   return {
-    totalLabeled: response.totalItems,
-    byLabel: counts,
+    totalLabeled: payload.total_labeled,
+    byLabel: payload.by_label,
   };
 }
 

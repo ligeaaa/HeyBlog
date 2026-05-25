@@ -94,6 +94,7 @@ class AddLogRequest(BaseModel):
 class ReplaceBlogLabelsRequest(BaseModel):
     tag_ids: list[int] | None = None
     label_id: dict[str, int] | None = None
+    title: str | None = None
 
 
 class CreateBlogLabelTagRequest(BaseModel):
@@ -377,6 +378,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             status_code=422,
         )
 
+    @app.get("/internal/blog-labeling/counts")
+    def get_blog_label_counts() -> dict[str, Any]:
+        return get_state().repository.get_blog_label_counts()
+
     @app.put("/internal/blog-labeling/labels/{blog_id}")
     def replace_blog_labels(blog_id: int, payload: ReplaceBlogLabelsRequest) -> dict[str, Any]:
         return _call_with_http_exception_translation(
@@ -384,6 +389,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 blog_id=blog_id,
                 tag_ids=payload.tag_ids,
                 label_id=payload.label_id,
+                title=payload.title,
             ),
             exception_translations=(
                 (ValueError, 422, None),

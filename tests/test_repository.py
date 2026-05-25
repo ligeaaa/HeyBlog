@@ -1634,6 +1634,81 @@ def test_repository_blog_labeling_uses_raw_id_with_existing_blog_display_data(tm
     assert page["items"][0]["domain"] == "existing.example"
 
 
+def test_repository_blog_labeling_persists_and_backfills_titles(tmp_path: Path) -> None:
+    """Labeling should store non-empty titles and backfill old empty label titles."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_blog_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    titled_blog_id, _ = repository.upsert_blog(
+        url="https://titled.example/",
+        normalized_url="https://titled.example/",
+        domain="titled.example",
+    )
+    repository.mark_blog_result(
+        blog_id=titled_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="Persisted Title",
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://titled.example/",
+        status="success",
+    )
+    blog_tag = repository.create_blog_label_tag(name="blog")
+
+    repository.replace_blog_link_labels(blog_id=raw_id, tag_ids=[blog_tag["id"]])
+    labeled = repository.list_blog_labeling_candidates(labeled=True)
+
+    assert labeled["items"][0]["title"] == "Persisted Title"
+    with session_scope(repository.session_factory) as session:
+        label = session.get(BlogLabelModel, "https://titled.example/")
+        assert label is not None
+        assert label.title == "Persisted Title"
+        label.title = ""
+
+    relabeled = repository.list_blog_labeling_candidates(labeled=True)
+
+    assert relabeled["items"][0]["title"] == "Persisted Title"
+    with session_scope(repository.session_factory) as session:
+        label = session.get(BlogLabelModel, "https://titled.example/")
+        assert label is not None
+        assert label.title == "Persisted Title"
+
+
+def test_repository_blog_labeling_uses_request_title_for_raw_only_candidate(tmp_path: Path) -> None:
+    """Raw-only labeling should persist a temporary title supplied by the UI."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_blog_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://raw-only.example/",
+        status="model:model_consensus_all_non_blog",
+    )
+    blog_tag = repository.create_blog_label_tag(name="blog")
+
+    repository.replace_blog_link_labels(
+        blog_id=raw_id,
+        tag_ids=[blog_tag["id"]],
+        title="Temporary Raw Title",
+    )
+
+    with session_scope(repository.session_factory) as session:
+        label = session.get(BlogLabelModel, "https://raw-only.example/")
+        assert label is not None
+        assert label.title == "Temporary Raw Title"
+        assert label.label_id == {str(blog_tag["id"]): 1}
+
+
 def test_repository_blog_labels_are_keyed_by_url_across_reset_and_recrawl(tmp_path: Path) -> None:
     """Labels should survive raw ID changes by persisting against normalized URL subjects."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -1785,6 +1860,50 @@ def test_repository_blog_labeling_accepts_label_count_dict(tmp_path: Path) -> No
         repository.replace_blog_link_labels(blog_id=raw_id, label_id={"999": 1})
 
 
+def test_repository_blog_label_counts_use_all_persisted_url_labels(tmp_path: Path) -> None:
+    """Label counts should aggregate every persisted URL label row."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    company_tag = repository.create_blog_label_tag(name="company")
+    other_tag = repository.create_blog_label_tag(name="other")
+    unknown_tag = repository.create_blog_label_tag(name="unknown")
+    timestamp = repository_module.now_utc()
+    with session_scope(repository.session_factory) as session:
+        session.add_all(
+            [
+                BlogLabelModel(
+                    normalized_url="https://blog.example/",
+                    title="Blog",
+                    label_id={str(blog_tag["id"]): 10},
+                    created_time=timestamp,
+                    updated_time=timestamp,
+                ),
+                BlogLabelModel(
+                    normalized_url="https://company.example/",
+                    title="Company",
+                    label_id={str(company_tag["id"]): 1, str(other_tag["id"]): 1},
+                    created_time=timestamp,
+                    updated_time=timestamp,
+                ),
+                BlogLabelModel(
+                    normalized_url="https://empty.example/",
+                    title="Empty",
+                    label_id={},
+                    created_time=timestamp,
+                    updated_time=timestamp,
+                ),
+            ]
+        )
+
+    counts = repository.get_blog_label_counts()
+
+    assert counts["total_labeled"] == 2
+    assert counts["by_label"]["blog"] == 1
+    assert counts["by_label"]["company"] == 1
+    assert counts["by_label"]["other"] == 1
+    assert counts["by_label"]["unknown"] == 0
+
+
 def test_repository_raw_label_target_does_not_create_lightweight_blog(tmp_path: Path) -> None:
     """Raw-only labeling should use raw IDs without creating lightweight blogs."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -1826,10 +1945,10 @@ def test_repository_raw_label_target_does_not_create_lightweight_blog(tmp_path: 
     }
 
 
-def test_repository_builds_blog_label_training_rows_with_saved_titles_and_only_labeled_urls(
+def test_repository_builds_blog_label_training_rows_from_all_persisted_labels(
     tmp_path: Path,
 ) -> None:
-    """Training rows should skip unlabeled URLs and use titles saved with labels."""
+    """Training rows should use every persisted label, independent of raw URL status."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
     source_id, inserted = repository.upsert_blog(
         url="https://source.example/",
@@ -1903,6 +2022,16 @@ def test_repository_builds_blog_label_training_rows_with_saved_titles_and_only_l
     official_tag = repository.create_blog_label_tag(name="official")
     repository.replace_blog_link_labels(blog_id=alpha_id, tag_ids=[official_tag["id"], blog_tag["id"]])
     repository.replace_blog_link_labels(blog_id=model_alpha_id, tag_ids=[blog_tag["id"]])
+    with session_scope(repository.session_factory) as session:
+        session.add(
+            BlogLabelModel(
+                normalized_url="https://legacy-only.example/",
+                title="Legacy Only",
+                label_id={str(blog_tag["id"]): 1},
+                created_time=repository_module.now_utc(),
+                updated_time=repository_module.now_utc(),
+            )
+        )
     with pytest.raises(repository_module.BlogLabelingConflictError):
         repository.replace_blog_link_labels(blog_id=waiting_id, tag_ids=[blog_tag["id"]])
 
@@ -1927,6 +2056,11 @@ def test_repository_builds_blog_label_training_rows_with_saved_titles_and_only_l
             "url": "https://alpha.example/",
             "title": "Alpha",
             "label": "official",
+        },
+        {
+            "url": "https://legacy-only.example/",
+            "title": "Legacy Only",
+            "label": "blog",
         },
         {
             "url": "https://model-alpha.example/",
@@ -2107,6 +2241,54 @@ def test_legacy_label_count_import_clears_and_restores_url_keyed_labels(tmp_path
         }
     assert rows["https://old.example/"] == ("Old", {str(blog_tag["id"]): 2})
     assert rows["https://tool.example/"] == ("Tool", {str(other_tag["id"]): 1})
+
+
+def test_legacy_label_count_import_can_backfill_titles_only(tmp_path: Path) -> None:
+    """Title-only legacy import should update existing rows without changing labels."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    with session_scope(repository.session_factory) as session:
+        session.add(
+            BlogLabelModel(
+                normalized_url="https://old.example/",
+                title="",
+                label_id={str(blog_tag["id"]): 7},
+                created_time=repository_module.now_utc(),
+                updated_time=repository_module.now_utc(),
+            )
+        )
+    csv_path = tmp_path / "legacy-counts.csv"
+    csv_path.write_text(
+        "url,title,label\n"
+        "https://old.example/,Recovered Title,blog\n"
+        "https://missing.example/,Missing Title,blog\n",
+        encoding="utf-8",
+    )
+
+    dry_run = import_legacy_label_counts.import_legacy_label_counts(
+        repository=repository,
+        source_csv=csv_path,
+        apply=False,
+        clear_existing=False,
+        titles_only=True,
+    )
+    applied = import_legacy_label_counts.import_legacy_label_counts(
+        repository=repository,
+        source_csv=csv_path,
+        apply=True,
+        clear_existing=False,
+        titles_only=True,
+    )
+
+    assert dry_run.title_updates_available == 1
+    assert dry_run.updated_titles == 0
+    assert applied.updated_titles == 1
+    with session_scope(repository.session_factory) as session:
+        rows = {
+            row.normalized_url: (row.title, row.label_id)
+            for row in session.scalars(select(BlogLabelModel)).all()
+        }
+    assert rows == {"https://old.example/": ("Recovered Title", {str(blog_tag["id"]): 7})}
 
 
 def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path: Path) -> None:

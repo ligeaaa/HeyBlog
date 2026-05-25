@@ -430,18 +430,24 @@ class PersistenceHttpClient:
     def create_blog_label_tag(self, *, name: str) -> dict[str, Any]:
         return self._post("/internal/blog-labeling/tags", {"name": name})
 
+    def get_blog_label_counts(self) -> dict[str, Any]:
+        return self._get("/internal/blog-labeling/counts")
+
     def replace_blog_link_labels(
         self,
         *,
         blog_id: int,
         tag_ids: list[int] | None = None,
         label_id: dict[str, int] | None = None,
+        title: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, object] = {}
         if tag_ids is not None:
             payload["tag_ids"] = tag_ids
         if label_id is not None:
             payload["label_id"] = label_id
+        if title is not None:
+            payload["title"] = title
         return self._put(
             f"/internal/blog-labeling/labels/{blog_id}",
             payload,

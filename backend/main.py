@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from crawler.crawling.metadata import extract_site_metadata
 from shared.config import Settings
 from shared.http_clients.crawler_http import CrawlerHttpClient
 from shared.http_clients.persistence_http import PersistenceHttpClient
@@ -56,6 +57,11 @@ class CreateIngestionRequest(BaseModel):
 class ReplaceBlogLabelsRequest(BaseModel):
     tag_ids: list[int] | None = None
     label_id: dict[str, int] | None = None
+    title: str | None = None
+
+
+class BlogLabelTitlePreviewRequest(BaseModel):
+    url: str
 
 
 class CreateBlogLabelTagRequest(BaseModel):
@@ -123,6 +129,40 @@ def _upstream_error_detail(exc: httpx.HTTPStatusError, default: Any = "upstream_
         return exc.response.json().get("detail", default)
     except Exception:  # noqa: BLE001
         return default
+
+
+def _preview_label_title(url: str) -> dict[str, str | None]:
+    """Fetch one candidate URL and extract a temporary display title.
+
+    Args:
+        url: Candidate URL whose HTML title should be fetched.
+
+    Returns:
+        Mapping containing the original URL and extracted title, if any.
+
+    Raises:
+        HTTPException: If the URL is invalid or cannot be fetched quickly.
+    """
+
+    clean_url = url.strip()
+    if not clean_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="unsupported_url")
+    try:
+        response = httpx.get(
+            clean_url,
+            follow_redirects=True,
+            timeout=5.0,
+            headers={"User-Agent": "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"},
+        )
+        response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="title_fetch_timeout") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="title_fetch_failed") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"title_fetch_http_{exc.response.status_code}") from exc
+    metadata = extract_site_metadata(str(response.url), response.text)
+    return {"url": clean_url, "title": metadata.title}
 
 
 def _raise_upstream_http_error(
@@ -535,6 +575,19 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.create_blog_label_tag(name=payload.name)
         )
 
+    @app.get("/api/admin/blog-labeling/counts")
+    def get_blog_label_counts(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_blog_label_counts()
+        )
+
+    @app.post("/api/admin/blog-labeling/title-preview")
+    def post_blog_label_title_preview(
+        payload: BlogLabelTitlePreviewRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, str | None]:
+        return _preview_label_title(payload.url)
+
     @app.put("/api/admin/blog-labeling/labels/{blog_id}")
     def put_blog_labels(
         blog_id: int,
@@ -546,6 +599,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 blog_id=blog_id,
                 tag_ids=payload.tag_ids,
                 label_id=payload.label_id,
+                title=payload.title,
             )
         )
 

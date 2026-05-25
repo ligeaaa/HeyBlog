@@ -12,6 +12,9 @@ None.
 
 ## Completed
 
+- [x] 修复标注实时统计，使其按 `blog_labels` 全表聚合而不是按当前候选池统计。Tracker: `tracker/blog-label-counts-full-table-20260525.md` (created 2026-05-25 23:52:31 BST; completed 2026-05-25).
+- [x] 为 raw-only 标注候选临时抓取 title，并在标注保存时写入 `blog_labels.title`。Tracker: `tracker/raw-only-label-title-capture-20260525.md` (created 2026-05-25 23:34:58 BST; completed 2026-05-25).
+- [x] 让 `blog_labels` 持久化并回填 title，标注台每页显示 9 条。Tracker: `tracker/blog-label-title-persistence-20260525.md` (created 2026-05-25 23:23:24 BST; completed 2026-05-25).
 - [x] 修复 admin 标注候选慢查询导致 stats/status 连锁 timeout。Tracker: `tracker/admin-labeling-timeout-hotfix-20260525.md` (created 2026-05-25 22:44:07 BST; completed 2026-05-25).
 - [x] 收敛数据标注台候选、持久化 title 与导出接口契约。Tracker: `tracker/labeling-workbench-title-export-cleanup-20260525.md` (created 2026-05-25 22:08:37 BST; completed 2026-05-25).
 - [x] 新增 URL-keyed 旧版 label CSV 导入脚本，可清空 `blog_labels` 后按计数字典导入。Tracker: `tracker/legacy-label-count-import-20260525.md` (created 2026-05-25 21:21:44 BST; completed 2026-05-25).

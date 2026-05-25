@@ -1325,12 +1325,14 @@ def _raw_blog_labeling_payload(
     row: Any,
     *,
     label_state: _BlogLabelStateView,
+    display_title: str | None = None,
 ) -> dict[str, Any]:
     """Return labeling candidate payload from a raw URL plus optional blog row.
 
     Args:
         row: SQLAlchemy row containing raw URL fields and optional blog fields.
         label_state: Resolved labels for the candidate target id.
+        display_title: Title resolved from persisted label data or blog data.
 
     Returns:
         Candidate payload compatible with the existing labeling UI.
@@ -1348,7 +1350,7 @@ def _raw_blog_labeling_payload(
         "identity_ruleset_version": str(row.identity_ruleset_version or ""),
         "domain": str(row.blog_domain or normalize_url(url).domain),
         "email": row.email,
-        "title": str(row.title or ""),
+        "title": str(display_title if display_title is not None else row.title or ""),
         "icon_url": row.icon_url,
         "status_code": row.status_code,
         "crawl_status": row.crawl_status.value if row.crawl_status is not None else None,
@@ -1846,13 +1848,14 @@ class SQLAlchemyRepository:
             select(BlogLabelModel).where(BlogLabelModel.normalized_url == normalized_url)
         )
         if label_row is not None:
-            if title is not None:
-                label_row.title = title
+            clean_title = (title or "").strip()
+            if clean_title:
+                label_row.title = clean_title
             return label_row
         timestamp = now_utc()
         label_row = BlogLabelModel(
             normalized_url=normalized_url,
-            title=title or "",
+            title=(title or "").strip(),
             label_id={},
             created_time=timestamp,
             updated_time=timestamp,
@@ -3094,6 +3097,7 @@ class SQLAlchemyRepository:
             latest_labeled_at = (
                 select(
                     BlogLabelModel.normalized_url.label("normalized_url"),
+                    BlogLabelModel.title.label("label_title"),
                     BlogLabelModel.updated_time.label("last_labeled_at"),
                 )
                 .subquery()
@@ -3145,6 +3149,7 @@ class SQLAlchemyRepository:
                     func.coalesce(outgoing_counts.c.outgoing_count, 0).label("outgoing_count"),
                     activity_at,
                     latest_labeled_at.c.last_labeled_at.label("last_labeled_at"),
+                    latest_labeled_at.c.label_title.label("label_title"),
                 )
                 .select_from(RawDiscoveredUrlModel)
                 .outerjoin(BlogModel, BlogModel.normalized_url == RawDiscoveredUrlModel.normalized_url)
@@ -3158,6 +3163,7 @@ class SQLAlchemyRepository:
                 statement = statement.where(
                     or_(
                         BlogModel.title.ilike(pattern),
+                        latest_labeled_at.c.label_title.ilike(pattern),
                         BlogModel.domain.ilike(pattern),
                         BlogModel.url.ilike(pattern),
                         RawDiscoveredUrlModel.normalized_url.ilike(pattern),
@@ -3215,6 +3221,16 @@ class SQLAlchemyRepository:
                 for normalized_url in normalized_urls
                 if normalized_url in label_rows_by_url
             }
+            display_titles_by_url: dict[str, str] = {}
+            for row in rows:
+                normalized_url = str(row.normalized_url)
+                label_title = str(row.label_title or "").strip()
+                blog_title = str(row.title or "").strip()
+                display_title = label_title or blog_title
+                display_titles_by_url[normalized_url] = display_title
+                label_row = label_rows_by_url.get(normalized_url)
+                if label_row is not None and not label_title and blog_title:
+                    label_row.title = blog_title
             available_tags = _blog_label_tag_payloads(session)
             return _catalog_response(
                 items=[
@@ -3228,6 +3244,7 @@ class SQLAlchemyRepository:
                                 label_names=label_names_by_id,
                             ),
                         ),
+                        display_title=display_titles_by_url.get(str(row.normalized_url), ""),
                     )
                     for row in rows
                 ],
@@ -3245,6 +3262,33 @@ class SQLAlchemyRepository:
     def list_blog_label_tags(self) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
             return _blog_label_tag_payloads(session)
+
+    def get_blog_label_counts(self) -> dict[str, Any]:
+        """Return persisted label URL counts grouped by label slug.
+
+        Returns:
+            Summary backed by every row in ``blog_labels``; ``total_labeled``
+            counts URLs with at least one label, while ``by_label`` counts URLs
+            containing each label id.
+        """
+
+        with session_scope(self.session_factory) as session:
+            label_names_by_id = _blog_label_names_by_id(session)
+            counts_by_label: dict[str, int] = {slug: 0 for slug in label_names_by_id.values()}
+            total_labeled = 0
+            rows = session.scalars(select(BlogLabelModel.label_id)).all()
+            for raw_counts in rows:
+                label_counts = _normalize_label_counts(raw_counts)
+                if not label_counts:
+                    continue
+                total_labeled += 1
+                for label_id in label_counts:
+                    label_slug = label_names_by_id.get(int(label_id), str(label_id))
+                    counts_by_label[label_slug] = int(counts_by_label.get(label_slug, 0)) + 1
+            return {
+                "total_labeled": total_labeled,
+                "by_label": counts_by_label,
+            }
 
     def _blog_label_training_rows(self, session: Session) -> list[Any]:
         """Load the canonical labeled training rows in deterministic order.
@@ -3265,25 +3309,8 @@ class SQLAlchemyRepository:
             )
             .order_by(BlogLabelModel.normalized_url.asc())
         ).all()
-        labeled_urls = [str(row.normalized_url) for row in label_rows]
-        eligible_urls: set[str] = set()
-        chunk_size = 1000
-        for offset in range(0, len(labeled_urls), chunk_size):
-            chunk = labeled_urls[offset : offset + chunk_size]
-            eligible_urls.update(
-                str(url)
-                for url in session.scalars(
-                    select(RawDiscoveredUrlModel.normalized_url)
-                    .where(
-                        self._labelable_raw_url_condition(),
-                        RawDiscoveredUrlModel.normalized_url.in_(chunk),
-                    )
-                    .distinct()
-                )
-            )
-        rows = [row for row in label_rows if str(row.normalized_url) in eligible_urls]
         expanded_rows: list[dict[str, str]] = []
-        for row in rows:
+        for row in label_rows:
             for label_id in sorted(_normalize_label_counts(row.label_counts), key=int):
                 expanded_rows.append(
                     {
@@ -3518,6 +3545,7 @@ class SQLAlchemyRepository:
         blog_id: int,
         tag_ids: list[int] | None = None,
         label_id: dict[str, int] | None = None,
+        title: str | None = None,
     ) -> dict[str, Any]:
         if label_id is not None:
             label_counts = _normalize_label_counts(label_id)
@@ -3541,11 +3569,14 @@ class SQLAlchemyRepository:
                     raise BlogLabelingConflictError("blog_labeling_requires_labelable_raw_url")
                 raise BlogLabelingNotFoundError("blog_not_found")
             timestamp = now_utc()
-            title = session.scalar(select(BlogModel.title).where(BlogModel.normalized_url == raw.normalized_url).limit(1))
+            persisted_title = session.scalar(
+                select(BlogModel.title).where(BlogModel.normalized_url == raw.normalized_url).limit(1)
+            )
+            display_title = str(title or "").strip() or str(persisted_title or "").strip() or None
             label_row = self._ensure_blog_label_row(
                 session,
                 normalized_url=str(raw.normalized_url),
-                title=(title or ""),
+                title=display_title,
             )
             label_row.label_id = label_counts
             label_row.updated_time = timestamp

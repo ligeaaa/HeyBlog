@@ -614,6 +614,12 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     assert put_label.json()["label_id"] == {"1": 10, "5": 1}
     assert put_label.json()["label_slugs"] == ["blog", "official"]
 
+    counts = client.get("/internal/blog-labeling/counts")
+    assert counts.status_code == 200
+    assert counts.json()["total_labeled"] == 1
+    assert counts.json()["by_label"]["blog"] == 1
+    assert counts.json()["by_label"]["official"] == 1
+
     candidates_after_label = client.get("/internal/blog-labeling/candidates", params={"labeled": "false"})
     assert candidates_after_label.status_code == 200
     assert [row["url"] for row in candidates_after_label.json()["items"]] == ["https://alpha.example/"]
@@ -704,10 +710,10 @@ def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
     stub = StubClient()
     client.client = stub  # type: ignore[assignment]
 
-    response = client.replace_blog_link_labels(blog_id=7, tag_ids=[3, 5])
+    response = client.replace_blog_link_labels(blog_id=7, tag_ids=[3, 5], title="Temporary")
 
     assert response == {"ok": True}
-    assert stub.put_calls == [("/internal/blog-labeling/labels/7", {"tag_ids": [3, 5]})]
+    assert stub.put_calls == [("/internal/blog-labeling/labels/7", {"tag_ids": [3, 5], "title": "Temporary"})]
     assert stub.post_calls == []
 
 
@@ -833,7 +839,7 @@ def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch)
     assert settings.decision_model_root == PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
 
 
-def test_backend_service_preserves_supported_public_api_shape() -> None:
+def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> None:
     """Backend service should preserve the supported public API fields."""
     persistence = type(
         "PersistenceStub",
@@ -1022,8 +1028,18 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                 "created_at": "2026-04-05T00:00:00Z",
                 "updated_at": "2026-04-05T00:00:00Z",
             },
-            "replace_blog_link_labels": lambda self, blog_id, tag_ids=None, label_id=None: {
+            "get_blog_label_counts": lambda self: {
+                "total_labeled": 2373,
+                "by_label": {
+                    "blog": 651,
+                    "company": 226,
+                    "other": 1496,
+                    "unknown": 0,
+                },
+            },
+            "replace_blog_link_labels": lambda self, blog_id, tag_ids=None, label_id=None, title=None: {
                 "blog_id": blog_id,
+                "title": title,
                 "label_id": label_id or {str(tag_id): 1 for tag_id in (tag_ids or [])},
                 "labels": [
                     {
@@ -1387,6 +1403,18 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert labeling.json()["filters"]["labeled"] == "true"
     assert labeling.json()["available_tags"][0]["slug"] == "blog"
 
+    label_counts = client.get("/api/admin/blog-labeling/counts", headers=admin_headers())
+    assert label_counts.status_code == 200
+    assert label_counts.json() == {
+        "total_labeled": 2373,
+        "by_label": {
+            "blog": 651,
+            "company": 226,
+            "other": 1496,
+            "unknown": 0,
+        },
+    }
+
     parquet_status = client.get("/api/admin/blog-labeling/parquet-status", headers=admin_headers())
     assert parquet_status.status_code == 200
     assert parquet_status.json()["saved_count"] == 1
@@ -1408,9 +1436,33 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert tag_create.status_code == 200
     assert tag_create.json()["slug"] == "government"
 
-    label_update = client.put("/api/admin/blog-labeling/labels/3", json={"tag_ids": [10, 11]}, headers=admin_headers())
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        request = httpx.Request("GET", url)
+        assert kwargs["follow_redirects"] is True
+        assert kwargs["timeout"] == 5.0
+        return httpx.Response(
+            200,
+            request=request,
+            text="<html><head><title>Raw Only Title</title></head><body></body></html>",
+        )
+
+    monkeypatch.setattr("backend.main.httpx.get", fake_get)
+    title_preview = client.post(
+        "/api/admin/blog-labeling/title-preview",
+        json={"url": "https://raw-only.example/"},
+        headers=admin_headers(),
+    )
+    assert title_preview.status_code == 200
+    assert title_preview.json() == {"url": "https://raw-only.example/", "title": "Raw Only Title"}
+
+    label_update = client.put(
+        "/api/admin/blog-labeling/labels/3",
+        json={"tag_ids": [10, 11], "title": "Temporary Label Title"},
+        headers=admin_headers(),
+    )
     assert label_update.status_code == 200
     assert label_update.json()["blog_id"] == 3
+    assert label_update.json()["title"] == "Temporary Label Title"
     assert label_update.json()["label_slugs"] == ["tag-10", "tag-11"]
 
     core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
@@ -1552,8 +1604,9 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
             blog_id: int,
             tag_ids: list[int] | None = None,
             label_id: dict[str, int] | None = None,
+            title: str | None = None,
         ) -> dict[str, object]:
-            del tag_ids, label_id
+            del tag_ids, label_id, title
             request = httpx.Request("PUT", f"http://persistence/internal/blog-labeling/labels/{blog_id}")
             response = httpx.Response(
                 409,
@@ -2643,7 +2696,11 @@ def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) 
     app = create_frontend_app(settings)
     client = TestClient(app)
 
-    response = client.put("/api/admin/blog-labeling/labels/1", json={"tag_ids": [10, 11]}, headers=admin_headers())
+    response = client.put(
+        "/api/admin/blog-labeling/labels/1",
+        json={"tag_ids": [10, 11], "title": "Temporary"},
+        headers=admin_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
@@ -2653,7 +2710,7 @@ def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) 
         "method": "PUT",
         "url": "http://backend:8000/api/admin/blog-labeling/labels/1",
         "params": {},
-        "content": b'{"tag_ids":[10,11]}',
+        "content": b'{"tag_ids":[10,11],"title":"Temporary"}',
         "headers": {
             "content-type": "application/json",
             "authorization": "Bearer secret-token",

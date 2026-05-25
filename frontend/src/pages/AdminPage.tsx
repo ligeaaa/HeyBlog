@@ -23,6 +23,7 @@ import {
   fetchAdminBlogLabelCounts,
   fetchAdminBlogLabelingCandidates,
   fetchAdminBlogLabelParquetStatus,
+  fetchAdminBlogLabelTitlePreview,
   fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
@@ -56,6 +57,8 @@ import type {
 const ADMIN_TOKEN_STORAGE_KEY = "heyblog_admin_token";
 const DEFAULT_LABELS = ["blog", "company", "other", "unknown"] as const;
 
+const TITLE_PREVIEW_CONCURRENCY = 3;
+
 /**
  * Read the persisted admin token from local storage when available.
  *
@@ -78,6 +81,16 @@ function storeAdminToken(token: string) {
     return;
   }
   window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+}
+
+/**
+ * Return whether a labeling candidate needs a best-effort title fetch.
+ *
+ * @param candidate Candidate currently shown in the workbench.
+ * @returns True when the backend did not provide a display title.
+ */
+function needsTemporaryTitle(candidate: AdminBlogLabelingCandidate): boolean {
+  return !candidate.title?.trim();
 }
 
 /**
@@ -209,6 +222,7 @@ export function AdminPage() {
       setLatestDedup(latestDedupResponse);
       setLatestRefilterRun(latestRefilterResponse);
       setLabelingCandidates(labelingPageResponse.items);
+      void hydrateTemporaryCandidateTitles(adminToken, labelingPageResponse.items);
       setLabelTags(labelingPageResponse.availableTags);
       setLabelCounts(labelCountResponse);
       setLabelParquetStatus(labelParquetResponse);
@@ -256,7 +270,7 @@ export function AdminPage() {
     const query = options.query ?? labelingQuery;
     const firstPage = await fetchAdminBlogLabelingCandidates(adminToken, {
       page,
-      pageSize: 12,
+      pageSize: 9,
       q: query.trim() || undefined,
       labeled: false,
       sort: "id_desc",
@@ -272,6 +286,41 @@ export function AdminPage() {
   }
 
   /**
+   * Fetch temporary titles for raw-only labeling candidates and update local state.
+   *
+   * @param adminToken Admin bearer token used for protected endpoints.
+   * @param candidates Current candidate page.
+   */
+  async function hydrateTemporaryCandidateTitles(
+    adminToken: string,
+    candidates: AdminBlogLabelingCandidate[],
+  ) {
+    const pending = candidates.filter(needsTemporaryTitle);
+    if (pending.length === 0) {
+      return;
+    }
+    let cursor = 0;
+    async function worker() {
+      while (cursor < pending.length) {
+        const candidate = pending[cursor];
+        cursor += 1;
+        try {
+          const title = await fetchAdminBlogLabelTitlePreview(adminToken, candidate.url);
+          if (!title) {
+            continue;
+          }
+          setLabelingCandidates((current) =>
+            current.map((item) => (item.id === candidate.id && needsTemporaryTitle(item) ? { ...item, title } : item)),
+          );
+        } catch {
+          // Title preview is best-effort; failed pages should remain labelable by URL/domain.
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(TITLE_PREVIEW_CONCURRENCY, pending.length) }, () => worker()));
+  }
+
+  /**
    * Refresh only the labeling workbench without disturbing the runtime panels.
    */
   async function refreshLabelingWorkbench(options: { page?: number; query?: string } = {}) {
@@ -283,6 +332,7 @@ export function AdminPage() {
       setIsLabelingLoading(true);
       const response = await loadLabelingCandidates(activeAdminToken, options);
       setLabelingCandidates(response.items);
+      void hydrateTemporaryCandidateTitles(activeAdminToken, response.items);
       setLabelTags(response.availableTags);
       setLabelingTotalItems(response.totalItems);
       setLabelingTotalPages(response.totalPages);
@@ -314,7 +364,7 @@ export function AdminPage() {
     }
     try {
       setLabelingBlogId(candidate.id);
-      await putAdminBlogLabels(activeAdminToken, candidate.id, [tag.id]);
+      await putAdminBlogLabels(activeAdminToken, candidate.id, [tag.id], undefined, candidate.title);
       setLabelingCandidates((current) => current.filter((item) => item.id !== candidate.id));
       setLabelingTotalItems((current) => Math.max(0, current - 1));
       setLabelingTotalPages((current) => Math.max(1, current));
@@ -647,7 +697,7 @@ export function AdminPage() {
                     />
                     <div className="min-w-0 flex-1">
                       <div className="line-clamp-2 text-lg leading-6 text-slate-950">
-                        {candidate.title?.trim() || "Untitled"}
+                        {candidate.title?.trim() || candidate.domain || candidate.url}
                       </div>
                       <a
                         href={candidate.url}
