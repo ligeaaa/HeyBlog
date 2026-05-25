@@ -5,6 +5,7 @@ import sys
 
 import pyarrow.parquet as pq
 import pytest
+from sqlalchemy import event
 from sqlalchemy import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -1560,6 +1561,49 @@ def test_repository_blog_labeling_candidates_include_success_and_model_filtered_
         "official",
         "government",
     ]
+
+
+def test_repository_blog_labeling_candidate_query_avoids_raw_url_group_by(
+    tmp_path: Path,
+) -> None:
+    """Candidate listing should avoid the previous full raw URL aggregate shape."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_blog_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    assert inserted is True
+    first_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://duplicate.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://duplicate.example/",
+        status="success",
+    )
+
+    statements: list[str] = []
+    def capture_statement(_connection: object, _cursor: object, statement: str, *_args: object) -> None:
+        statements.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", capture_statement)
+    try:
+        page = repository.list_blog_labeling_candidates(page=1, page_size=10, labeled=False)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", capture_statement)
+
+    assert [row["id"] for row in page["items"]] == [first_raw_id]
+    raw_candidate_sql = [
+        statement
+        for statement in statements
+        if "raw_discovered_urls" in statement and "SELECT" in statement.upper()
+    ]
+    assert raw_candidate_sql
+    assert all("GROUP BY raw_discovered_urls.normalized_url" not in statement for statement in raw_candidate_sql)
+    assert any("NOT (EXISTS" in statement.upper() for statement in raw_candidate_sql)
 
 
 def test_repository_blog_labeling_uses_raw_id_with_existing_blog_display_data(tmp_path: Path) -> None:

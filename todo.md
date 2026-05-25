@@ -12,6 +12,7 @@ None.
 
 ## Completed
 
+- [x] 修复 admin 标注候选慢查询导致 stats/status 连锁 timeout。Tracker: `tracker/admin-labeling-timeout-hotfix-20260525.md` (created 2026-05-25 22:44:07 BST; completed 2026-05-25).
 - [x] 收敛数据标注台候选、持久化 title 与导出接口契约。Tracker: `tracker/labeling-workbench-title-export-cleanup-20260525.md` (created 2026-05-25 22:08:37 BST; completed 2026-05-25).
 - [x] 新增 URL-keyed 旧版 label CSV 导入脚本，可清空 `blog_labels` 后按计数字典导入。Tracker: `tracker/legacy-label-count-import-20260525.md` (created 2026-05-25 21:21:44 BST; completed 2026-05-25).
 - [x] 将人工 label 收敛为单表 URL-keyed 计数字典，并同步 API、迁移、测试、文档。Tracker: `tracker/single-table-label-counts-20260525.md` (created 2026-05-25 20:50:31 BST; completed 2026-05-25).

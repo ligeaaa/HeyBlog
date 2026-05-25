@@ -15,7 +15,7 @@ import {
   Timer,
   Trash2,
 } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
 import {
@@ -133,6 +133,7 @@ export function AdminPage() {
   const [labelParquetProgress, setLabelParquetProgress] = useState<string | null>(null);
   const [labelingBlogId, setLabelingBlogId] = useState<number | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
+  const isAdminPageLoadRunning = useRef(false);
 
   useEffect(() => {
     void loadAdminPage(activeAdminToken);
@@ -143,6 +144,9 @@ export function AdminPage() {
       return undefined;
     }
     const interval = window.setInterval(() => {
+      if (isAdminPageLoadRunning.current) {
+        return;
+      }
       void loadAdminPage(activeAdminToken, { silent: true });
     }, 3000);
     return () => window.clearInterval(interval);
@@ -155,6 +159,10 @@ export function AdminPage() {
    * @returns Promise resolved after page state updates.
    */
   async function loadAdminPage(adminToken: string, options?: { silent?: boolean }) {
+    if (options?.silent && isAdminPageLoadRunning.current) {
+      return;
+    }
+    isAdminPageLoadRunning.current = true;
     try {
       if (!options?.silent) {
         setIsLoading(true);
@@ -230,6 +238,7 @@ export function AdminPage() {
       if (!options?.silent) {
         setIsLoading(false);
       }
+      isAdminPageLoadRunning.current = false;
     }
   }
 

@@ -677,6 +677,16 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                 existing_tables.discard(obsolete_table)
         if "raw_discovered_urls" in existing_tables:
             dialect_name = connection.dialect.name
+            existing_indexes = {index["name"] for index in inspector.get_indexes("raw_discovered_urls")}
+            for index_name, columns in (
+                ("ix_raw_discovered_urls_status_id", ("status", "id")),
+                ("ix_raw_discovered_urls_status_normalized_url_id", ("status", "normalized_url", "id")),
+                ("ix_raw_discovered_urls_normalized_url_id", ("normalized_url", "id")),
+            ):
+                if index_name in existing_indexes:
+                    continue
+                column_sql = ", ".join(columns)
+                connection.execute(text(f"CREATE INDEX {index_name} ON raw_discovered_urls ({column_sql})"))
             if dialect_name == "postgresql":
                 for foreign_key in inspector.get_foreign_keys("raw_discovered_urls"):
                     constrained_columns = set(foreign_key.get("constrained_columns") or [])
@@ -3068,16 +3078,18 @@ class SQLAlchemyRepository:
             sort=sort,
         )
         with session_scope(self.session_factory) as session:
-            raw_urls = (
-                select(
-                    func.min(RawDiscoveredUrlModel.id).label("raw_id"),
-                    RawDiscoveredUrlModel.normalized_url.label("normalized_url"),
-                    func.min(RawDiscoveredUrlModel.discovered_at).label("raw_created_at"),
-                    func.max(RawDiscoveredUrlModel.updated_at).label("raw_updated_at"),
+            earlier_raw = aliased(RawDiscoveredUrlModel)
+            representative_raw = (
+                ~select(earlier_raw.id)
+                .where(
+                    earlier_raw.normalized_url == RawDiscoveredUrlModel.normalized_url,
+                    earlier_raw.id < RawDiscoveredUrlModel.id,
+                    or_(
+                        earlier_raw.status == "success",
+                        earlier_raw.status.like(f"{BLOG_LABELING_MODEL_FILTER_STATUS_PREFIX}%"),
+                    ),
                 )
-                .where(self._labelable_raw_url_condition())
-                .group_by(RawDiscoveredUrlModel.normalized_url)
-                .subquery()
+                .exists()
             )
             latest_labeled_at = (
                 select(
@@ -3102,19 +3114,19 @@ class SQLAlchemyRepository:
                 .group_by(EdgeModel.from_blog_id)
                 .subquery()
             )
-            target_id = raw_urls.c.raw_id.label("target_id")
+            target_id = RawDiscoveredUrlModel.id.label("target_id")
             activity_at = func.coalesce(
                 BlogModel.last_crawled_at,
                 BlogModel.updated_at,
-                raw_urls.c.raw_updated_at,
+                RawDiscoveredUrlModel.updated_at,
             ).label("activity_at")
             statement = (
                 select(
                     target_id,
-                    raw_urls.c.raw_id,
-                    raw_urls.c.normalized_url,
-                    raw_urls.c.raw_created_at,
-                    raw_urls.c.raw_updated_at,
+                    RawDiscoveredUrlModel.id.label("raw_id"),
+                    RawDiscoveredUrlModel.normalized_url,
+                    RawDiscoveredUrlModel.discovered_at.label("raw_created_at"),
+                    RawDiscoveredUrlModel.updated_at.label("raw_updated_at"),
                     BlogModel.url.label("blog_url"),
                     BlogModel.domain.label("blog_domain"),
                     BlogModel.identity_key,
@@ -3134,11 +3146,12 @@ class SQLAlchemyRepository:
                     activity_at,
                     latest_labeled_at.c.last_labeled_at.label("last_labeled_at"),
                 )
-                .select_from(raw_urls)
-                .outerjoin(BlogModel, BlogModel.normalized_url == raw_urls.c.normalized_url)
+                .select_from(RawDiscoveredUrlModel)
+                .outerjoin(BlogModel, BlogModel.normalized_url == RawDiscoveredUrlModel.normalized_url)
                 .outerjoin(incoming_counts, incoming_counts.c.blog_id == BlogModel.blog_id)
                 .outerjoin(outgoing_counts, outgoing_counts.c.blog_id == BlogModel.blog_id)
-                .outerjoin(latest_labeled_at, latest_labeled_at.c.normalized_url == raw_urls.c.normalized_url)
+                .outerjoin(latest_labeled_at, latest_labeled_at.c.normalized_url == RawDiscoveredUrlModel.normalized_url)
+                .where(self._labelable_raw_url_condition(), representative_raw)
             )
             if query["q"] is not None:
                 pattern = f"%{query['q']}%"
@@ -3147,16 +3160,16 @@ class SQLAlchemyRepository:
                         BlogModel.title.ilike(pattern),
                         BlogModel.domain.ilike(pattern),
                         BlogModel.url.ilike(pattern),
-                        raw_urls.c.normalized_url.ilike(pattern),
+                        RawDiscoveredUrlModel.normalized_url.ilike(pattern),
                     )
-            )
+                )
             if query["label"] is not None:
                 try:
                     label_filter = str(_label_id_from_name_in_session(session, str(query["label"])))
                 except ValueError:
                     label_filter = str(query["label"])
                 statement = statement.where(
-                    raw_urls.c.normalized_url.in_(
+                    RawDiscoveredUrlModel.normalized_url.in_(
                         select(BlogLabelModel.normalized_url)
                         .where(BlogLabelModel.label_id[label_filter].is_not(None))
                     )
@@ -3243,33 +3256,38 @@ class SQLAlchemyRepository:
             Ordered rows containing ``url``, ``title``, and ``label_name``.
         """
 
-        raw_urls = (
-            select(
-                func.min(RawDiscoveredUrlModel.id).label("raw_id"),
-                RawDiscoveredUrlModel.normalized_url.label("normalized_url"),
-            )
-            .where(self._labelable_raw_url_condition())
-            .group_by(RawDiscoveredUrlModel.normalized_url)
-            .subquery()
-        )
-        export_url = raw_urls.c.normalized_url
         label_names_by_id = _blog_label_names_by_id(session)
-        rows = session.execute(
+        label_rows = session.execute(
             select(
-                export_url.label("url"),
+                BlogLabelModel.normalized_url,
                 BlogLabelModel.title.label("title"),
                 BlogLabelModel.label_id.label("label_counts"),
             )
-            .select_from(BlogLabelModel)
-            .join(raw_urls, raw_urls.c.normalized_url == BlogLabelModel.normalized_url)
-            .order_by(export_url.asc())
+            .order_by(BlogLabelModel.normalized_url.asc())
         ).all()
+        labeled_urls = [str(row.normalized_url) for row in label_rows]
+        eligible_urls: set[str] = set()
+        chunk_size = 1000
+        for offset in range(0, len(labeled_urls), chunk_size):
+            chunk = labeled_urls[offset : offset + chunk_size]
+            eligible_urls.update(
+                str(url)
+                for url in session.scalars(
+                    select(RawDiscoveredUrlModel.normalized_url)
+                    .where(
+                        self._labelable_raw_url_condition(),
+                        RawDiscoveredUrlModel.normalized_url.in_(chunk),
+                    )
+                    .distinct()
+                )
+            )
+        rows = [row for row in label_rows if str(row.normalized_url) in eligible_urls]
         expanded_rows: list[dict[str, str]] = []
         for row in rows:
             for label_id in sorted(_normalize_label_counts(row.label_counts), key=int):
                 expanded_rows.append(
                     {
-                        "url": str(row.url),
+                        "url": str(row.normalized_url),
                         "title": row.title or "",
                         "label_name": label_names_by_id.get(int(label_id), label_id),
                     }

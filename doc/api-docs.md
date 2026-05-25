@@ -452,6 +452,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 候选范围不再等同于 `crawl_status == FINISHED`；模型过滤掉的 `model:*` raw URL 也会进入标注台，避免训练数据只覆盖模型已放行样本
 - 标注保存不要求目标一定存在于 `blogs`；保存时会先用候选 raw row id 解析出 `normalized_url`，再把 `normalized_url`、当前展示 `title`、`label_id` 写入单表 `blog_labels`
 - `rule:*`、平台/TLD/路径等非模型过滤结果不会进入该标注池
+- 查询实现会按每个 `normalized_url` 的最早 labelable raw row 作为代表候选，并依赖 `raw_discovered_urls` 的 status / normalized URL 索引分页；打开 admin 页面或轮询刷新不应堆积全表 raw URL 聚合查询
 - 该接口只服务于标注工作台，不改变现有发现页 `GET /api/blogs/catalog` 的协议
 
 成功响应示例：
@@ -593,6 +594,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - parquet 文件固定写入 `HEYBLOG_EXPORT_DIR/blog-label-training.parquet`
 - 只保留三列：`url`、`title`、`label`；`title` 来自保存标注时写入的 `blog_labels.title`
 - 语义与 CSV 导出一致，一个 `blog x label` 组合对应一行
+- 补齐/重建只导出仍存在于 labelable raw URL 池中的已标注 URL；该检查按 label URL 分批匹配 raw URL 索引，避免在大规模 raw URL 表上做全表聚合
 - 响应结构与 `parquet-status` 一致，`rewritten` 表示本次是否实际写入文件
 
 #### `POST /api/admin/blog-labeling/parquet-rebuild`

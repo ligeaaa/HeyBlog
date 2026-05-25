@@ -10,6 +10,7 @@ from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import JSON
+from sqlalchemy import Index
 from sqlalchemy import Text
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.sql import func
@@ -144,6 +145,11 @@ class RawDiscoveredUrlModel(Base):
     """One normalized URL observed by crawler candidate extraction."""
 
     __tablename__ = "raw_discovered_urls"
+    __table_args__ = (
+        Index("ix_raw_discovered_urls_status_id", "status", "id"),
+        Index("ix_raw_discovered_urls_status_normalized_url_id", "status", "normalized_url", "id"),
+        Index("ix_raw_discovered_urls_normalized_url_id", "normalized_url", "id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_blog_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
