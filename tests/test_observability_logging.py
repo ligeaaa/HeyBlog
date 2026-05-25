@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from shared.http_clients.context import context_headers
 from shared.http_clients.persistence_http import PersistenceHttpClient
 from shared.observability import RequestIdMiddleware
+from shared.observability import configure_dedicated_event_logger
 from shared.observability import configure_logging
 from shared.observability import get_logger
 from shared.observability import log_event
@@ -59,6 +60,39 @@ def test_configure_logging_writes_split_service_files(tmp_path: Path) -> None:
     assert app_logs[-1]["stage"] == "unit"
     assert error_logs[-1]["event"] == "unit.warning"
     assert error_logs[-1]["error_message"] == "careful"
+
+
+def test_dedicated_event_logger_writes_parallel_service_files(tmp_path: Path) -> None:
+    """Dedicated maintenance logs should land beside normal service logs."""
+
+    configure_logging(service="persistence-api", log_dir=tmp_path, console_enabled=False)
+    dedicated = configure_dedicated_event_logger(
+        logger_name="tests.url_refilter",
+        service="url-refilter",
+        log_dir=tmp_path,
+        console_enabled=False,
+    )
+    app_logger = get_logger("tests.persistence")
+
+    log_event(app_logger, event="persistence.normal", message="normal persistence event")
+    log_event(
+        dedicated,
+        event="maintenance.url_refilter.execute.started",
+        message="url refilter execution started",
+        stage="url_refilter",
+        run_id=42,
+    )
+
+    persistence_file = _single_log_file(tmp_path / "app" / "persistence-api")
+    refilter_file = _single_log_file(tmp_path / "app" / "url-refilter")
+    persistence_logs = _read_json_lines(persistence_file)
+    refilter_logs = _read_json_lines(refilter_file)
+
+    assert persistence_logs[-1]["service"] == "persistence-api"
+    assert persistence_logs[-1]["event"] == "persistence.normal"
+    assert refilter_logs[-1]["service"] == "url-refilter"
+    assert refilter_logs[-1]["event"] == "maintenance.url_refilter.execute.started"
+    assert refilter_logs[-1]["run_id"] == 42
 
 
 def test_request_id_middleware_logs_access_and_propagates_context(tmp_path: Path) -> None:

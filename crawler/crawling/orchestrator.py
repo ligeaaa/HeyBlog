@@ -204,11 +204,14 @@ class CrawlOrchestrator:
 
         for link in extract_candidate_links(page.url, page.text):
             normalized = normalize_url(link.url)
-            raw_record_id = self.repository.create_raw_discovered_url(
+            raw_record = self.repository.create_raw_discovered_url_record(
                 source_blog_id=blog.id,
                 normalized_url=normalized.normalized_url,
                 status="pending",
             )
+            raw_record_id = int(raw_record["id"])
+            if raw_record["status"] == "rule:duplicate_url":
+                continue
             status = self._evaluate_link_status(blog, normalized.normalized_url, link)
             self.repository.update_raw_discovered_url_status(record_id=raw_record_id, status=status)
             if status != "success":

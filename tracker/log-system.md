@@ -38,6 +38,17 @@ separate files for review, and moderate event granularity.
 - Updated Docker Compose to mount shared log volume.
 - Updated API/config/architecture documentation and `.env` / `.env.example`.
 - Added observability regression tests.
+- Added a dedicated `url-refilter` event logger so dangerous raw URL refilter
+  runs write service-parallel files under `logs/app/url-refilter/` and
+  `logs/error/url-refilter/` instead of being buried in normal persistence logs.
+- 2026-05-25 follow-up: backend now configures the same `url-refilter`
+  service logger and logs the start, crawler stop, persistence execution
+  request, completion, and failure boundaries so clicking the Admin button
+  creates a dedicated log entry immediately.
+- 2026-05-25 follow-up: URL refilter lifecycle logs now include explicit
+  start, finish, failed-exit, and backend-close events with `reason` plus a
+  human message; execution progress logs are emitted at each 10,000 scanned
+  raw URLs, with final completion represented by the finish event.
 
 ## Validation
 
@@ -45,6 +56,8 @@ separate files for review, and moderate event granularity.
 - Passed: `./.venv/bin/pytest tests/test_observability_logging.py tests/test_service_split.py tests/test_pipeline.py tests/test_crawler_model_consensus.py`
 - Passed: `./.venv/bin/pytest` (`152 passed`)
 - Verified by tests: type-specific hourly log directories, JSON fields, request-id middleware, and shared HTTP client propagation.
+- 2026-05-25 update: added regression coverage for dedicated service-parallel
+  maintenance log directories.
 
 ## Closure
 

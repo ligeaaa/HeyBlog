@@ -24,13 +24,17 @@ from persistence_api.repository import build_repository
 from persistence_api.stats_service import StatsService
 from shared.config import Settings
 from shared.observability import RequestIdMiddleware
+from shared.observability import configure_dedicated_event_logger
 from shared.observability import configure_logging
 from shared.observability import get_logger
 from shared.observability import log_event
 
 
 SERVICE_NAME = "persistence-api"
+URL_REFILTER_LOG_SERVICE_NAME = "url-refilter"
+URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
 LOGGER = get_logger(__name__)
+URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
 
 
 @dataclass(slots=True)
@@ -88,11 +92,25 @@ class AddLogRequest(BaseModel):
 
 
 class ReplaceBlogLabelsRequest(BaseModel):
-    tag_ids: list[int]
+    tag_ids: list[int] | None = None
+    label_id: dict[str, int] | None = None
 
 
 class CreateBlogLabelTagRequest(BaseModel):
     name: str
+
+
+class BlogLabelParquetStatusResponse(BaseModel):
+    path: str
+    filename: str
+    exists: bool
+    saved_count: int
+    total_labeled: int
+    missing_count: int
+    batch_size: int
+    rewritten: bool
+    message: str
+    updated_at: str | None
 
 
 class FinalizeBlogDedupScanRunRequest(BaseModel):
@@ -262,6 +280,16 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         log_format=settings.log_format,
         retention_days=settings.log_retention_days,
     )
+    configure_dedicated_event_logger(
+        logger_name=URL_REFILTER_LOGGER_NAME,
+        service=URL_REFILTER_LOG_SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Persistence Service", version="0.1.0")
     app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.persistence_state = state
@@ -355,6 +383,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             lambda: get_state().repository.replace_blog_link_labels(
                 blog_id=blog_id,
                 tag_ids=payload.tag_ids,
+                label_id=payload.label_id,
             ),
             exception_translations=(
                 (ValueError, 422, None),
@@ -363,13 +392,40 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             ),
         )
 
-    @app.get("/internal/blog-labeling/export")
-    def export_blog_label_training_csv() -> Response:
+    @app.get("/internal/blog-labeling/parquet-status")
+    def get_blog_label_training_parquet_status() -> dict[str, Any]:
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.get_blog_label_training_parquet_status(),
+            status_code=422,
+        )
+
+    @app.post("/internal/blog-labeling/parquet-sync")
+    def sync_blog_label_training_parquet() -> dict[str, Any]:
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.sync_blog_label_training_parquet(),
+            status_code=422,
+        )
+
+    @app.post("/internal/blog-labeling/parquet-rebuild")
+    def rebuild_blog_label_training_parquet() -> dict[str, Any]:
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.rebuild_blog_label_training_parquet(),
+            status_code=422,
+        )
+
+    @app.get("/internal/blog-labeling/parquet-export")
+    def export_blog_label_training_parquet() -> Response:
+        content, status = _call_with_value_error_http_translation(
+            lambda: get_state().repository.export_blog_label_training_parquet(),
+            status_code=422,
+        )
         return Response(
-            content=get_state().repository.export_blog_label_training_csv(),
-            media_type="text/csv",
+            content=content,
+            media_type="application/vnd.apache.parquet",
             headers={
-                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+                "content-disposition": f'attachment; filename="{status["filename"]}"',
+                "x-heyblog-label-saved-count": str(status["saved_count"]),
+                "x-heyblog-label-total-count": str(status["total_labeled"]),
             },
         )
 
@@ -423,7 +479,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             status_code=404,
         )
         log_event(
-            LOGGER,
+            URL_REFILTER_LOGGER,
             event="maintenance.url_refilter.progress",
             message=payload.message,
             stage="url_refilter",
@@ -441,7 +497,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             status_code=404,
         )
         log_event(
-            LOGGER,
+            URL_REFILTER_LOGGER,
             event="maintenance.url_refilter.failed",
             message="url refilter run failed",
             level=30,
@@ -525,9 +581,8 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         )
 
     @app.post("/internal/raw-discovered-urls")
-    def create_raw_discovered_url(payload: CreateRawDiscoveredUrlRequest) -> dict[str, int]:
-        record_id = get_state().repository.create_raw_discovered_url(**payload.model_dump())
-        return {"id": record_id}
+    def create_raw_discovered_url(payload: CreateRawDiscoveredUrlRequest) -> dict[str, Any]:
+        return get_state().repository.create_raw_discovered_url_record(**payload.model_dump())
 
     @app.put("/internal/raw-discovered-urls/{record_id}/status")
     def update_raw_discovered_url_status(

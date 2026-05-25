@@ -205,6 +205,24 @@ export interface AdminBlogLabelingPage {
   sort: string;
 }
 
+export interface AdminBlogLabelCounts {
+  totalLabeled: number;
+  byLabel: Record<string, number>;
+}
+
+export interface AdminBlogLabelParquetStatus {
+  path: string;
+  filename: string;
+  exists: boolean;
+  savedCount: number;
+  totalLabeled: number;
+  missingCount: number;
+  batchSize: number;
+  rewritten: boolean;
+  message: string;
+  updatedAt: string | null;
+}
+
 export interface FilterStatsData {
   byFilterReason: Record<string, number>;
 }

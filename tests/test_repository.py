@@ -1,14 +1,19 @@
 """Regression tests for the SQLAlchemy-backed repository."""
 
-import csv
-from io import StringIO
 from pathlib import Path
+import sys
 
+import pyarrow.parquet as pq
 import pytest
+from sqlalchemy import select
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import import_legacy_blog_labels
+import import_legacy_label_counts
 import persistence_api.repository as repository_module
 from persistence_api.db import session_scope
-from persistence_api.models import BlogLabelAssignmentModel
+from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
 from persistence_api.models import IngestionRequestModel
@@ -31,6 +36,41 @@ def test_build_repository_roundtrip_works_with_path_backed_repository(tmp_path: 
     assert fetched is not None
     assert fetched["domain"] == "blog.example.com"
     assert fetched["blog_id"] == blog_id
+
+
+def test_build_repository_enables_schema_sync_for_dsn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Postgres-backed repositories must run startup schema sync for compatibility migrations."""
+    captured: dict[str, object] = {}
+
+    def fake_repository(
+        database_url: str,
+        *,
+        decision_settings: Settings | None = None,
+        startup_schema_sync: bool = True,
+    ) -> object:
+        captured["database_url"] = database_url
+        captured["decision_settings"] = decision_settings
+        captured["startup_schema_sync"] = startup_schema_sync
+        return object()
+
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    monkeypatch.setattr(repository_module, "SQLAlchemyRepository", fake_repository)
+
+    repository_module.build_repository(
+        db_path=tmp_path / "fallback.sqlite",
+        db_dsn="postgresql+psycopg://example",
+        settings=settings,
+    )
+
+    assert captured == {
+        "database_url": "postgresql+psycopg://example",
+        "decision_settings": settings,
+        "startup_schema_sync": True,
+    }
 
 
 def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
@@ -227,6 +267,56 @@ def test_repository_filter_stats_follow_configured_chain_order(tmp_path: Path) -
     assert stats["by_filter_reason"]["rule:platform_blocked"] == 1
 
 
+def test_repository_marks_duplicate_raw_urls_before_filter_chain(tmp_path: Path) -> None:
+    """Raw URL insertion should only check older rows for duplicate URLs."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+
+    first = repository.create_raw_discovered_url_record(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="pending",
+    )
+    duplicate = repository.create_raw_discovered_url_record(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="pending",
+    )
+
+    assert first["status"] == "pending"
+    assert duplicate["status"] == "rule:duplicate_url"
+    assert first["id"] < duplicate["id"]
+
+
+def test_retired_label_assignment_migration_reports_single_table_rows(tmp_path: Path) -> None:
+    """Retired label-assignment migration should leave the single label table intact."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://target.example/",
+        status="success",
+    )
+    repository.replace_blog_link_labels(blog_id=raw_id, tag_ids=[1, 2])
+
+    from scripts.migrate_blog_label_assignment_ids import migrate_blog_label_assignment_ids
+
+    summary = migrate_blog_label_assignment_ids(repository=repository, apply=True)
+
+    assert summary.blog_labels_rows == 1
+    labeled = repository.list_blog_labeling_candidates(label="1", labeled=True)
+    assert [row["id"] for row in labeled["items"]] == [raw_id]
+
+
+
 def test_repository_dedupes_ingestion_request_by_identity_key_but_keeps_history(tmp_path: Path) -> None:
     """Alias URLs should reuse one active request, but completed history must not block a new request."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -285,21 +375,12 @@ def test_repository_run_blog_dedup_scan_removes_rejected_links_and_orphaned_targ
     assert inserted is True
 
     with session_scope(repository.session_factory) as session:
-        tag = BlogLabelTagModel(
-            name="blog",
-            slug="blog",
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        session.add(tag)
-        session.flush()
         session.add(
-            BlogLabelAssignmentModel(
-                blog_id=target_id,
-                tag_id=int(tag.id),
-                labeled_at=repository_module.now_utc(),
-                created_at=repository_module.now_utc(),
-                updated_at=repository_module.now_utc(),
+            BlogLabelModel(
+                normalized_url="https://rejected.example/",
+                label_id={"1": 1},
+                created_time=repository_module.now_utc(),
+                updated_time=repository_module.now_utc(),
             )
         )
 
@@ -597,11 +678,6 @@ enabled = true
     )
     repository.create_raw_discovered_url(
         source_blog_id=source_id,
-        normalized_url="https://friend.example/",
-        status="rule:domain_blocked",
-    )
-    repository.create_raw_discovered_url(
-        source_blog_id=source_id,
         normalized_url="https://blocked.example/",
         status="success",
     )
@@ -609,6 +685,11 @@ enabled = true
         source_blog_id=source_id,
         normalized_url="https://agency.gov/",
         status="rule:platform_blocked",
+    )
+    activated_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="rule:domain_blocked",
     )
 
     config_path.write_text(
@@ -650,9 +731,9 @@ enabled = true
     with session_scope(repository.session_factory) as session:
         raw_rows = session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
         assert [row.status for row in raw_rows] == [
-            "success",
             "rule:exact_url_blocked",
             "rule:blocked_tld",
+            "success",
         ]
 
     blogs = repository.list_blogs()
@@ -660,6 +741,7 @@ enabled = true
         "https://source.example/",
         "https://friend.example/",
     }
+    assert next(row["id"] for row in blogs if row["normalized_url"] == "https://friend.example/") == activated_raw_id
     edges = repository.list_edges()
     assert edges == [
         {
@@ -671,6 +753,281 @@ enabled = true
             "discovered_at": edges[0]["discovered_at"],
         }
     ]
+
+
+def test_repository_url_refilter_deactivation_deletes_blog_graph_idempotently(tmp_path: Path) -> None:
+    """Deactivated URLs should remove their target blog graph and tolerate missing rows."""
+    config_path = tmp_path / "filter_chain.toml"
+    config_path.write_text(
+        """
+[[filters]]
+kind = "same_domain"
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        filter_chain_config_path=config_path,
+        friend_link_exact_url_blocklist=("https://target.example/",),
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    target_id, _ = repository.upsert_blog(
+        url="https://target.example/",
+        normalized_url="https://target.example/",
+        domain="target.example",
+    )
+    other_id, _ = repository.upsert_blog(
+        url="https://other.example/",
+        normalized_url="https://other.example/",
+        domain="other.example",
+    )
+    repository.add_edge(
+        from_blog_id=source_id,
+        to_blog_id=target_id,
+        link_url_raw="https://target.example/",
+        link_text=None,
+    )
+    repository.add_edge(
+        from_blog_id=target_id,
+        to_blog_id=other_id,
+        link_url_raw="https://other.example/",
+        link_text=None,
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://target.example/",
+        status="success",
+    )
+
+    config_path.write_text(
+        """
+[[filters]]
+kind = "same_domain"
+enabled = true
+
+[[filters]]
+kind = "exact_url_blocklist"
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    run = repository.create_url_refilter_run(crawler_was_running=False)
+    summary = repository.execute_url_refilter_run(run_id=run["id"])
+
+    assert summary["status"] == "SUCCEEDED"
+    assert summary["deactivated_count"] == 1
+    assert repository.get_blog(target_id) is None
+    assert repository.list_edges() == []
+
+    with session_scope(repository.session_factory) as session:
+        raw = session.scalar(select(RawDiscoveredUrlModel).where(RawDiscoveredUrlModel.id == raw_id))
+        assert raw is not None
+        repository._handle_refilter_deactivated_success(session, raw=raw)  # type: ignore[attr-defined]
+
+    assert repository.get_blog(target_id) is None
+    assert repository.list_edges() == []
+
+
+def test_repository_url_refilter_activation_skips_edge_when_source_blog_is_missing(tmp_path: Path) -> None:
+    """Activated raw URLs should still create targets but not orphaned source edges."""
+    config_path = tmp_path / "filter_chain.toml"
+    config_path.write_text("", encoding="utf-8")
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        filter_chain_config_path=config_path,
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://target.example/",
+        status="rule:domain_blocked",
+    )
+    with session_scope(repository.session_factory) as session:
+        source = session.scalar(select(BlogModel).where(BlogModel.blog_id == source_id))
+        assert source is not None
+        session.delete(source)
+
+    run = repository.create_url_refilter_run(crawler_was_running=False)
+    summary = repository.execute_url_refilter_run(run_id=run["id"])
+
+    assert summary["status"] == "SUCCEEDED"
+    assert summary["activated_count"] == 1
+    assert repository.get_blog(raw_id) is not None
+    assert repository.list_edges() == []
+
+
+def test_repository_url_refilter_run_marks_old_duplicate_raw_urls(tmp_path: Path) -> None:
+    """URL refilter should apply duplicate URL filtering before other filters."""
+    config_path = tmp_path / "filter_chain.toml"
+    config_path.write_text(
+        """
+[[filters]]
+kind = "same_domain"
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        filter_chain_config_path=config_path,
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    first_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="success",
+    )
+    duplicate_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="success",
+    )
+    assert duplicate_raw_id != first_raw_id
+    repository.update_raw_discovered_url_status(record_id=duplicate_raw_id, status="success")
+
+    run = repository.create_url_refilter_run(crawler_was_running=False)
+    summary = repository.execute_url_refilter_run(run_id=run["id"])
+
+    assert summary["status"] == "SUCCEEDED"
+    assert summary["unchanged_count"] == 1
+    assert summary["deactivated_count"] == 1
+    with session_scope(repository.session_factory) as session:
+        raw_rows = session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
+        assert [row.status for row in raw_rows] == ["success", "rule:duplicate_url"]
+
+
+def test_repository_url_refilter_logs_lifecycle_without_small_final_progress(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Small refilter runs should log start and finish, while progress waits for each 10k batch."""
+    config_path = tmp_path / "filter_chain.toml"
+    config_path.write_text(
+        """
+[[filters]]
+kind = "same_domain"
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        filter_chain_config_path=config_path,
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="success",
+    )
+
+    logger = repository_module.logging.getLogger(repository_module.URL_REFILTER_LOGGER_NAME)
+    monkeypatch.setattr(logger, "propagate", True)
+    caplog.set_level(0, logger=repository_module.URL_REFILTER_LOGGER_NAME)
+    run = repository.create_url_refilter_run(crawler_was_running=False)
+    repository.execute_url_refilter_run(run_id=run["id"])
+
+    refilter_records = [
+        record for record in caplog.records if record.name == repository_module.URL_REFILTER_LOGGER_NAME
+    ]
+    assert [getattr(record, "event", None) for record in refilter_records] == [
+        "maintenance.url_refilter.execute.started",
+        "maintenance.url_refilter.execute.finished",
+    ]
+    assert getattr(refilter_records[-1], "reason") == "all_raw_urls_scanned"
+    assert getattr(refilter_records[-1], "message") == (
+        "url refilter execution finished: all raw URLs scanned successfully"
+    )
+    assert getattr(refilter_records[-1], "total_count") == 1
+
+
+def test_repository_ensure_edge_in_session_dedupes_pending_edges(tmp_path: Path) -> None:
+    """Refilter edge creation should ignore already-pending same-direction edges."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    target_id, _ = repository.upsert_blog(
+        url="https://target.example/",
+        normalized_url="https://target.example/",
+        domain="target.example",
+    )
+
+    with session_scope(repository.session_factory) as session:
+        repository._ensure_edge_in_session(  # type: ignore[attr-defined]
+            session,
+            from_blog_id=source_id,
+            to_blog_id=target_id,
+            link_url_raw="https://target.example/",
+            link_text=None,
+        )
+        repository._ensure_edge_in_session(  # type: ignore[attr-defined]
+            session,
+            from_blog_id=source_id,
+            to_blog_id=target_id,
+            link_url_raw="https://target.example/",
+            link_text=None,
+        )
+
+    assert len(repository.list_edges()) == 1
+
+
+def test_raw_discovered_urls_survive_source_blog_deletion(tmp_path: Path) -> None:
+    """Raw discovered URLs are root discovery facts and must not cascade with blogs."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://friend.example/",
+        status="success",
+    )
+
+    with session_scope(repository.session_factory) as session:
+        source = session.scalar(select(BlogModel).where(BlogModel.blog_id == source_id))
+        assert source is not None
+        session.delete(source)
+
+    with session_scope(repository.session_factory) as session:
+        raw = session.scalar(select(RawDiscoveredUrlModel).where(RawDiscoveredUrlModel.id == raw_id))
+        assert raw is not None
+        assert raw.source_blog_id == source_id
 
 
 def test_repository_startup_migrates_legacy_tenant_like_rows_and_merges_to_root_url(tmp_path: Path) -> None:
@@ -1131,70 +1488,160 @@ def test_repository_blog_lookup_returns_empty_payload_when_no_match(tmp_path: Pa
     assert payload["match_reason"] is None
 
 
-def test_repository_blog_labeling_candidates_only_return_finished_blogs_with_joined_label_state(
+def test_repository_blog_labeling_candidates_include_success_and_model_filtered_raw_urls(
     tmp_path: Path,
 ) -> None:
-    """Labeling candidates should only expose finished blogs and merge multiple labels."""
+    """Labeling candidates should expose raw success and model-filtered URLs."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    finished_blog_id, inserted = repository.upsert_blog(
-        url="https://alpha.example/",
-        normalized_url="https://alpha.example/",
-        domain="alpha.example",
-    )
-    assert inserted is True
-    waiting_blog_id, inserted = repository.upsert_blog(
-        url="https://beta.example/",
-        normalized_url="https://beta.example/",
-        domain="beta.example",
+    source_blog_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
     )
     assert inserted is True
     repository.mark_blog_result(
-        blog_id=finished_blog_id,
+        blog_id=source_blog_id,
         crawl_status="FINISHED",
         status_code=200,
-        friend_links_count=2,
+        friend_links_count=3,
         metadata_captured=True,
-        title="Alpha",
-        icon_url="https://alpha.example/favicon.ico",
+        title="Source",
+        icon_url="https://source.example/favicon.ico",
     )
-    repository.mark_blog_result(
-        blog_id=waiting_blog_id,
-        crawl_status="WAITING",
-        status_code=200,
-        friend_links_count=0,
+    accepted_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://accepted.example/",
+        status="success",
+    )
+    model_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://model-rejected.example/",
+        status="model:model_consensus_all_non_blog",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://rule-rejected.example/",
+        status="rule:blocked_tld",
     )
 
     first_page = repository.list_blog_labeling_candidates(page=1, page_size=20, labeled=False)
-    assert [row["id"] for row in first_page["items"]] == [finished_blog_id]
-    assert first_page["items"][0]["labels"] == []
-    assert first_page["items"][0]["is_labeled"] is False
+    assert [row["url"] for row in first_page["items"]] == [
+        "https://model-rejected.example/",
+        "https://accepted.example/",
+    ]
+    created_ids = {row["url"]: row["id"] for row in first_page["items"]}
+    assert created_ids["https://accepted.example/"] == accepted_raw_id
+    assert created_ids["https://model-rejected.example/"] == model_raw_id
+    assert created_ids["https://accepted.example/"] < created_ids["https://model-rejected.example/"]
+    assert all(row["labels"] == [] for row in first_page["items"])
 
     blog_tag = repository.create_blog_label_tag(name="blog")
     official_tag = repository.create_blog_label_tag(name="official")
+    model_blog_id = int(first_page["items"][0]["id"])
     created = repository.replace_blog_link_labels(
-        blog_id=finished_blog_id,
+        blog_id=model_blog_id,
         tag_ids=[official_tag["id"], blog_tag["id"]],
     )
-    assert created["blog_id"] == finished_blog_id
+    assert created["blog_id"] == model_blog_id
+    assert created["label_id"] == {"1": 1, "5": 1}
     assert created["label_slugs"] == ["blog", "official"]
 
     second_page = repository.list_blog_labeling_candidates(label="official", labeled=True, sort="recently_labeled")
-    assert [row["id"] for row in second_page["items"]] == [finished_blog_id]
+    assert [row["id"] for row in second_page["items"]] == [model_blog_id]
     assert [label["slug"] for label in second_page["items"][0]["labels"]] == ["blog", "official"]
+    assert second_page["items"][0]["label_id"] == {"1": 1, "5": 1}
     assert second_page["items"][0]["is_labeled"] is True
     assert second_page["items"][0]["last_labeled_at"] is not None
-    assert [tag["slug"] for tag in second_page["available_tags"]] == ["blog", "official"]
+    assert [tag["slug"] for tag in second_page["available_tags"]] == [
+        "blog",
+        "company",
+        "other",
+        "unknown",
+        "official",
+        "government",
+    ]
 
 
-def test_repository_blog_labeling_upsert_rejects_invalid_targets_and_reset_clears_labels(
+def test_repository_blog_labeling_uses_raw_id_with_existing_blog_display_data(tmp_path: Path) -> None:
+    """Labeling should use raw IDs while reusing existing blog display fields."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_blog_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    assert inserted is True
+    existing_blog_id, inserted = repository.upsert_blog(
+        url="https://existing.example/",
+        normalized_url="https://existing.example/",
+        domain="existing.example",
+    )
+    assert inserted is True
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://existing.example/",
+        status="success",
+    )
+
+    page = repository.list_blog_labeling_candidates(page=1, page_size=20, labeled=False)
+
+    assert raw_id != existing_blog_id
+    assert [row["id"] for row in page["items"]] == [raw_id]
+    assert page["items"][0]["domain"] == "existing.example"
+
+
+def test_repository_blog_labels_are_keyed_by_url_across_reset_and_recrawl(tmp_path: Path) -> None:
+    """Labels should survive raw ID changes by persisting against normalized URL subjects."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_blog_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    first_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://stable.example/",
+        status="success",
+    )
+    tag = repository.create_blog_label_tag(name="blog")
+
+    first = repository.replace_blog_link_labels(blog_id=first_raw_id, tag_ids=[tag["id"]])
+    reset = repository.reset()
+
+    new_source_id, _ = repository.upsert_blog(
+        url="https://new-source.example/",
+        normalized_url="https://new-source.example/",
+        domain="new-source.example",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=new_source_id,
+        normalized_url="https://noise.example/",
+        status="success",
+    )
+    second_raw_id = repository.create_raw_discovered_url(
+        source_blog_id=new_source_id,
+        normalized_url="https://stable.example/",
+        status="success",
+    )
+    labeled = repository.list_blog_labeling_candidates(label="blog", labeled=True)
+
+    assert first["blog_id"] == first_raw_id
+    assert reset["blog_link_labels_preserved"] == 1
+    assert second_raw_id != first_raw_id
+    assert [row["id"] for row in labeled["items"]] == [second_raw_id]
+    assert labeled["items"][0]["label_id"] == {"1": 1}
+    assert labeled["items"][0]["label_slugs"] == ["blog"]
+
+
+def test_repository_blog_labeling_upsert_rejects_non_labelable_raw_targets_and_reset_preserves_labels(
     tmp_path: Path,
 ) -> None:
-    """Only finished blogs should be labelable, and reset should clear label/tag rows."""
+    """Only raw-success/model-filtered blogs should be labelable."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    finished_blog_id, inserted = repository.upsert_blog(
-        url="https://finished.example/",
-        normalized_url="https://finished.example/",
-        domain="finished.example",
+    source_blog_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
     )
     assert inserted is True
     queued_blog_id, inserted = repository.upsert_blog(
@@ -1204,13 +1651,21 @@ def test_repository_blog_labeling_upsert_rejects_invalid_targets_and_reset_clear
     )
     assert inserted is True
     repository.mark_blog_result(
-        blog_id=finished_blog_id,
+        blog_id=source_blog_id,
         crawl_status="FINISHED",
         status_code=200,
         friend_links_count=1,
     )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://finished.example/",
+        status="success",
+    )
+    finished_blog = repository.get_labelable_blog_by_url(url="https://finished.example/")
+    assert finished_blog is not None
+    finished_blog_id = int(finished_blog["id"])
 
-    with pytest.raises(repository_module.BlogLabelingConflictError, match="requires_finished"):
+    with pytest.raises(repository_module.BlogLabelingConflictError, match="requires_labelable_raw_url"):
         repository.replace_blog_link_labels(blog_id=queued_blog_id, tag_ids=[1])
 
     with pytest.raises(repository_module.BlogLabelingNotFoundError, match="blog_not_found"):
@@ -1221,9 +1676,6 @@ def test_repository_blog_labeling_upsert_rejects_invalid_targets_and_reset_clear
 
     blog_tag = repository.create_blog_label_tag(name="blog")
     unknown_tag = repository.create_blog_label_tag(name="unknown")
-    with pytest.raises(ValueError, match="blog_label_tag_not_found"):
-        repository.replace_blog_link_labels(blog_id=finished_blog_id, tag_ids=[blog_tag["id"], 999])
-
     first = repository.replace_blog_link_labels(blog_id=finished_blog_id, tag_ids=[blog_tag["id"]])
     second = repository.replace_blog_link_labels(
         blog_id=finished_blog_id,
@@ -1234,32 +1686,162 @@ def test_repository_blog_labeling_upsert_rejects_invalid_targets_and_reset_clear
     labeled = repository.list_blog_labeling_candidates(label="unknown", labeled=True)
     assert [row["id"] for row in labeled["items"]] == [finished_blog_id]
     assert [label["slug"] for label in labeled["items"][0]["labels"]] == ["blog", "unknown"]
+    assert labeled["items"][0]["label_id"] == {"1": 1, "4": 1}
 
     reset = repository.reset()
-    assert reset["blog_link_labels_deleted"] == 2
-    assert reset["blog_label_tags_deleted"] == 2
+    assert reset["blog_link_labels_deleted"] == 0
+    assert reset["blog_label_tags_deleted"] == 0
+    assert reset["blog_link_labels_preserved"] == 1
+    assert reset["blog_labels_preserved"] == 1
+    assert reset["blog_label_tags_preserved"] >= 6
     assert repository.list_blog_labeling_candidates()["items"] == []
+    with session_scope(repository.session_factory) as session:
+        label = session.scalar(
+            select(BlogLabelModel).where(BlogLabelModel.normalized_url == "https://finished.example/")
+        )
+        assert label is not None
+        assert label.label_id == {"1": 1, "4": 1}
+        assert set(label.__table__.columns.keys()) == {
+            "normalized_url",
+            "title",
+            "label_id",
+            "created_time",
+            "updated_time",
+        }
+        assert session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.id == 1)).name == "blog"
 
 
-def test_repository_exports_blog_label_training_csv_with_label_names_and_only_labeled_rows(
+def test_repository_blog_labeling_accepts_label_count_dict(tmp_path: Path) -> None:
+    """Label replacement should persist direct label-id count dictionaries."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_blog_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    assert inserted is True
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_blog_id,
+        normalized_url="https://votes.example/",
+        status="success",
+    )
+
+    created = repository.replace_blog_link_labels(
+        blog_id=raw_id,
+        label_id={"1": 10, "2": 1, "bad": 5, "4": 0},
+    )
+    page = repository.list_blog_labeling_candidates(label="company", labeled=True)
+
+    assert created["label_id"] == {"1": 10, "2": 1}
+    assert [label["count"] for label in created["labels"]] == [10, 1]
+    assert [row["id"] for row in page["items"]] == [raw_id]
+    assert page["items"][0]["label_id"] == {"1": 10, "2": 1}
+
+    with pytest.raises(ValueError, match="Unsupported blog label id"):
+        repository.replace_blog_link_labels(blog_id=raw_id, label_id={"999": 1})
+
+
+def test_repository_raw_label_target_does_not_create_lightweight_blog(tmp_path: Path) -> None:
+    """Raw-only labeling should use raw IDs without creating lightweight blogs."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    legacy_id, inserted = repository.upsert_blog(
+        url="https://legacy.example/",
+        normalized_url="https://legacy.example/",
+        domain="legacy.example",
+    )
+    assert inserted is True
+    assert legacy_id == 1
+    source_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=source_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://new-raw.example/",
+        status="success",
+    )
+
+    assert raw_id == legacy_id
+    coverage = repository.ensure_labelable_raw_url_blogs()
+    raw_target = repository.get_labelable_blog_by_url(url="https://new-raw.example/")
+
+    assert coverage == {"inspected": 1, "created": 0}
+    assert raw_target is not None
+    assert raw_target["id"] == raw_id
+    assert {row["normalized_url"] for row in repository.list_blogs()} == {
+        "https://legacy.example/",
+        "https://source.example/",
+    }
+
+
+def test_repository_builds_blog_label_training_rows_with_saved_titles_and_only_labeled_urls(
     tmp_path: Path,
 ) -> None:
-    """Training export should skip unlabeled rows and flatten one row per assigned label."""
+    """Training rows should skip unlabeled URLs and use titles saved with labels."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    alpha_id, inserted = repository.upsert_blog(
+    source_id, inserted = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    assert inserted is True
+    repository.mark_blog_result(
+        blog_id=source_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=2,
+        metadata_captured=True,
+        title="Source",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://alpha.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://model-alpha.example/",
+        status="model:model_consensus_all_non_blog",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://blocked-alpha.example/",
+        status="rule:blocked_tld",
+    )
+    alpha = repository.get_labelable_blog_by_url(url="https://alpha.example/")
+    model_alpha = repository.get_labelable_blog_by_url(url="https://model-alpha.example/")
+    assert alpha is not None
+    assert model_alpha is not None
+    alpha_id = int(alpha["id"])
+    model_alpha_id = int(model_alpha["id"])
+    _, inserted = repository.upsert_blog(
+        url="https://blocked-alpha.example/",
+        normalized_url="https://blocked-alpha.example/",
+        domain="blocked-alpha.example",
+    )
+    assert inserted is True
+    alpha_blog_id, inserted = repository.upsert_blog(
         url="https://alpha.example/",
         normalized_url="https://alpha.example/",
         domain="alpha.example",
     )
     assert inserted is True
-    beta_id, inserted = repository.upsert_blog(
+    waiting_id, inserted = repository.upsert_blog(
         url="https://beta.example/",
         normalized_url="https://beta.example/",
         domain="beta.example",
     )
     assert inserted is True
     repository.mark_blog_result(
-        blog_id=alpha_id,
+        blog_id=alpha_blog_id,
         crawl_status="FINISHED",
         status_code=200,
         friend_links_count=1,
@@ -1267,7 +1849,7 @@ def test_repository_exports_blog_label_training_csv_with_label_names_and_only_la
         title="Alpha",
     )
     repository.mark_blog_result(
-        blog_id=beta_id,
+        blog_id=waiting_id,
         crawl_status="FINISHED",
         status_code=200,
         friend_links_count=0,
@@ -1276,10 +1858,21 @@ def test_repository_exports_blog_label_training_csv_with_label_names_and_only_la
     blog_tag = repository.create_blog_label_tag(name="blog")
     official_tag = repository.create_blog_label_tag(name="official")
     repository.replace_blog_link_labels(blog_id=alpha_id, tag_ids=[official_tag["id"], blog_tag["id"]])
+    repository.replace_blog_link_labels(blog_id=model_alpha_id, tag_ids=[blog_tag["id"]])
+    with pytest.raises(repository_module.BlogLabelingConflictError):
+        repository.replace_blog_link_labels(blog_id=waiting_id, tag_ids=[blog_tag["id"]])
 
-    exported = repository.export_blog_label_training_csv()
+    remaining = repository.list_blog_labeling_candidates(labeled=False)
+    labeled = repository.list_blog_labeling_candidates(labeled=True, sort="recently_labeled")
 
-    rows = list(csv.DictReader(StringIO(exported)))
+    assert [row["url"] for row in remaining["items"]] == []
+    assert {row["url"] for row in labeled["items"]} == {"https://alpha.example/", "https://model-alpha.example/"}
+    with session_scope(repository.session_factory) as session:
+        alpha_label = session.get(BlogLabelModel, "https://alpha.example/")
+        alpha_title = alpha_label.title if alpha_label is not None else None
+        rows = repository._blog_label_training_records(session)
+    assert alpha_label is not None
+    assert alpha_title == "Alpha"
     assert rows == [
         {
             "url": "https://alpha.example/",
@@ -1291,7 +1884,185 @@ def test_repository_exports_blog_label_training_csv_with_label_names_and_only_la
             "title": "Alpha",
             "label": "official",
         },
+        {
+            "url": "https://model-alpha.example/",
+            "title": "",
+            "label": "blog",
+        },
     ]
+
+
+def test_repository_syncs_and_rebuilds_blog_label_training_parquet(tmp_path: Path) -> None:
+    """Parquet export should persist labeled rows and report missing saved data."""
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
+    first_id, _ = repository.upsert_blog(
+        url="https://alpha.example/",
+        normalized_url="https://alpha.example/",
+        domain="alpha.example",
+    )
+    second_id, _ = repository.upsert_blog(
+        url="https://beta.example/",
+        normalized_url="https://beta.example/",
+        domain="beta.example",
+    )
+    for blog_id, title in ((first_id, "Alpha"), (second_id, "Beta")):
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=1,
+            metadata_captured=True,
+            title=title,
+        )
+        repository.create_raw_discovered_url(
+            source_blog_id=first_id,
+            normalized_url="https://alpha.example/" if blog_id == first_id else "https://beta.example/",
+            status="success",
+        )
+
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    official_tag = repository.create_blog_label_tag(name="official")
+    repository.replace_blog_link_labels(blog_id=first_id, tag_ids=[blog_tag["id"]])
+
+    first_sync = repository.sync_blog_label_training_parquet()
+
+    parquet_path = tmp_path / "exports" / "blog-label-training.parquet"
+    assert first_sync["rewritten"] is True
+    assert first_sync["saved_count"] == 1
+    assert parquet_path.exists()
+    assert pq.read_table(parquet_path).to_pylist() == [
+        {"url": "https://alpha.example/", "title": "Alpha", "label": "blog"}
+    ]
+
+    repository.replace_blog_link_labels(blog_id=second_id, tag_ids=[official_tag["id"]])
+    status = repository.get_blog_label_training_parquet_status()
+    assert status["saved_count"] == 1
+    assert status["total_labeled"] == 2
+    assert status["missing_count"] == 1
+
+    rebuild = repository.rebuild_blog_label_training_parquet()
+    assert rebuild["rewritten"] is True
+    assert rebuild["saved_count"] == 2
+    assert pq.read_table(parquet_path).to_pylist() == [
+        {"url": "https://alpha.example/", "title": "Alpha", "label": "blog"},
+        {"url": "https://beta.example/", "title": "Beta", "label": "official"},
+    ]
+
+    parquet_payload, export_status = repository.export_blog_label_training_parquet()
+    assert parquet_payload == parquet_path.read_bytes()
+    assert export_status["saved_count"] == 2
+
+
+def test_legacy_label_import_uses_labelable_raw_url_scope(tmp_path: Path) -> None:
+    """Legacy import should align labels against the same raw URL scope as the UI."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    repository.mark_blog_result(
+        blog_id=source_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=2,
+        metadata_captured=True,
+        title="Source",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://model-old.example/",
+        status="model:model_consensus_all_non_blog",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://rule-old.example/",
+        status="rule:blocked_tld",
+    )
+    csv_path = tmp_path / "legacy.csv"
+    csv_path.write_text(
+        "url,title,label\n"
+        "https://model-old.example/,Model Old,blog\n"
+        "https://rule-old.example/,Rule Old,company\n",
+        encoding="utf-8",
+    )
+
+    dry_run = import_legacy_blog_labels.import_legacy_labels(
+        repository=repository,
+        source_csv=csv_path,
+        apply=False,
+        replace_existing=False,
+    )
+    applied = import_legacy_blog_labels.import_legacy_labels(
+        repository=repository,
+        source_csv=csv_path,
+        apply=True,
+        replace_existing=False,
+    )
+
+    assert dry_run.importable_rows == 1
+    assert dry_run.skipped_missing_blog == 1
+    assert applied.imported_rows == 1
+    labeled = repository.list_blog_labeling_candidates(label="blog", labeled=True)
+    assert [row["url"] for row in labeled["items"]] == ["https://model-old.example/"]
+
+
+def test_legacy_label_count_import_clears_and_restores_url_keyed_labels(tmp_path: Path) -> None:
+    """URL-keyed legacy import should clear labels and restore CSV counts."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    other_tag = repository.create_blog_label_tag(name="other")
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://old.example/",
+        status="success",
+    )
+    repository.replace_blog_link_labels(blog_id=raw_id, tag_ids=[blog_tag["id"]])
+    csv_path = tmp_path / "legacy-counts.csv"
+    csv_path.write_text(
+        "url,title,label\n"
+        "https://old.example/,Old,blog\n"
+        "https://old.example/,Old,blog\n"
+        "https://tool.example/,Tool,others\n"
+        "bad-url,Bad,blog\n"
+        "https://skip.example/,Skip,weird\n",
+        encoding="utf-8",
+    )
+
+    dry_run = import_legacy_label_counts.import_legacy_label_counts(
+        repository=repository,
+        source_csv=csv_path,
+        apply=False,
+        clear_existing=False,
+    )
+    applied = import_legacy_label_counts.import_legacy_label_counts(
+        repository=repository,
+        source_csv=csv_path,
+        apply=True,
+        clear_existing=True,
+    )
+
+    assert dry_run.imported_urls == 2
+    assert dry_run.imported_label_counts == 3
+    assert applied.cleared_existing == 1
+    assert applied.imported_urls == 2
+    with session_scope(repository.session_factory) as session:
+        rows = {
+            row.normalized_url: (row.title, row.label_id)
+            for row in session.scalars(select(BlogLabelModel)).all()
+        }
+    assert rows["https://old.example/"] == ("Old", {str(blog_tag["id"]): 2})
+    assert rows["https://tool.example/"] == ("Tool", {str(other_tag["id"]): 1})
 
 
 def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path: Path) -> None:

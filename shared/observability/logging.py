@@ -370,6 +370,72 @@ def configure_logging(
     _CONFIGURED_SERVICE = service
 
 
+def configure_dedicated_event_logger(
+    *,
+    logger_name: str,
+    service: str,
+    log_dir: Path | str = DEFAULT_LOG_DIR,
+    level: str = DEFAULT_LOG_LEVEL,
+    file_enabled: bool = True,
+    console_enabled: bool = True,
+    log_format: str = DEFAULT_LOG_FORMAT,
+    retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+) -> logging.Logger:
+    """Configure one dedicated event logger with its own service directory.
+
+    Args:
+        logger_name: Python logging name to configure.
+        service: Stable log service name used for files and payload fields.
+        log_dir: Root directory under which service log files are stored.
+        level: Logging level name such as ``INFO`` or ``DEBUG``.
+        file_enabled: Whether to write hourly files under ``log_dir``.
+        console_enabled: Whether to also emit records to stderr.
+        log_format: ``json`` for JSON lines, otherwise a readable format.
+        retention_days: Number of recent days of hourly log slices to keep.
+
+    Returns:
+        Configured logger. It does not propagate to the root logger, so its
+        records stay out of the parent service's normal app/error files.
+    """
+
+    resolved_level = _resolve_level(level)
+    formatter = _build_formatter(service=service, log_format=log_format)
+    logger = logging.getLogger(logger_name)
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(resolved_level)
+
+    if console_enabled:
+        console = logging.StreamHandler()
+        console.setLevel(resolved_level)
+        console.setFormatter(formatter)
+        logger.addHandler(console)
+
+    if file_enabled:
+        app_file = HourlySliceFileHandler(
+            log_dir=log_dir,
+            log_type="app",
+            service=service,
+            retention_days=retention_days,
+        )
+        app_file.setLevel(resolved_level)
+        app_file.addFilter(MaxLevelFilter(logging.INFO))
+        app_file.setFormatter(formatter)
+        logger.addHandler(app_file)
+
+        error_file = HourlySliceFileHandler(
+            log_dir=log_dir,
+            log_type="error",
+            service=service,
+            retention_days=retention_days,
+        )
+        error_file.setLevel(logging.WARNING)
+        error_file.setFormatter(formatter)
+        logger.addHandler(error_file)
+
+    return logger
+
+
 def get_logger(name: str) -> logging.Logger:
     """Return a standard logger for application code.
 

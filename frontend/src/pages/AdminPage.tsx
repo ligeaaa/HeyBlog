@@ -1,8 +1,11 @@
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Database,
+  Download,
   ExternalLink,
+  FileCheck2,
   Loader2,
   Play,
   RefreshCcw,
@@ -16,7 +19,10 @@ import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
 import {
+  downloadAdminBlogLabelParquet,
+  fetchAdminBlogLabelCounts,
   fetchAdminBlogLabelingCandidates,
+  fetchAdminBlogLabelParquetStatus,
   fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
@@ -24,6 +30,8 @@ import {
   fetchAdminUrlRefilterLatest,
   fetchStats,
   postAdminBlogLabelTag,
+  postAdminBlogLabelParquetRebuild,
+  postAdminBlogLabelParquetSync,
   postAdminBootstrap,
   postAdminResetDatabase,
   postAdminRunBatch,
@@ -41,6 +49,8 @@ import type {
   AdminUrlRefilterRun,
   AdminUrlRefilterRunEvent,
   StatsData,
+  AdminBlogLabelCounts,
+  AdminBlogLabelParquetStatus,
 } from "../types/graph";
 
 const ADMIN_TOKEN_STORAGE_KEY = "heyblog_admin_token";
@@ -109,6 +119,8 @@ export function AdminPage() {
   const [refilterEvents, setRefilterEvents] = useState<AdminUrlRefilterRunEvent[]>([]);
   const [labelingCandidates, setLabelingCandidates] = useState<AdminBlogLabelingCandidate[]>([]);
   const [labelTags, setLabelTags] = useState<AdminBlogLabelTag[]>([]);
+  const [labelCounts, setLabelCounts] = useState<AdminBlogLabelCounts>({ totalLabeled: 0, byLabel: {} });
+  const [labelParquetStatus, setLabelParquetStatus] = useState<AdminBlogLabelParquetStatus | null>(null);
   const [labelingTotalItems, setLabelingTotalItems] = useState(0);
   const [labelingTotalPages, setLabelingTotalPages] = useState(1);
   const [labelingPage, setLabelingPage] = useState(1);
@@ -117,6 +129,8 @@ export function AdminPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRunningAction, setIsRunningAction] = useState(false);
   const [isLabelingLoading, setIsLabelingLoading] = useState(false);
+  const [isParquetActionRunning, setIsParquetActionRunning] = useState(false);
+  const [labelParquetProgress, setLabelParquetProgress] = useState<string | null>(null);
   const [labelingBlogId, setLabelingBlogId] = useState<number | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
 
@@ -156,19 +170,31 @@ export function AdminPage() {
         setRefilterEvents([]);
         setLabelingCandidates([]);
         setLabelTags([]);
+        setLabelCounts({ totalLabeled: 0, byLabel: {} });
+        setLabelParquetStatus(null);
         setLabelingTotalItems(0);
         setLabelingTotalPages(1);
         setAdminError("请输入管理员 Token 以加载受保护接口。");
         return;
       }
 
-      const [runtimeStatusResponse, runtimeCurrentResponse, latestDedupResponse, latestRefilterResponse, labelingPageResponse] =
+      const [
+        runtimeStatusResponse,
+        runtimeCurrentResponse,
+        latestDedupResponse,
+        latestRefilterResponse,
+        labelingPageResponse,
+        labelCountResponse,
+        labelParquetResponse,
+      ] =
         await Promise.all([
           fetchAdminRuntimeStatus(adminToken),
           fetchAdminRuntimeCurrent(adminToken),
           fetchAdminDedupLatest(adminToken),
           fetchAdminUrlRefilterLatest(adminToken),
           loadLabelingCandidates(adminToken),
+          fetchAdminBlogLabelCounts(adminToken),
+          fetchAdminBlogLabelParquetStatus(adminToken),
         ]);
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
@@ -176,6 +202,8 @@ export function AdminPage() {
       setLatestRefilterRun(latestRefilterResponse);
       setLabelingCandidates(labelingPageResponse.items);
       setLabelTags(labelingPageResponse.availableTags);
+      setLabelCounts(labelCountResponse);
+      setLabelParquetStatus(labelParquetResponse);
       setLabelingTotalItems(labelingPageResponse.totalItems);
       setLabelingTotalPages(labelingPageResponse.totalPages);
       if (latestRefilterResponse !== null) {
@@ -193,6 +221,8 @@ export function AdminPage() {
       setRefilterEvents([]);
       setLabelingCandidates([]);
       setLabelTags([]);
+      setLabelCounts({ totalLabeled: 0, byLabel: {} });
+      setLabelParquetStatus(null);
       setLabelingTotalItems(0);
       setLabelingTotalPages(1);
       setAdminError("管理员接口加载失败，请确认 Token 是否正确。");
@@ -247,6 +277,12 @@ export function AdminPage() {
       setLabelTags(response.availableTags);
       setLabelingTotalItems(response.totalItems);
       setLabelingTotalPages(response.totalPages);
+      const [counts, parquetStatus] = await Promise.all([
+        fetchAdminBlogLabelCounts(activeAdminToken),
+        fetchAdminBlogLabelParquetStatus(activeAdminToken),
+      ]);
+      setLabelCounts(counts);
+      setLabelParquetStatus(parquetStatus);
     } catch (error) {
       console.error(error);
       toast.error("标注台加载失败，请检查 token 或服务状态。");
@@ -273,6 +309,14 @@ export function AdminPage() {
       setLabelingCandidates((current) => current.filter((item) => item.id !== candidate.id));
       setLabelingTotalItems((current) => Math.max(0, current - 1));
       setLabelingTotalPages((current) => Math.max(1, current));
+      const counts = await fetchAdminBlogLabelCounts(activeAdminToken);
+      const parquetStatus =
+        counts.totalLabeled > 0 && counts.totalLabeled % (labelParquetStatus?.batchSize ?? 100) === 0
+          ? await postAdminBlogLabelParquetSync(activeAdminToken)
+          : await fetchAdminBlogLabelParquetStatus(activeAdminToken);
+      setLabelCounts(counts);
+      setLabelParquetStatus(parquetStatus);
+      setLabelParquetProgress(parquetStatus.message);
       toast.success(`已标注为 ${tag.name}。`);
     } catch (error) {
       console.error(error);
@@ -291,6 +335,40 @@ export function AdminPage() {
     event.preventDefault();
     setLabelingPage(1);
     void refreshLabelingWorkbench({ page: 1 });
+  }
+
+  /**
+   * Run one parquet export action and surface progress in the labeling workbench.
+   *
+   * @param action Action callback that checks, syncs, rebuilds, or downloads parquet data.
+   * @param progressMessage Message shown while the action is in flight.
+   * @returns Promise resolved after the parquet action finishes.
+   */
+  async function runParquetAction(action: () => Promise<AdminBlogLabelParquetStatus | void>, progressMessage: string) {
+    if (!activeAdminToken.trim()) {
+      toast.error("请先输入管理员 Token。");
+      return;
+    }
+    try {
+      setIsParquetActionRunning(true);
+      setLabelParquetProgress(progressMessage);
+      const result = await action();
+      if (result) {
+        setLabelParquetStatus(result);
+        setLabelParquetProgress(result.message);
+        toast.success(result.message);
+      } else {
+        setLabelParquetProgress("parquet 文件下载已开始。");
+        toast.success("parquet 文件下载已开始。");
+      }
+      setLabelCounts(await fetchAdminBlogLabelCounts(activeAdminToken));
+    } catch (error) {
+      console.error(error);
+      setLabelParquetProgress("parquet 操作失败，请检查服务状态。");
+      toast.error("parquet 操作失败，请检查服务状态。");
+    } finally {
+      setIsParquetActionRunning(false);
+    }
   }
 
   /**
@@ -343,6 +421,10 @@ export function AdminPage() {
   }
 
   const avgConnections = stats.totalNodes > 0 ? (stats.totalEdges / stats.totalNodes).toFixed(2) : "0.00";
+  const visibleLabelCounts = labelTags.map((tag) => ({
+    ...tag,
+    count: labelCounts.byLabel[tag.slug] ?? 0,
+  }));
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.15),_transparent_28%),linear-gradient(180deg,_#f4f7fb_0%,_#f8fbff_48%,_#ffffff_100%)]">
@@ -426,7 +508,7 @@ export function AdminPage() {
             <div>
               <h2 className="text-2xl text-slate-950">数据标注台</h2>
               <p className="mt-2 text-sm text-slate-500">
-                未标注 FINISHED 节点：{labelingTotalItems}。默认标签固定为 blog / company / other / unknown。
+                未标注可训练 URL：{labelingTotalItems}。已标注 URL：{labelCounts.totalLabeled}。
               </p>
             </div>
             <form onSubmit={handleLabelingSearch} className="flex w-full flex-col gap-3 sm:flex-row lg:max-w-xl">
@@ -451,6 +533,84 @@ export function AdminPage() {
                 刷新
               </button>
             </form>
+          </div>
+
+          <div className="mb-5 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_1.25fr]">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center gap-2 text-sm text-slate-700">
+                <BarChart3 className="h-4 w-4 text-sky-600" />
+                label 实时统计
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {visibleLabelCounts.map((tag) => (
+                  <div key={tag.slug} className="rounded-xl border border-white bg-white px-3 py-3 shadow-sm">
+                    <div className="truncate text-xs text-slate-500">{tag.name}</div>
+                    <div className="mt-1 text-2xl text-slate-950">{tag.count}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-sm text-slate-700">
+                    <FileCheck2 className="h-4 w-4 text-emerald-600" />
+                    parquet 数据
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    已保存 {labelParquetStatus?.savedCount ?? 0} 条 / 有 label {labelParquetStatus?.totalLabeled ?? 0} 条
+                    {labelParquetStatus?.missingCount ? `，缺 ${labelParquetStatus.missingCount} 条` : ""}
+                  </div>
+                </div>
+                {isParquetActionRunning ? <Loader2 className="h-5 w-5 animate-spin text-sky-500" /> : null}
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <button
+                  type="button"
+                  disabled={isParquetActionRunning}
+                  onClick={() =>
+                    void runParquetAction(
+                      () => postAdminBlogLabelParquetSync(activeAdminToken),
+                      `检查中：已保存 ${labelParquetStatus?.savedCount ?? 0} 条数据，总计有 label 的有 ${labelParquetStatus?.totalLabeled ?? 0} 条数据，重新保存中...`,
+                    )
+                  }
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-700 transition-colors hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  检查补齐
+                </button>
+                <button
+                  type="button"
+                  disabled={isParquetActionRunning}
+                  onClick={() =>
+                    void runParquetAction(
+                      () => postAdminBlogLabelParquetRebuild(activeAdminToken),
+                      "正在重置 parquet 文件并按当前保存流程重新保存...",
+                    )
+                  }
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-700 transition-colors hover:border-amber-300 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  重建 parquet
+                </button>
+                <button
+                  type="button"
+                  disabled={isParquetActionRunning}
+                  onClick={() =>
+                    void runParquetAction(
+                      () => downloadAdminBlogLabelParquet(activeAdminToken),
+                      "正在准备 parquet 文件下载...",
+                    )
+                  }
+                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white transition-colors hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Download className="h-4 w-4" />
+                  下载
+                </button>
+              </div>
+              <div className="mt-3 min-h-5 text-xs text-slate-500">
+                {labelParquetProgress ?? labelParquetStatus?.message ?? "parquet 文件会在每 100 条标注边界或补齐/重建时保存。"}
+              </div>
+            </div>
           </div>
 
           {isLabelingLoading ? (
@@ -653,7 +813,7 @@ export function AdminPage() {
               >
                 <RotateCcw className="h-5 w-5 text-indigo-600" />
                 <div>
-                  <div className="text-slate-900">重新过滤</div>
+                  <div className="text-slate-900">从 raw 重新过滤</div>
                   <div className="text-xs text-slate-500">POST /api/admin/url-refilter-runs</div>
                 </div>
               </button>

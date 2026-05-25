@@ -1,0 +1,9 @@
+Total messages: 4 (Errors: 3, Warnings: 0)
+
+[VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://127.0.0.1:3000/admin:0
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:3000/favicon.ico:0
+[ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:3000/api/stats:0
+[ERROR] Error: api_error_500
+    at di (http://127.0.0.1:3000/assets/index-Db_EQHzr.js:11:71456)
+    at async ZD (http://127.0.0.1:3000/assets/index-Db_EQHzr.js:11:72564)
+    at async Ut (http://127.0.0.1:3000/assets/index-Db_EQHzr.js:11:79136) @ http://127.0.0.1:3000/assets/index-Db_EQHzr.js:10

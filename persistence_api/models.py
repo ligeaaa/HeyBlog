@@ -9,6 +9,7 @@ from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
+from sqlalchemy import JSON
 from sqlalchemy import Text
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.sql import func
@@ -24,7 +25,15 @@ class Base(DeclarativeBase):
 
 
 class BlogModel(Base):
-    """Blog node persisted in the crawl graph."""
+    """Blog node persisted in the crawl graph.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Blog database row whose public/business identifier is ``blog_id``.
+    """
 
     __tablename__ = "blogs"
 
@@ -74,34 +83,45 @@ class IngestionRequestModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class BlogLabelModel(Base):
+    """Stable URL-keyed label vote counters.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One row per normalized URL. ``title`` stores the labeling-time display
+        title, and ``label_id`` stores a JSON object whose string keys are
+        label IDs and integer values are vote/count totals.
+    """
+
+    __tablename__ = "blog_labels"
+
+    normalized_url: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    label_id: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class BlogLabelTagModel(Base):
-    """User-defined label type."""
+    """Label definition row used to resolve stored label IDs.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        A stable label definition whose ``id`` is used as the JSON key inside
+        ``BlogLabelModel.label_id``.
+    """
 
     __tablename__ = "blog_label_tags"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class BlogLabelAssignmentModel(Base):
-    """One label assignment from one blog to one label type."""
-
-    __tablename__ = "blog_label_assignments"
-    __table_args__ = (UniqueConstraint("blog_id", "tag_id", name="uq_blog_label_assignments_blog_tag"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.blog_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    tag_id: Mapped[int] = mapped_column(
-        ForeignKey("blog_label_tags.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    labeled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -126,11 +146,7 @@ class RawDiscoveredUrlModel(Base):
     __tablename__ = "raw_discovered_urls"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    source_blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.blog_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    source_blog_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

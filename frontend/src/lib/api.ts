@@ -1,7 +1,9 @@
 import type {
   AdminDedupSummary,
+  AdminBlogLabelCounts,
   AdminBlogLabelingCandidate,
   AdminBlogLabelingPage,
+  AdminBlogLabelParquetStatus,
   AdminBlogLabelTag,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
@@ -206,12 +208,13 @@ interface BackendBlogLabelTag {
   id: number;
   name: string;
   slug: string;
-  created_at: string;
-  updated_at: string;
+  count?: number;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 interface BackendBlogLabelAssignment extends BackendBlogLabelTag {
-  labeled_at: string;
+  labeled_at: string | null;
 }
 
 interface BackendBlogLabelingCandidate extends BackendGraphNode {
@@ -231,6 +234,19 @@ interface BackendBlogLabelingPage {
   has_next: boolean;
   has_prev: boolean;
   sort: string;
+}
+
+interface BackendBlogLabelParquetStatus {
+  path: string;
+  filename: string;
+  exists: boolean;
+  saved_count: number;
+  total_labeled: number;
+  missing_count: number;
+  batch_size: number;
+  rewritten: boolean;
+  message: string;
+  updated_at: string | null;
 }
 
 interface BlogCatalogQuery {
@@ -319,8 +335,8 @@ function toAdminBlogLabelTag(tag: BackendBlogLabelTag): AdminBlogLabelTag {
     id: tag.id,
     name: tag.name,
     slug: tag.slug,
-    createdAt: tag.created_at,
-    updatedAt: tag.updated_at,
+    createdAt: tag.created_at ?? "",
+    updatedAt: tag.updated_at ?? "",
   };
 }
 
@@ -337,11 +353,32 @@ function toAdminBlogLabelingCandidate(
     ...toBlogCatalogItem(candidate),
     labels: candidate.labels.map((label) => ({
       ...toAdminBlogLabelTag(label),
-      labeledAt: label.labeled_at,
+      labeledAt: label.labeled_at ?? "",
     })),
     labelSlugs: candidate.label_slugs,
     lastLabeledAt: candidate.last_labeled_at,
     isLabeled: candidate.is_labeled,
+  };
+}
+
+/**
+ * Convert one backend parquet status payload into frontend field casing.
+ *
+ * @param status Raw backend parquet status payload.
+ * @returns Normalized parquet status used by the admin workbench.
+ */
+function toAdminBlogLabelParquetStatus(status: BackendBlogLabelParquetStatus): AdminBlogLabelParquetStatus {
+  return {
+    path: status.path,
+    filename: status.filename,
+    exists: status.exists,
+    savedCount: status.saved_count,
+    totalLabeled: status.total_labeled,
+    missingCount: status.missing_count,
+    batchSize: status.batch_size,
+    rewritten: status.rewritten,
+    message: status.message,
+    updatedAt: status.updated_at,
   };
 }
 
@@ -857,6 +894,7 @@ export async function putAdminBlogLabels(
   adminToken: string,
   blogId: number,
   tagIds: number[],
+  labelId?: Record<string, number>,
 ): Promise<{ labelSlugs: string[]; isLabeled: boolean; lastLabeledAt: string | null }> {
   const payload = await apiJson<{
     label_slugs: string[];
@@ -865,13 +903,114 @@ export async function putAdminBlogLabels(
   }>(`/api/admin/blog-labeling/labels/${blogId}`, {
     method: "PUT",
     headers: adminHeaders(adminToken),
-    body: JSON.stringify({ tag_ids: tagIds }),
+    body: JSON.stringify(labelId === undefined ? { tag_ids: tagIds } : { label_id: labelId }),
   });
   return {
     labelSlugs: payload.label_slugs,
     isLabeled: payload.is_labeled,
     lastLabeledAt: payload.last_labeled_at,
   };
+}
+
+/**
+ * Fetch label counts for every current label slug.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Count summary grouped by label slug.
+ */
+export async function fetchAdminBlogLabelCounts(adminToken: string): Promise<AdminBlogLabelCounts> {
+  const response = await fetchAdminBlogLabelingCandidates(adminToken, {
+    page: 1,
+    pageSize: 1,
+    labeled: true,
+    sort: "recently_labeled",
+  });
+  const counts = Object.fromEntries(
+    await Promise.all(
+      response.availableTags.map(async (tag) => {
+        const labeled = await fetchAdminBlogLabelingCandidates(adminToken, {
+          page: 1,
+          pageSize: 1,
+          label: tag.slug,
+          labeled: true,
+          sort: "recently_labeled",
+        });
+        return [tag.slug, labeled.totalItems] as const;
+      }),
+    ),
+  );
+  return {
+    totalLabeled: response.totalItems,
+    byLabel: counts,
+  };
+}
+
+/**
+ * Fetch the current parquet export status.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Normalized parquet status payload.
+ */
+export async function fetchAdminBlogLabelParquetStatus(adminToken: string): Promise<AdminBlogLabelParquetStatus> {
+  const payload = await apiJson<BackendBlogLabelParquetStatus>("/api/admin/blog-labeling/parquet-status", {
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminBlogLabelParquetStatus(payload);
+}
+
+/**
+ * Check and fill missing labeled rows in the parquet export.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Normalized parquet status after the sync.
+ */
+export async function postAdminBlogLabelParquetSync(adminToken: string): Promise<AdminBlogLabelParquetStatus> {
+  const payload = await apiJson<BackendBlogLabelParquetStatus>("/api/admin/blog-labeling/parquet-sync", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminBlogLabelParquetStatus(payload);
+}
+
+/**
+ * Rebuild the parquet export from all current labeled rows.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Normalized parquet status after the rebuild.
+ */
+export async function postAdminBlogLabelParquetRebuild(adminToken: string): Promise<AdminBlogLabelParquetStatus> {
+  const payload = await apiJson<BackendBlogLabelParquetStatus>("/api/admin/blog-labeling/parquet-rebuild", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminBlogLabelParquetStatus(payload);
+}
+
+/**
+ * Download the current parquet export through the browser.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Promise resolved after the browser download has been started.
+ */
+export async function downloadAdminBlogLabelParquet(adminToken: string): Promise<void> {
+  const response = await fetch("/api/admin/blog-labeling/parquet-export", {
+    headers: adminHeaders(adminToken),
+  });
+  if (!response.ok) {
+    throw new Error(`api_error_${response.status}`);
+  }
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get("content-disposition") ?? "";
+  const filenameMatch = /filename="?(?<filename>[^";]+)"?/i.exec(contentDisposition);
+  const filename = filenameMatch?.groups?.filename ?? "blog-label-training.parquet";
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
 }
 
 /**

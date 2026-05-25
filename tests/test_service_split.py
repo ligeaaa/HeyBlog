@@ -1,5 +1,6 @@
 """Tests for the split-service entrypoints."""
 
+import json
 from pathlib import Path
 from time import sleep
 
@@ -17,6 +18,20 @@ from search.main import create_app as create_search_app
 from shared.config import PROJECT_ROOT
 from shared.config import Settings
 from shared.http_clients.persistence_http import PersistenceHttpClient
+
+
+def _read_json_lines(path: Path) -> list[dict[str, object]]:
+    """Read one JSON-lines log file."""
+
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _single_log_file(path: Path) -> Path:
+    """Return the only log file in a directory."""
+
+    files = list(path.glob("*.log"))
+    assert len(files) == 1
+    return files[0]
 
 
 class StubCrawler:
@@ -538,10 +553,40 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
         },
     )
     assert mark_finished.status_code == 200
+    accepted_raw = client.post(
+        "/internal/raw-discovered-urls",
+        json={
+            "source_blog_id": finished.json()["id"],
+            "normalized_url": "https://alpha.example/",
+            "status": "success",
+        },
+    )
+    model_filtered_raw = client.post(
+        "/internal/raw-discovered-urls",
+        json={
+            "source_blog_id": finished.json()["id"],
+            "normalized_url": "https://model-filtered.example/",
+            "status": "model:model_consensus_all_non_blog",
+        },
+    )
+    rule_filtered_raw = client.post(
+        "/internal/raw-discovered-urls",
+        json={
+            "source_blog_id": finished.json()["id"],
+            "normalized_url": "https://rule-filtered.example/",
+            "status": "rule:blocked_tld",
+        },
+    )
+    assert accepted_raw.status_code == 200
+    assert model_filtered_raw.status_code == 200
+    assert rule_filtered_raw.status_code == 200
 
     candidates = client.get("/internal/blog-labeling/candidates", params={"labeled": "false"})
     assert candidates.status_code == 200
-    assert [row["id"] for row in candidates.json()["items"]] == [finished.json()["id"]]
+    assert [row["url"] for row in candidates.json()["items"]] == [
+        "https://model-filtered.example/",
+        "https://alpha.example/",
+    ]
     assert candidates.json()["items"][0]["labels"] == []
     assert candidates.json()["filters"]["labeled"] is False
 
@@ -552,38 +597,69 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
 
     tags = client.get("/internal/blog-labeling/tags")
     assert tags.status_code == 200
-    assert [row["slug"] for row in tags.json()] == ["blog", "official"]
+    assert [row["slug"] for row in tags.json()] == [
+        "blog",
+        "company",
+        "other",
+        "unknown",
+        "official",
+        "government",
+    ]
 
     put_label = client.put(
-        f"/internal/blog-labeling/labels/{finished.json()['id']}",
-        json={"tag_ids": [create_blog.json()["id"], create_official.json()["id"]]},
+        f"/internal/blog-labeling/labels/{candidates.json()['items'][0]['id']}",
+        json={"label_id": {str(create_blog.json()["id"]): 10, str(create_official.json()["id"]): 1}},
     )
     assert put_label.status_code == 200
+    assert put_label.json()["label_id"] == {"1": 10, "5": 1}
     assert put_label.json()["label_slugs"] == ["blog", "official"]
 
+    candidates_after_label = client.get("/internal/blog-labeling/candidates", params={"labeled": "false"})
+    assert candidates_after_label.status_code == 200
+    assert [row["url"] for row in candidates_after_label.json()["items"]] == ["https://alpha.example/"]
+
     export_csv = client.get("/internal/blog-labeling/export")
-    assert export_csv.status_code == 200
-    assert export_csv.headers["content-type"].startswith("text/csv")
-    assert export_csv.text.splitlines() == [
-        "url,title,label",
-        "https://alpha.example/,Alpha,blog",
-        "https://alpha.example/,Alpha,official",
-    ]
+    assert export_csv.status_code == 404
+
+    parquet_status = client.get("/internal/blog-labeling/parquet-status")
+    assert parquet_status.status_code == 200
+    assert parquet_status.json()["total_labeled"] == 2
+    assert parquet_status.json()["saved_count"] == 0
+    assert parquet_status.json()["missing_count"] == 2
+
+    parquet_sync = client.post("/internal/blog-labeling/parquet-sync")
+    assert parquet_sync.status_code == 200
+    assert parquet_sync.json()["saved_count"] == 2
+    assert parquet_sync.json()["missing_count"] == 0
+
+    parquet_export = client.get("/internal/blog-labeling/parquet-export")
+    assert parquet_export.status_code == 200
+    assert parquet_export.headers["content-type"].startswith("application/vnd.apache.parquet")
+    assert parquet_export.headers["x-heyblog-label-saved-count"] == "2"
 
     labeled = client.get(
         "/internal/blog-labeling/candidates",
         params={"label": "official", "labeled": "true", "sort": "recently_labeled"},
     )
     assert labeled.status_code == 200
-    assert [row["id"] for row in labeled.json()["items"]] == [finished.json()["id"]]
+    assert [row["id"] for row in labeled.json()["items"]] == [candidates.json()["items"][0]["id"]]
     assert labeled.json()["items"][0]["is_labeled"] is True
     assert [row["slug"] for row in labeled.json()["items"][0]["labels"]] == ["blog", "official"]
 
     invalid_label = client.post("/internal/blog-labeling/tags", json={"name": "   "})
     assert invalid_label.status_code == 422
 
+    unrelated = client.post(
+        "/internal/blogs/upsert",
+        json={
+            "url": "https://gamma.example/",
+            "normalized_url": "https://gamma.example/",
+            "domain": "gamma.example",
+        },
+    )
+    assert unrelated.status_code == 200
     conflict = client.put(
-        f"/internal/blog-labeling/labels/{waiting.json()['id']}",
+        f"/internal/blog-labeling/labels/{unrelated.json()['id']}",
         json={"tag_ids": [create_blog.json()["id"]]},
     )
     assert conflict.status_code == 409
@@ -591,11 +667,11 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     missing = client.put("/internal/blog-labeling/labels/999", json={"tag_ids": [create_blog.json()["id"]]})
     assert missing.status_code == 404
 
-    unknown_tag = client.put(
+    unknown_label = client.put(
         f"/internal/blog-labeling/labels/{finished.json()['id']}",
         json={"tag_ids": [999]},
     )
-    assert unknown_tag.status_code == 422
+    assert unknown_label.status_code == 422
 
 
 def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
@@ -635,31 +711,105 @@ def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
     assert stub.post_calls == []
 
 
-def test_persistence_http_client_can_fetch_blog_label_training_csv() -> None:
-    """The split-service HTTP client should support plain-text CSV exports."""
+def test_persistence_http_client_uses_long_timeout_for_url_refilter_execute() -> None:
+    """URL refilter execution should not inherit the short default request timeout."""
 
     class StubResponse:
-        text = "url,title,label\nhttps://alpha.example/,Alpha,blog\n"
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"status": "SUCCEEDED"}
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.post_calls: list[tuple[str, dict[str, object], float | None]] = []
+
+        def post(
+            self,
+            path: str,
+            json: dict[str, object],
+            timeout: float | None = None,
+            **kwargs: object,
+        ) -> StubResponse:
+            del kwargs
+            self.post_calls.append((path, json, timeout))
+            return StubResponse()
+
+    client = PersistenceHttpClient("http://persistence.internal", timeout_seconds=10.0)
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    response = client.execute_url_refilter_run(run_id=42)
+
+    assert response == {"status": "SUCCEEDED"}
+    assert stub.post_calls == [
+        (
+            "/internal/url-refilter-runs/42/execute",
+            {},
+            24 * 7 * 60 * 60,
+        )
+    ]
+
+
+def test_persistence_http_client_can_manage_blog_label_training_parquet() -> None:
+    """The split-service HTTP client should expose parquet status, sync, rebuild, and download."""
+
+    status_payload = {
+        "path": "/tmp/blog-label-training.parquet",
+        "filename": "blog-label-training.parquet",
+        "exists": True,
+        "saved_count": 1,
+        "total_labeled": 1,
+        "missing_count": 0,
+        "batch_size": 100,
+        "rewritten": False,
+        "message": "ok",
+        "updated_at": "2026-05-24T00:00:00Z",
+    }
+
+    class StubResponse:
+        content = b"PAR1"
+        headers = {"content-disposition": 'attachment; filename="blog-label-training.parquet"'}
 
         def raise_for_status(self) -> None:
             return None
 
+        def json(self) -> dict[str, object]:
+            return status_payload
+
     class StubClient:
         def __init__(self) -> None:
-            self.get_calls: list[tuple[str, dict[str, object] | None]] = []
+            self.get_calls: list[str] = []
+            self.post_calls: list[tuple[str, dict[str, object]]] = []
 
         def get(self, path: str, params: dict[str, object] | None = None) -> StubResponse:
-            self.get_calls.append((path, params))
+            self.get_calls.append(path)
+            return StubResponse()
+
+        def post(self, path: str, json: dict[str, object]) -> StubResponse:
+            self.post_calls.append((path, json))
             return StubResponse()
 
     client = PersistenceHttpClient("http://persistence.internal")
     stub = StubClient()
     client.client = stub  # type: ignore[assignment]
 
-    response = client.export_blog_label_training_csv()
+    assert client.get_blog_label_training_parquet_status()["saved_count"] == 1
+    assert client.sync_blog_label_training_parquet()["missing_count"] == 0
+    assert client.rebuild_blog_label_training_parquet()["rewritten"] is False
+    parquet_bytes, parquet_headers = client.export_blog_label_training_parquet()
 
-    assert response == "url,title,label\nhttps://alpha.example/,Alpha,blog\n"
-    assert stub.get_calls == [("/internal/blog-labeling/export", None)]
+    assert parquet_bytes == b"PAR1"
+    assert parquet_headers["content-disposition"] == 'attachment; filename="blog-label-training.parquet"'
+    assert stub.get_calls == [
+        "/internal/blog-labeling/parquet-status",
+        "/internal/blog-labeling/parquet-export",
+    ]
+    assert stub.post_calls == [
+        ("/internal/blog-labeling/parquet-sync", {}),
+        ("/internal/blog-labeling/parquet-rebuild", {}),
+    ]
 
 
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -821,9 +971,49 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                     "updated_at": "2026-04-05T00:00:00Z",
                 }
             ],
-            "export_blog_label_training_csv": lambda self: (
-                "url,title,label\n"
-                "https://catalog.example.com,Catalog Example,official\n"
+            "get_blog_label_training_parquet_status": lambda self: {
+                "path": "/tmp/blog-label-training.parquet",
+                "filename": "blog-label-training.parquet",
+                "exists": True,
+                "saved_count": 1,
+                "total_labeled": 1,
+                "missing_count": 0,
+                "batch_size": 100,
+                "rewritten": False,
+                "message": "已保存 1 条数据，总计有 label 的有 1 条数据。",
+                "updated_at": "2026-05-24T00:00:00Z",
+            },
+            "sync_blog_label_training_parquet": lambda self: {
+                "path": "/tmp/blog-label-training.parquet",
+                "filename": "blog-label-training.parquet",
+                "exists": True,
+                "saved_count": 1,
+                "total_labeled": 1,
+                "missing_count": 0,
+                "batch_size": 100,
+                "rewritten": False,
+                "message": "无需重新保存：已保存 1 条数据，总计有 label 的有 1 条数据。",
+                "updated_at": "2026-05-24T00:00:00Z",
+            },
+            "rebuild_blog_label_training_parquet": lambda self: {
+                "path": "/tmp/blog-label-training.parquet",
+                "filename": "blog-label-training.parquet",
+                "exists": True,
+                "saved_count": 1,
+                "total_labeled": 1,
+                "missing_count": 0,
+                "batch_size": 100,
+                "rewritten": True,
+                "message": "已重置 parquet 文件并重新保存 1 条数据。",
+                "updated_at": "2026-05-24T00:00:00Z",
+            },
+            "export_blog_label_training_parquet": lambda self: (
+                b"PAR1",
+                {
+                    "content-disposition": 'attachment; filename="blog-label-training.parquet"',
+                    "x-heyblog-label-saved-count": "1",
+                    "x-heyblog-label-total-count": "1",
+                },
             ),
             "create_blog_label_tag": lambda self, name: {
                 "id": 12,
@@ -832,8 +1022,9 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                 "created_at": "2026-04-05T00:00:00Z",
                 "updated_at": "2026-04-05T00:00:00Z",
             },
-            "replace_blog_link_labels": lambda self, blog_id, tag_ids: {
+            "replace_blog_link_labels": lambda self, blog_id, tag_ids=None, label_id=None: {
                 "blog_id": blog_id,
+                "label_id": label_id or {str(tag_id): 1 for tag_id in (tag_ids or [])},
                 "labels": [
                     {
                         "id": tag_id,
@@ -843,11 +1034,11 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                         "updated_at": "2026-04-05T00:00:00Z",
                         "labeled_at": "2026-04-05T00:00:00Z",
                     }
-                    for tag_id in tag_ids
+                    for tag_id in (tag_ids or [])
                 ],
-                "label_slugs": [f"tag-{tag_id}" for tag_id in tag_ids],
-                "last_labeled_at": "2026-04-05T00:00:00Z" if tag_ids else None,
-                "is_labeled": bool(tag_ids),
+                "label_slugs": [f"tag-{tag_id}" for tag_id in (tag_ids or [])],
+                "last_labeled_at": "2026-04-05T00:00:00Z" if (tag_ids or label_id) else None,
+                "is_labeled": bool(tag_ids or label_id),
             },
             "get_blog": lambda self, blog_id: {
                 "id": blog_id,
@@ -1142,8 +1333,11 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                 "edges_deleted": 4,
                 "logs_deleted": 0,
                 "ingestion_requests_deleted": 1,
-                "blog_link_labels_deleted": 1,
-                "blog_label_tags_deleted": 2,
+                "blog_link_labels_deleted": 0,
+                "blog_label_tags_deleted": 0,
+                "blog_label_subjects_preserved": 1,
+                "blog_link_labels_preserved": 1,
+                "blog_label_tags_preserved": 2,
             },
         },
     )()
@@ -1193,10 +1387,22 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert labeling.json()["filters"]["labeled"] == "true"
     assert labeling.json()["available_tags"][0]["slug"] == "blog"
 
-    labeling_export = client.get("/api/admin/blog-labeling/export", headers=admin_headers())
-    assert labeling_export.status_code == 200
-    assert labeling_export.headers["content-type"].startswith("text/csv")
-    assert labeling_export.text == "url,title,label\nhttps://catalog.example.com,Catalog Example,official\n"
+    parquet_status = client.get("/api/admin/blog-labeling/parquet-status", headers=admin_headers())
+    assert parquet_status.status_code == 200
+    assert parquet_status.json()["saved_count"] == 1
+
+    parquet_sync = client.post("/api/admin/blog-labeling/parquet-sync", headers=admin_headers())
+    assert parquet_sync.status_code == 200
+    assert parquet_sync.json()["missing_count"] == 0
+
+    parquet_rebuild = client.post("/api/admin/blog-labeling/parquet-rebuild", headers=admin_headers())
+    assert parquet_rebuild.status_code == 200
+    assert parquet_rebuild.json()["rewritten"] is True
+
+    parquet_export = client.get("/api/admin/blog-labeling/parquet-export", headers=admin_headers())
+    assert parquet_export.status_code == 200
+    assert parquet_export.content == b"PAR1"
+    assert parquet_export.headers["content-type"].startswith("application/vnd.apache.parquet")
 
     tag_create = client.post("/api/admin/blog-labeling/tags", json={"name": "government"}, headers=admin_headers())
     assert tag_create.status_code == 200
@@ -1262,8 +1468,10 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
     assert reset.json()["ingestion_requests_deleted"] == 1
-    assert reset.json()["blog_link_labels_deleted"] == 1
-    assert reset.json()["blog_label_tags_deleted"] == 2
+    assert reset.json()["blog_link_labels_deleted"] == 0
+    assert reset.json()["blog_label_tags_deleted"] == 0
+    assert reset.json()["blog_link_labels_preserved"] == 1
+    assert reset.json()["blog_label_tags_preserved"] == 2
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
 
@@ -1338,18 +1546,20 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
             response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
-        def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, object]:
+        def replace_blog_link_labels(
+            self,
+            *,
+            blog_id: int,
+            tag_ids: list[int] | None = None,
+            label_id: dict[str, int] | None = None,
+        ) -> dict[str, object]:
+            del tag_ids, label_id
             request = httpx.Request("PUT", f"http://persistence/internal/blog-labeling/labels/{blog_id}")
             response = httpx.Response(
                 409,
                 request=request,
                 json={"detail": "blog_labeling_requires_finished_blog"},
             )
-            raise httpx.HTTPStatusError("boom", request=request, response=response)
-
-        def export_blog_label_training_csv(self) -> str:
-            request = httpx.Request("GET", "http://persistence/internal/blog-labeling/export")
-            response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
         def get_blog(self, blog_id: int) -> None:
@@ -1400,8 +1610,7 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
     assert put_response.json()["detail"] == "blog_labeling_requires_finished_blog"
 
     export_response = client.get("/api/admin/blog-labeling/export", headers=admin_headers())
-    assert export_response.status_code == 422
-    assert export_response.json()["detail"] == "Unsupported blog label name"
+    assert export_response.status_code == 404
 
 
 def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
@@ -1940,8 +2149,12 @@ def test_persistence_service_exposes_url_refilter_run_endpoints(tmp_path: Path) 
     assert events.json()[0]["message"] == "停止爬虫中"
 
 
-def test_backend_url_refilter_run_stops_crawler_and_persists_progress_events() -> None:
+def test_backend_url_refilter_run_stops_crawler_and_persists_progress_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     """Admin URL refilter should stop crawler first and expose latest run logs."""
+    monkeypatch.setenv("HEYBLOG_LOG_DIR", str(tmp_path / "logs"))
 
     class RefilterPersistenceStub:
         def __init__(self) -> None:
@@ -2065,6 +2278,198 @@ def test_backend_url_refilter_run_stops_crawler_and_persists_progress_events() -
         "备份中",
         "备份完成，文件保存在 /tmp/backup.sqlite",
     ]
+    refilter_logs = _read_json_lines(_single_log_file(tmp_path / "logs" / "app" / "url-refilter"))
+    assert [row["event"] for row in refilter_logs] == [
+        "maintenance.url_refilter.started",
+        "maintenance.url_refilter.crawler_stop.requested",
+        "maintenance.url_refilter.crawler_stop.succeeded",
+        "maintenance.url_refilter.backend.execute_requested",
+        "maintenance.url_refilter.backend.execute_completed",
+        "maintenance.url_refilter.backend.closed",
+    ]
+    assert all(row["service"] == "url-refilter" for row in refilter_logs)
+    assert refilter_logs[-1]["reason"] == "persistence_execution_completed"
+    assert refilter_logs[-1]["message"] == "url refilter backend closed: persistence execution completed"
+
+
+def test_backend_url_refilter_run_waits_for_crawler_idle_before_starting() -> None:
+    """Admin URL refilter should tolerate a short crawler shutdown delay."""
+
+    class RefilterPersistenceStub:
+        def __init__(self) -> None:
+            self.run = {
+                "id": 10,
+                "status": "PENDING",
+                "filter_chain_version": "rule:same_domain",
+                "crawler_was_running": True,
+                "backup_path": None,
+                "total_count": 0,
+                "scanned_count": 0,
+                "unchanged_count": 0,
+                "activated_count": 0,
+                "deactivated_count": 0,
+                "retagged_count": 0,
+                "last_raw_url_id": None,
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "created_at": "2026-04-22T00:00:00Z",
+                "updated_at": "2026-04-22T00:00:00Z",
+            }
+            self.events: list[dict[str, object]] = []
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run["crawler_was_running"] = crawler_was_running
+            return dict(self.run)
+
+        def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, object]:
+            event = {
+                "id": len(self.events) + 1,
+                "run_id": run_id,
+                "message": message,
+                "created_at": "2026-04-22T00:00:00Z",
+            }
+            self.events.append(event)
+            return dict(event)
+
+        def execute_url_refilter_run(self, *, run_id: int) -> dict[str, object]:
+            self.run["status"] = "SUCCEEDED"
+            self.run["backup_path"] = "/tmp/backup.sqlite"
+            return dict(self.run)
+
+        def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, object]:
+            self.run["status"] = "FAILED"
+            self.run["error_message"] = error_message
+            return dict(self.run)
+
+        def latest_url_refilter_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            return [dict(event) for event in self.events]
+
+    class SlowIdleCrawler:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+            self.poll_count = 0
+            self.runner_status = "running"
+
+        def runtime_status(self) -> dict[str, object]:
+            self.poll_count += 1
+            if self.stop_calls > 0 and self.poll_count >= 4:
+                self.runner_status = "idle"
+            return {
+                "runner_status": self.runner_status,
+                "active_run_id": None,
+                "worker_count": 3,
+                "active_workers": 1 if self.runner_status != "idle" else 0,
+                "current_worker_id": None,
+                "current_blog_id": None,
+                "current_url": None,
+                "current_stage": None,
+                "task_started_at": None,
+                "elapsed_seconds": None,
+                "last_started_at": None,
+                "last_stopped_at": None,
+                "last_error": None,
+                "last_result": None,
+                "workers": [],
+            }
+
+        def current(self) -> dict[str, object]:
+            return self.runtime_status()
+
+        def stop(self) -> dict[str, object]:
+            self.stop_calls += 1
+            self.runner_status = "stopping"
+            return self.runtime_status()
+
+    persistence = RefilterPersistenceStub()
+    crawler = SlowIdleCrawler()
+    app = create_backend_app(
+        BackendState(persistence=persistence, crawler=crawler, search=StubSearch(), admin_token="secret-token")
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/admin/url-refilter-runs", headers=admin_headers())
+    assert response.status_code == 200
+    assert response.json()["id"] == 10
+    assert crawler.stop_calls == 1
+
+
+def test_backend_url_refilter_failure_logs_close_reason(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Backend should log a close message with the failure reason when refilter exits."""
+
+    class FailingPersistenceStub:
+        def __init__(self) -> None:
+            self.run = {
+                "id": 11,
+                "status": "PENDING",
+                "filter_chain_version": "rule:same_domain",
+                "crawler_was_running": False,
+                "backup_path": None,
+                "total_count": 0,
+                "scanned_count": 0,
+                "unchanged_count": 0,
+                "activated_count": 0,
+                "deactivated_count": 0,
+                "retagged_count": 0,
+                "last_raw_url_id": None,
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "created_at": "2026-04-22T00:00:00Z",
+                "updated_at": "2026-04-22T00:00:00Z",
+            }
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run["crawler_was_running"] = crawler_was_running
+            return dict(self.run)
+
+        def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, object]:
+            return {"id": 1, "run_id": run_id, "message": message, "created_at": "2026-04-22T00:00:00Z"}
+
+        def execute_url_refilter_run(self, *, run_id: int) -> dict[str, object]:
+            raise RuntimeError("database disconnected")
+
+        def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, object]:
+            self.run["status"] = "FAILED"
+            self.run["error_message"] = error_message
+            return dict(self.run)
+
+        def latest_url_refilter_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            return []
+
+    monkeypatch.setenv("HEYBLOG_LOG_DIR", str(tmp_path / "logs"))
+    app = create_backend_app(
+        BackendState(
+            persistence=FailingPersistenceStub(),
+            crawler=StubCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/admin/url-refilter-runs", headers=admin_headers())
+    assert response.status_code == 200
+    for _ in range(20):
+        latest = client.get("/api/admin/url-refilter-runs/latest", headers=admin_headers())
+        assert latest.status_code == 200
+        if latest.json()["status"] == "FAILED":
+            break
+        sleep(0.05)
+
+    refilter_logs = _read_json_lines(_single_log_file(tmp_path / "logs" / "app" / "url-refilter"))
+    closed = [row for row in refilter_logs if row["event"] == "maintenance.url_refilter.backend.closed"]
+    assert closed[-1]["reason"] == "unexpected_backend_error"
+    assert closed[-1]["message"] == "url refilter backend closed: database disconnected"
 
 
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:

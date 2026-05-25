@@ -26,6 +26,7 @@ COPY persistence_api ./persistence_api
 COPY search ./search
 COPY frontend ./frontend
 COPY services ./services
+COPY scripts ./scripts
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 COPY seed.csv ./seed.csv
 

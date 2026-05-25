@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC, datetime
-from io import StringIO
 import json
+import logging
 from math import ceil
 from pathlib import Path
 import sqlite3
 from secrets import token_urlsafe
 import re
+import tempfile
 from typing import Any
 from typing import Callable
 from typing import Protocol
@@ -28,13 +28,14 @@ from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy import String
 from sqlalchemy import text
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm import Session
 
 from persistence_api.db import create_persistence_engine
 from persistence_api.db import create_session_factory
 from persistence_api.db import session_scope
 from persistence_api.models import Base
-from persistence_api.models import BlogLabelAssignmentModel
+from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
 from persistence_api.models import BlogDedupScanRunItemModel
@@ -53,6 +54,8 @@ from crawler.crawling.normalization import normalize_url
 from crawler.crawling.normalization import resolve_blog_identity
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
+from shared.observability import get_logger
+from shared.observability import log_event
 
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
 BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
@@ -66,6 +69,23 @@ BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
 BLOG_LABELING_MAX_PAGE_SIZE = 200
 BLOG_LABELING_DEFAULT_SORT = "id_desc"
 BLOG_LABELING_ALLOWED_SORTS = frozenset({"id_desc", "recent_activity", "recently_labeled"})
+BLOG_LABELING_MODEL_FILTER_STATUS_PREFIX = "model:"
+BLOG_LABELING_PARQUET_FILENAME = "blog-label-training.parquet"
+BLOG_LABELING_PARQUET_BATCH_SIZE = 100
+DEFAULT_BLOG_LABEL_TAGS = (
+    (1, "blog"),
+    (2, "company"),
+    (3, "other"),
+    (4, "unknown"),
+    (5, "official"),
+    (6, "government"),
+)
+BLOG_LABEL_NAME_TO_ID = {name: label_id for label_id, name in DEFAULT_BLOG_LABEL_TAGS}
+BLOG_LABEL_ID_TO_NAME = {label_id: name for label_id, name in DEFAULT_BLOG_LABEL_TAGS}
+RAW_DISCOVERED_URL_DUPLICATE_STATUS = "rule:duplicate_url"
+URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
+URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
+URL_REFILTER_PROGRESS_LOG_INTERVAL = 10_000
 INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
 INGESTION_REQUEST_STATUS_DEDUPED_EXISTING = "DEDUPED_EXISTING"
 INGESTION_REQUEST_STATUS_QUEUED = "QUEUED"
@@ -142,6 +162,67 @@ def _load_reason_codes(value: str | None) -> list[str]:
     if not isinstance(payload, list):
         return []
     return [str(item) for item in payload]
+
+
+def _require_pyarrow() -> Any:
+    """Import pyarrow lazily so non-export repository paths stay lightweight.
+
+    Returns:
+        Imported ``pyarrow`` module.
+
+    Raises:
+        RuntimeError: Raised when the parquet dependency is not installed.
+    """
+
+    try:
+        import pyarrow as pa
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pyarrow_required_for_parquet_export") from exc
+    return pa
+
+
+def _require_pyarrow_parquet() -> Any:
+    """Import pyarrow.parquet lazily for parquet file reads and writes.
+
+    Returns:
+        Imported ``pyarrow.parquet`` module.
+
+    Raises:
+        RuntimeError: Raised when the parquet dependency is not installed.
+    """
+
+    try:
+        import pyarrow.parquet as pq
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pyarrow_required_for_parquet_export") from exc
+    return pq
+
+
+def _blog_label_training_parquet_path(settings: Settings | None) -> Path:
+    """Resolve the canonical parquet snapshot path for label training data.
+
+    Args:
+        settings: Repository settings carrying the configured export directory.
+
+    Returns:
+        Path to the training-label parquet file under the export directory.
+    """
+
+    export_dir = settings.export_dir if settings is not None else Path("data/exports")
+    return export_dir / BLOG_LABELING_PARQUET_FILENAME
+
+
+def _raw_url_is_labeling_eligible_status(status: str | None) -> bool:
+    """Return whether one raw URL status belongs in the manual labeling pool.
+
+    Args:
+        status: Raw discovered URL status value.
+
+    Returns:
+        ``True`` for ``success`` and model-filter statuses.
+    """
+
+    return status == "success" or bool(status and status.startswith(BLOG_LABELING_MODEL_FILTER_STATUS_PREFIX))
 
 
 def normalize_ingestion_email(email: str) -> str:
@@ -417,10 +498,84 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     "ON ingestion_requests (identity_key)"
                 )
             )
+        if "blog_labels" not in existing_tables:
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        "CREATE TABLE blog_labels ("
+                        "normalized_url TEXT PRIMARY KEY, "
+                        "title TEXT DEFAULT '' NOT NULL, "
+                        "label_id JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                        "created_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_blog_labels_normalized_url "
+                        "ON blog_labels (normalized_url)"
+                    )
+                )
+            else:
+                connection.execute(
+                    text(
+                        "CREATE TABLE blog_labels ("
+                        "normalized_url TEXT PRIMARY KEY, "
+                        "title TEXT DEFAULT '' NOT NULL, "
+                        "label_id JSON NOT NULL DEFAULT '{}', "
+                        "created_time DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_time DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+            existing_tables.add("blog_labels")
+        label_columns = {column["name"] for column in inspector.get_columns("blog_labels")}
+        if "title" not in label_columns:
+            connection.execute(text("ALTER TABLE blog_labels ADD COLUMN title TEXT DEFAULT '' NOT NULL"))
+        if "blog_label_tags" not in existing_tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE blog_label_tags ("
+                    "id INTEGER PRIMARY KEY, "
+                    "name TEXT NOT NULL, "
+                    "slug TEXT NOT NULL UNIQUE, "
+                    "created_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "updated_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_blog_label_tags_slug "
+                    "ON blog_label_tags (slug)"
+                )
+            )
+            existing_tables.add("blog_label_tags")
+        tag_columns = {column["name"] for column in inspector.get_columns("blog_label_tags")}
+        if {"id", "name", "slug"}.issubset(tag_columns):
+            for label_id, label_name in DEFAULT_BLOG_LABEL_TAGS:
+                if connection.dialect.name == "postgresql":
+                    connection.execute(
+                        text(
+                            "INSERT INTO blog_label_tags (id, name, slug) "
+                            "VALUES (:id, :name, :slug) "
+                            "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug"
+                        ),
+                        {"id": label_id, "name": label_name, "slug": slugify_blog_label(label_name)},
+                    )
+                else:
+                    connection.execute(
+                        text(
+                            "INSERT OR REPLACE INTO blog_label_tags (id, name, slug) "
+                            "VALUES (:id, :name, :slug)"
+                        ),
+                        {"id": label_id, "name": label_name, "slug": slugify_blog_label(label_name)},
+                    )
+        migrated_label_rows: dict[str, dict[str, Any]] = {}
         if (
             "blog_link_labels" in existing_tables
-            and "blog_label_tags" in existing_tables
-            and "blog_label_assignments" in existing_tables
         ):
             old_columns = {column["name"] for column in inspector.get_columns("blog_link_labels")}
             if {"blog_id", "label"}.issubset(old_columns):
@@ -428,44 +583,112 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     text("SELECT blog_id, label, labeled_at, created_at, updated_at FROM blog_link_labels")
                 ).mappings().all()
                 for row in legacy_rows:
-                    slug = slugify_blog_label(str(row["label"]))
-                    existing_tag = connection.execute(
-                        text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
-                        {"slug": slug},
+                    normalized_url = connection.execute(
+                        text("SELECT normalized_url FROM blogs WHERE blog_id = :blog_id"),
+                        {"blog_id": row["blog_id"]},
                     ).scalar()
-                    if existing_tag is None:
-                        connection.execute(
-                            text(
-                                "INSERT INTO blog_label_tags (name, slug, created_at, updated_at) "
-                                "VALUES (:name, :slug, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-                            ),
-                            {"name": str(row["label"]), "slug": slug},
+                    label_text = str(row["label"]).strip()
+                    if normalized_url and label_text:
+                        migrated = migrated_label_rows.setdefault(
+                            str(normalized_url),
+                            {"counts": {}, "created": row["created_at"], "updated": row["updated_at"]},
                         )
-                        existing_tag = connection.execute(
-                            text("SELECT id FROM blog_label_tags WHERE slug = :slug"),
-                            {"slug": slug},
-                        ).scalar()
-                    existing_assignment = connection.execute(
-                        text(
-                            "SELECT id FROM blog_label_assignments "
-                            "WHERE blog_id = :blog_id AND tag_id = :tag_id"
-                        ),
-                        {"blog_id": row["blog_id"], "tag_id": existing_tag},
+                        try:
+                            label_key = str(_label_id_from_name(label_text))
+                        except ValueError:
+                            continue
+                        migrated["counts"][label_key] = int(migrated["counts"].get(label_key, 0)) + 1
+                        migrated["updated"] = row["updated_at"] or now_utc()
+        if "blog_label_assignments" in existing_tables:
+            assignment_rows = connection.execute(
+                text(
+                    "SELECT a.blog_id, a.tag_id, a.labeled_at, a.created_at, a.updated_at "
+                    "FROM blog_label_assignments a ORDER BY a.id ASC"
+                )
+            ).mappings().all()
+            for row in assignment_rows:
+                normalized_url = None
+                if "blog_label_subjects" in existing_tables:
+                    normalized_url = connection.execute(
+                        text("SELECT normalized_url FROM blog_label_subjects WHERE id = :subject_id"),
+                        {"subject_id": row["blog_id"]},
                     ).scalar()
-                    if existing_assignment is None:
+                if normalized_url is None:
+                    normalized_url = connection.execute(
+                        text("SELECT normalized_url FROM blogs WHERE blog_id = :blog_id"),
+                        {"blog_id": row["blog_id"]},
+                    ).scalar()
+                if normalized_url is None and "raw_discovered_urls" in existing_tables:
+                    normalized_url = connection.execute(
+                        text("SELECT normalized_url FROM raw_discovered_urls WHERE id = :raw_id"),
+                        {"raw_id": row["blog_id"]},
+                    ).scalar()
+                if normalized_url is None:
+                    continue
+                label_key = str(row["tag_id"])
+                migrated = migrated_label_rows.setdefault(
+                    str(normalized_url),
+                    {"counts": {}, "created": row["created_at"], "updated": row["updated_at"]},
+                )
+                migrated["counts"][label_key] = int(migrated["counts"].get(label_key, 0)) + 1
+                migrated["updated"] = row["updated_at"] or now_utc()
+        for normalized_url, payload in migrated_label_rows.items():
+            existing = connection.execute(
+                text("SELECT label_id FROM blog_labels WHERE normalized_url = :normalized_url"),
+                {"normalized_url": normalized_url},
+            ).scalar()
+            counts = _normalize_label_counts(json.loads(existing) if isinstance(existing, str) else existing)
+            for label_key, count in payload["counts"].items():
+                counts[str(label_key)] = int(counts.get(str(label_key), 0)) + int(count)
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        "INSERT INTO blog_labels (normalized_url, title, label_id, created_time, updated_time) "
+                        "VALUES (:normalized_url, :title, CAST(:label_id AS JSONB), :created_time, :updated_time) "
+                        "ON CONFLICT (normalized_url) DO UPDATE "
+                        "SET label_id = CAST(:label_id AS JSONB), updated_time = :updated_time"
+                    ),
+                    {
+                        "normalized_url": normalized_url,
+                        "title": "",
+                        "label_id": json.dumps(counts),
+                        "created_time": payload["created"] or now_utc(),
+                        "updated_time": payload["updated"] or now_utc(),
+                    },
+                )
+            else:
+                connection.execute(
+                    text(
+                        "INSERT OR REPLACE INTO blog_labels "
+                        "(normalized_url, title, label_id, created_time, updated_time) "
+                        "VALUES (:normalized_url, :title, :label_id, :created_time, :updated_time)"
+                    ),
+                    {
+                        "normalized_url": normalized_url,
+                        "title": "",
+                        "label_id": json.dumps(counts),
+                        "created_time": payload["created"] or now_utc(),
+                        "updated_time": payload["updated"] or now_utc(),
+                    },
+                )
+        for obsolete_table in ("blog_label_assignments", "blog_label_subjects"):
+            if obsolete_table in existing_tables:
+                connection.execute(text(f"DROP TABLE IF EXISTS {obsolete_table} CASCADE"))
+                existing_tables.discard(obsolete_table)
+        if "raw_discovered_urls" in existing_tables:
+            dialect_name = connection.dialect.name
+            if dialect_name == "postgresql":
+                for foreign_key in inspector.get_foreign_keys("raw_discovered_urls"):
+                    constrained_columns = set(foreign_key.get("constrained_columns") or [])
+                    referred_table = foreign_key.get("referred_table")
+                    constraint_name = str(foreign_key.get("name") or "")
+                    if (
+                        constraint_name
+                        and referred_table == "blogs"
+                        and constrained_columns == {"source_blog_id"}
+                    ):
                         connection.execute(
-                            text(
-                                "INSERT INTO blog_label_assignments "
-                                "(blog_id, tag_id, labeled_at, created_at, updated_at) "
-                                "VALUES (:blog_id, :tag_id, :labeled_at, :created_at, :updated_at)"
-                            ),
-                            {
-                                "blog_id": row["blog_id"],
-                                "tag_id": existing_tag,
-                                "labeled_at": row["labeled_at"] or now_utc(),
-                                "created_at": row["created_at"] or now_utc(),
-                                "updated_at": row["updated_at"] or now_utc(),
-                            },
+                            text(f'ALTER TABLE raw_discovered_urls DROP CONSTRAINT IF EXISTS "{constraint_name}"')
                         )
         blog_rows = connection.execute(
             text(
@@ -767,25 +990,131 @@ def _blog_lookup_payload(
     }
 
 
-def _blog_label_tag_payload(model: BlogLabelTagModel) -> dict[str, Any]:
+def _normalize_label_counts(value: Any) -> dict[str, int]:
+    """Return a clean label-count mapping with string IDs and positive counts."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, count in value.items():
+        key_text = str(key).strip()
+        if not key_text:
+            continue
+        try:
+            label_id = int(key_text)
+        except ValueError:
+            continue
+        if label_id <= 0:
+            continue
+        try:
+            resolved_count = int(count)
+        except (TypeError, ValueError):
+            continue
+        if resolved_count > 0:
+            normalized[str(label_id)] = resolved_count
+    return normalized
+
+
+def _label_counts_from_tag_ids(tag_ids: list[int] | None) -> dict[str, int]:
+    """Return one-count label mapping from the legacy tag-id list payload."""
+    return _normalize_label_counts({str(tag_id): 1 for tag_id in (tag_ids or [])})
+
+
+def _label_payloads_from_counts(
+    label_counts: dict[str, int],
+    *,
+    labeled_at: datetime | None,
+    label_names: dict[int, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return compatibility label payloads from stored label-count data."""
+    resolved_names = label_names or BLOG_LABEL_ID_TO_NAME
+    return [
+        {
+            "id": int(label_id) if label_id.isdigit() else label_id,
+            "name": resolved_names.get(int(label_id), label_id) if label_id.isdigit() else label_id,
+            "slug": slugify_blog_label(resolved_names.get(int(label_id), label_id)) if label_id.isdigit() else label_id,
+            "count": int(count),
+            "labeled_at": _iso(labeled_at),
+        }
+        for label_id, count in sorted(label_counts.items(), key=lambda item: item[0])
+    ]
+
+
+def _label_tag_payload_from_id(label_id: int, *, label_name: str | None = None) -> dict[str, Any]:
+    """Return a compatibility tag payload for one label definition."""
+    label_text = label_name or BLOG_LABEL_ID_TO_NAME.get(label_id, str(label_id))
     return {
-        "id": int(model.id),
-        "name": model.name,
-        "slug": model.slug,
-        "created_at": _iso(model.created_at),
-        "updated_at": _iso(model.updated_at),
+        "id": label_id,
+        "name": label_text,
+        "slug": slugify_blog_label(label_text),
+        "created_at": None,
+        "updated_at": None,
     }
 
 
-def _blog_label_assignment_payload(
-    assignment: BlogLabelAssignmentModel,
-    tag: BlogLabelTagModel,
-) -> dict[str, Any]:
-    """Return the API payload for one labeled tag assignment."""
+def _label_tag_payload_from_model(tag: BlogLabelTagModel) -> dict[str, Any]:
+    """Return the API payload for a persisted label definition."""
     return {
-        **_blog_label_tag_payload(tag),
-        "labeled_at": _iso(assignment.labeled_at),
+        "id": int(tag.id),
+        "name": tag.name,
+        "slug": tag.slug,
+        "created_at": _iso(tag.created_at),
+        "updated_at": _iso(tag.updated_at),
     }
+
+
+def _blog_label_names_by_id(session: Session) -> dict[int, str]:
+    """Load label definition names keyed by label id."""
+    return {
+        int(tag.id): tag.name
+        for tag in session.scalars(select(BlogLabelTagModel)).all()
+    } | BLOG_LABEL_ID_TO_NAME
+
+
+def _blog_label_tag_payloads(session: Session) -> list[dict[str, Any]]:
+    """Load all persisted label definitions in stable id order."""
+    return [
+        _label_tag_payload_from_model(tag)
+        for tag in session.scalars(select(BlogLabelTagModel).order_by(BlogLabelTagModel.id.asc())).all()
+    ]
+
+
+def _label_id_from_name_in_session(session: Session, name: str) -> int:
+    """Resolve a label name, slug, or numeric id through persisted definitions."""
+    normalized_name = _normalize_catalog_text(name)
+    if normalized_name is None:
+        raise ValueError("Unsupported blog label name")
+    slug = slugify_blog_label(normalized_name)
+    tag = session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == slug).limit(1))
+    if tag is not None:
+        return int(tag.id)
+    try:
+        label_id = int(normalized_name)
+    except ValueError as exc:
+        raise ValueError("Unsupported blog label name") from exc
+    if label_id <= 0:
+        raise ValueError("Unsupported blog label name")
+    return label_id
+
+
+def _label_id_from_name(name: str) -> int:
+    """Resolve an admin label name into the stored numeric label ID."""
+    normalized_name = _normalize_catalog_text(name)
+    if normalized_name is None:
+        raise ValueError("Unsupported blog label name")
+    if normalized_name in BLOG_LABEL_NAME_TO_ID:
+        return BLOG_LABEL_NAME_TO_ID[normalized_name]
+    try:
+        label_id = int(normalized_name)
+    except ValueError as exc:
+        raise ValueError("Unsupported blog label name") from exc
+    if label_id <= 0:
+        raise ValueError("Unsupported blog label name")
+    return label_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -793,8 +1122,9 @@ class _BlogLabelStateView:
     """Hold one blog's resolved label facts and expose the shared state payload."""
 
     blog_id: int
-    labels: list[dict[str, Any]]
+    label_counts: dict[str, int]
     last_labeled_at: datetime | None
+    label_names: dict[int, str] = field(default_factory=dict)
 
     @classmethod
     def empty(
@@ -802,64 +1132,43 @@ class _BlogLabelStateView:
         *,
         blog_id: int,
         last_labeled_at: datetime | None = None,
+        label_names: dict[int, str] | None = None,
     ) -> _BlogLabelStateView:
         """Return an empty label-state view for one blog."""
-        return cls(blog_id=blog_id, labels=[], last_labeled_at=last_labeled_at)
+        return cls(blog_id=blog_id, label_counts={}, last_labeled_at=last_labeled_at, label_names=label_names or {})
 
     @classmethod
     def from_assignment_rows(
         cls,
         *,
         blog_id: int,
-        rows: list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]],
+        label_counts: dict[str, int],
         last_labeled_at: datetime | None = None,
+        label_names: dict[int, str] | None = None,
     ) -> _BlogLabelStateView:
-        """Return one label-state view built from ordered assignment/tag rows."""
-        labels = [_blog_label_assignment_payload(assignment, tag) for assignment, tag in rows]
-        resolved_last_labeled_at = last_labeled_at
-        if resolved_last_labeled_at is None and rows:
-            labeled_at_values = [
-                assignment.labeled_at for assignment, _ in rows if assignment.labeled_at is not None
-            ]
-            resolved_last_labeled_at = max(labeled_at_values) if labeled_at_values else None
+        """Return one label-state view built from a label-count mapping."""
         return cls(
             blog_id=blog_id,
-            labels=labels,
-            last_labeled_at=resolved_last_labeled_at,
+            label_counts=_normalize_label_counts(label_counts),
+            last_labeled_at=last_labeled_at,
+            label_names=label_names or {},
         )
 
     def as_payload(self) -> dict[str, Any]:
         """Return the shared label-state payload used by labeling read/write flows."""
+        labels = _label_payloads_from_counts(
+            self.label_counts,
+            labeled_at=self.last_labeled_at,
+            label_names=self.label_names,
+        )
         return {
             "blog_id": self.blog_id,
-            "labels": self.labels,
-            "label_slugs": [label["slug"] for label in self.labels],
+            "label_id": self.label_counts,
+            "labels": labels,
+            "label_slugs": [str(label["slug"]) for label in labels],
             "last_labeled_at": _iso(self.last_labeled_at),
-            "is_labeled": len(self.labels) > 0,
+            "is_labeled": len(self.label_counts) > 0,
         }
-
-
-def _label_states_by_blog(
-    *,
-    blog_ids: list[int],
-    rows: list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]],
-    last_labeled_at_by_blog: dict[int, datetime | None] | None = None,
-) -> dict[int, _BlogLabelStateView]:
-    """Group assignment rows into one label-state view per business blog id."""
-    grouped_rows: dict[int, list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]]] = {
-        blog_id: [] for blog_id in blog_ids
-    }
-    for assignment, tag in rows:
-        grouped_rows.setdefault(int(assignment.blog_id), []).append((assignment, tag))
-    last_labeled_lookup = last_labeled_at_by_blog or {}
-    return {
-        blog_id: _BlogLabelStateView.from_assignment_rows(
-            blog_id=blog_id,
-            rows=grouped_rows.get(blog_id, []),
-            last_labeled_at=last_labeled_lookup.get(blog_id),
-        )
-        for blog_id in blog_ids
-    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1002,6 +1311,50 @@ def _blog_labeling_payload(
     }
 
 
+def _raw_blog_labeling_payload(
+    row: Any,
+    *,
+    label_state: _BlogLabelStateView,
+) -> dict[str, Any]:
+    """Return labeling candidate payload from a raw URL plus optional blog row.
+
+    Args:
+        row: SQLAlchemy row containing raw URL fields and optional blog fields.
+        label_state: Resolved labels for the candidate target id.
+
+    Returns:
+        Candidate payload compatible with the existing labeling UI.
+    """
+
+    target_id = int(row.target_id)
+    url = str(row.normalized_url)
+    return {
+        "id": target_id,
+        "blog_id": target_id,
+        "url": str(row.blog_url or url),
+        "normalized_url": url,
+        "identity_key": str(row.identity_key or ""),
+        "identity_reason_codes": _load_reason_codes(row.identity_reason_codes),
+        "identity_ruleset_version": str(row.identity_ruleset_version or ""),
+        "domain": str(row.blog_domain or normalize_url(url).domain),
+        "email": row.email,
+        "title": str(row.title or ""),
+        "icon_url": row.icon_url,
+        "status_code": row.status_code,
+        "crawl_status": row.crawl_status.value if row.crawl_status is not None else None,
+        "friend_links_count": int(row.friend_links_count or 0),
+        "last_crawled_at": _iso(row.last_crawled_at),
+        "created_at": _iso(row.blog_created_at or row.raw_created_at),
+        "updated_at": _iso(row.blog_updated_at or row.raw_updated_at),
+        "incoming_count": int(row.incoming_count or 0),
+        "outgoing_count": int(row.outgoing_count or 0),
+        "connection_count": int(row.incoming_count or 0) + int(row.outgoing_count or 0),
+        "activity_at": _iso(row.activity_at or row.blog_updated_at or row.raw_updated_at),
+        "identity_complete": bool((row.title or "").strip() and (row.icon_url or "").strip()),
+        **label_state.as_payload(),
+    }
+
+
 def _recommended_blog_payload(
     *,
     blog: BlogModel,
@@ -1095,6 +1448,14 @@ class RepositoryProtocol(Protocol):
         status: str,
     ) -> int: ...
 
+    def create_raw_discovered_url_record(
+        self,
+        *,
+        source_blog_id: int,
+        normalized_url: str,
+        status: str,
+    ) -> dict[str, Any]: ...
+
     def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None: ...
 
     def list_blogs(self) -> list[dict[str, Any]]: ...
@@ -1130,9 +1491,25 @@ class RepositoryProtocol(Protocol):
 
     def create_blog_label_tag(self, *, name: str) -> dict[str, Any]: ...
 
-    def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]: ...
+    def replace_blog_link_labels(
+        self,
+        *,
+        blog_id: int,
+        tag_ids: list[int] | None = None,
+        label_id: dict[str, int] | None = None,
+    ) -> dict[str, Any]: ...
 
-    def export_blog_label_training_csv(self) -> str: ...
+    def ensure_labelable_raw_url_blogs(self) -> dict[str, int]: ...
+
+    def get_labelable_blog_by_url(self, *, url: str) -> dict[str, Any] | None: ...
+
+    def get_blog_label_training_parquet_status(self) -> dict[str, Any]: ...
+
+    def sync_blog_label_training_parquet(self) -> dict[str, Any]: ...
+
+    def rebuild_blog_label_training_parquet(self) -> dict[str, Any]: ...
+
+    def export_blog_label_training_parquet(self) -> tuple[bytes, dict[str, Any]]: ...
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None: ...
 
@@ -1264,15 +1641,14 @@ class SQLAlchemyRepository:
         statement, metrics = self._blog_select()
         latest_labeled_at = (
             select(
-                BlogLabelAssignmentModel.blog_id.label("blog_id"),
-                func.max(BlogLabelAssignmentModel.labeled_at).label("last_labeled_at"),
+                BlogLabelModel.normalized_url.label("normalized_url"),
+                BlogLabelModel.updated_time.label("last_labeled_at"),
             )
-            .group_by(BlogLabelAssignmentModel.blog_id)
             .subquery()
         )
         statement = statement.outerjoin(
             latest_labeled_at,
-            latest_labeled_at.c.blog_id == BlogModel.blog_id,
+            latest_labeled_at.c.normalized_url == BlogModel.normalized_url,
         ).add_columns(latest_labeled_at.c.last_labeled_at.label("last_labeled_at"))
         metrics["latest_labeled_at"] = latest_labeled_at.c.last_labeled_at
         return statement, metrics
@@ -1414,26 +1790,66 @@ class SQLAlchemyRepository:
         """Return ordered row payloads for one scalar-select statement."""
         return [serializer(row) for row in session.scalars(statement).all()]
 
-    def _blog_label_assignment_rows(
+    def _blog_label_rows_by_url(
         self,
         session: Session,
         *,
-        blog_ids: list[int],
-        order_by_blog_id: bool,
-    ) -> list[tuple[BlogLabelAssignmentModel, BlogLabelTagModel]]:
-        """Return joined label-assignment rows for the provided blog ids using stable ordering."""
-        if not blog_ids:
-            return []
-        statement = (
-            select(BlogLabelAssignmentModel, BlogLabelTagModel)
-            .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
-            .where(BlogLabelAssignmentModel.blog_id.in_(blog_ids))
+        normalized_urls: list[str],
+    ) -> dict[str, BlogLabelModel]:
+        """Return URL-keyed label rows for the provided normalized URLs.
+
+        Args:
+            session: Active SQLAlchemy session.
+            normalized_urls: Stable normalized URL keys to load labels.
+
+        Returns:
+            Mapping from normalized URL to its ``BlogLabelModel`` row.
+        """
+
+        if not normalized_urls:
+            return {}
+        rows = session.scalars(
+            select(BlogLabelModel).where(BlogLabelModel.normalized_url.in_(normalized_urls))
+        ).all()
+        return {row.normalized_url: row for row in rows}
+
+    def _ensure_blog_label_row(
+        self,
+        session: Session,
+        *,
+        normalized_url: str,
+        title: str | None = None,
+    ) -> BlogLabelModel:
+        """Return the single-table label row for a normalized URL.
+
+        Args:
+            session: Active SQLAlchemy session.
+            normalized_url: URL key that should persist independently of crawl
+                run rows.
+            title: Optional display title captured with the label state.
+
+        Returns:
+            Existing or newly-created ``BlogLabelModel``.
+        """
+
+        label_row = session.scalar(
+            select(BlogLabelModel).where(BlogLabelModel.normalized_url == normalized_url)
         )
-        if order_by_blog_id:
-            statement = statement.order_by(BlogLabelAssignmentModel.blog_id.asc(), BlogLabelTagModel.name.asc())
-        else:
-            statement = statement.order_by(BlogLabelTagModel.name.asc())
-        return session.execute(statement).all()
+        if label_row is not None:
+            if title is not None:
+                label_row.title = title
+            return label_row
+        timestamp = now_utc()
+        label_row = BlogLabelModel(
+            normalized_url=normalized_url,
+            title=title or "",
+            label_id={},
+            created_time=timestamp,
+            updated_time=timestamp,
+        )
+        session.add(label_row)
+        session.flush()
+        return label_row
 
     def _require_model(
         self,
@@ -1589,7 +2005,23 @@ class SQLAlchemyRepository:
         normalized_url: str,
         domain: str,
         email: str | None = None,
+        preferred_blog_id: int | None = None,
     ) -> tuple[BlogModel, bool]:
+        """Create or update one blog row and initialize its business id.
+
+        Args:
+            session: Active SQLAlchemy session.
+            url: Original URL to store.
+            normalized_url: Normalized URL candidate.
+            domain: Domain associated with the URL.
+            email: Optional contact email to fill when the row is missing one.
+            preferred_blog_id: Preferred externally meaningful ``blogs.blog_id``.
+
+        Returns:
+            Tuple of ``(blog, inserted)``. ``blog.blog_id`` is initialized when
+            a new row is inserted or an older row is still missing the value.
+        """
+
         identity = resolve_blog_identity(url or normalized_url)
         stored_url, stored_domain = _storage_url_and_domain(
             input_url=url,
@@ -1615,6 +2047,12 @@ class SQLAlchemyRepository:
             existing.identity_key = identity.identity_key
             existing.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
             existing.identity_ruleset_version = identity.ruleset_version
+            if preferred_blog_id is not None and existing.blog_id is None:
+                existing.blog_id = self._resolve_business_blog_id(
+                    session,
+                    preferred_blog_id=preferred_blog_id,
+                    target_blog=existing,
+                )
             existing.updated_at = now_utc()
             return existing, False
 
@@ -1634,9 +2072,52 @@ class SQLAlchemyRepository:
         )
         session.add(blog)
         session.flush()
-        blog.blog_id = int(blog.id)
+        blog.blog_id = self._resolve_business_blog_id(
+            session,
+            preferred_blog_id=preferred_blog_id,
+            target_blog=blog,
+        )
         session.flush()
         return blog, True
+
+    def _resolve_business_blog_id(
+        self,
+        session: Session,
+        *,
+        preferred_blog_id: int | None,
+        target_blog: BlogModel,
+    ) -> int:
+        """Return a unique business ``blog_id`` for one blog row.
+
+        Args:
+            session: Active SQLAlchemy session.
+            preferred_blog_id: Externally meaningful ID to use first when free.
+            target_blog: Blog row that will receive the returned business ID.
+
+        Returns:
+            A unique ``blogs.blog_id``. Raw-derived rows use
+            ``raw_discovered_urls.id`` when that value is still available; if a
+            legacy row already owns it, the function falls back to the normal
+            monotonic business-ID space.
+        """
+
+        def is_available(candidate: int) -> bool:
+            holder = session.scalar(select(BlogModel).where(BlogModel.blog_id == candidate))
+            return holder is None or int(holder.id) == int(target_blog.id)
+
+        if preferred_blog_id is not None and is_available(preferred_blog_id):
+            return int(preferred_blog_id)
+
+        fallback = int(target_blog.id)
+        if is_available(fallback):
+            return fallback
+
+        max_blog_id = int(session.scalar(select(func.max(BlogModel.blog_id))) or 0)
+        max_row_id = int(session.scalar(select(func.max(BlogModel.id))) or 0)
+        candidate = max(max_blog_id, max_row_id) + 1
+        while not is_available(candidate):
+            candidate += 1
+        return candidate
 
     def _ensure_edge_in_session(
         self,
@@ -1647,6 +2128,11 @@ class SQLAlchemyRepository:
         link_url_raw: str,
         link_text: str | None,
     ) -> None:
+        for pending in session.new:
+            if not isinstance(pending, EdgeModel):
+                continue
+            if int(pending.from_blog_id) == int(from_blog_id) and int(pending.to_blog_id) == int(to_blog_id):
+                return
         existing = session.scalar(
             select(EdgeModel).where(
                 EdgeModel.from_blog_id == from_blog_id,
@@ -1671,13 +2157,17 @@ class SQLAlchemyRepository:
         *,
         raw: RawDiscoveredUrlModel,
     ) -> None:
+        source_blog_exists = self._get_blog_by_business_id(session, int(raw.source_blog_id)) is not None
         normalized = normalize_url(raw.normalized_url)
         target_blog, _ = self._upsert_blog_in_session(
             session,
             url=raw.normalized_url,
             normalized_url=normalized.normalized_url,
             domain=normalized.domain,
+            preferred_blog_id=int(raw.id),
         )
+        if not source_blog_exists:
+            return
         self._ensure_edge_in_session(
             session,
             from_blog_id=int(raw.source_blog_id),
@@ -1711,10 +2201,11 @@ class SQLAlchemyRepository:
         )
         if target_blog is None:
             return
-        session.query(EdgeModel).filter(
-            EdgeModel.from_blog_id == int(raw.source_blog_id),
-            EdgeModel.to_blog_id == int(_business_blog_id(target_blog)),
-        ).delete(synchronize_session=False)
+        self._delete_edge_if_exists(
+            session,
+            from_blog_id=int(raw.source_blog_id),
+            to_blog_id=int(_business_blog_id(target_blog)),
+        )
         remaining_success = int(
             session.scalar(
                 select(func.count())
@@ -1730,6 +2221,32 @@ class SQLAlchemyRepository:
             self._delete_blog_graph(session, blog_id=int(_business_blog_id(target_blog)))
             session.flush()
 
+    def _delete_edge_if_exists(
+        self,
+        session: Session,
+        *,
+        from_blog_id: int,
+        to_blog_id: int,
+    ) -> None:
+        """Delete one directed edge only when it is still present.
+
+        Args:
+            session: Active database session used for the lookup and deletion.
+            from_blog_id: Business blog ID of the source endpoint.
+            to_blog_id: Business blog ID of the target endpoint.
+
+        Returns:
+            ``None``. Missing edges are treated as already-clean state.
+        """
+        edge_id = session.scalar(
+            select(EdgeModel.id).where(
+                EdgeModel.from_blog_id == from_blog_id,
+                EdgeModel.to_blog_id == to_blog_id,
+            )
+        )
+        if edge_id is not None:
+            session.query(EdgeModel).filter(EdgeModel.id == int(edge_id)).delete(synchronize_session=False)
+
     def _delete_blog_graph(self, session: Session, *, blog_id: int) -> None:
         """Delete one blog and its direct graph attachments safely.
 
@@ -1738,18 +2255,20 @@ class SQLAlchemyRepository:
             blog_id: Blog identifier that should be removed from persistence.
 
         Returns:
-            ``None``. The blog, its edges, label assignments, and dangling
-            ingestion references are removed or cleared in place.
+            ``None``. The blog, its edges, and dangling ingestion references
+            are removed or cleared in place. URL-keyed label assignments are
+            intentionally preserved across graph cleanup.
         """
-        session.query(EdgeModel).filter(
-            or_(
-                EdgeModel.from_blog_id == blog_id,
-                EdgeModel.to_blog_id == blog_id,
+        edge_ids = session.scalars(
+            select(EdgeModel.id).where(
+                or_(
+                    EdgeModel.from_blog_id == blog_id,
+                    EdgeModel.to_blog_id == blog_id,
+                )
             )
-        ).delete(synchronize_session=False)
-        session.query(BlogLabelAssignmentModel).filter(
-            BlogLabelAssignmentModel.blog_id == blog_id
-        ).delete(synchronize_session=False)
+        ).all()
+        if edge_ids:
+            session.query(EdgeModel).filter(EdgeModel.id.in_(edge_ids)).delete(synchronize_session=False)
         session.query(IngestionRequestModel).filter(
             IngestionRequestModel.seed_blog_id == blog_id
         ).update({IngestionRequestModel.seed_blog_id: None})
@@ -2173,6 +2692,47 @@ class SQLAlchemyRepository:
         normalized_url: str,
         status: str,
     ) -> int:
+        """Create one raw discovered URL and return its row ID.
+
+        Args:
+            source_blog_id: Business blog ID of the source page.
+            normalized_url: Normalized candidate URL discovered by the crawler.
+            status: Initial status requested by the caller.
+
+        Returns:
+            Database row ID of the inserted raw URL. Duplicate URLs are stored
+            with duplicate status before the normal filter chain is applied.
+        """
+
+        return int(
+            self.create_raw_discovered_url_record(
+                source_blog_id=source_blog_id,
+                normalized_url=normalized_url,
+                status=status,
+            )["id"]
+        )
+
+    def create_raw_discovered_url_record(
+        self,
+        *,
+        source_blog_id: int,
+        normalized_url: str,
+        status: str,
+    ) -> dict[str, Any]:
+        """Create one raw discovered URL and return its persisted status.
+
+        Args:
+            source_blog_id: Business blog ID of the source page.
+            normalized_url: Normalized candidate URL discovered by the crawler.
+            status: Initial status requested by the caller.
+
+        Returns:
+            Payload with ``id`` and ``status``. When an older row with the
+            same normalized URL already exists, the stored status is
+            ``rule:duplicate_url`` so duplicate URLs are filtered before the
+            normal configurable chain. Newer rows are ignored by this check.
+        """
+
         with session_scope(self.session_factory) as session:
             record = RawDiscoveredUrlModel(
                 source_blog_id=source_blog_id,
@@ -2183,7 +2743,20 @@ class SQLAlchemyRepository:
             )
             session.add(record)
             session.flush()
-            return int(record.id)
+            previous_id = session.scalar(
+                select(RawDiscoveredUrlModel.id)
+                .where(
+                    RawDiscoveredUrlModel.id < int(record.id),
+                    RawDiscoveredUrlModel.normalized_url == normalized_url,
+                )
+                .order_by(RawDiscoveredUrlModel.id.asc())
+                .limit(1)
+            )
+            stored_status = RAW_DISCOVERED_URL_DUPLICATE_STATUS if previous_id is not None else status
+            record.status = stored_status
+            record.updated_at = now_utc()
+            session.flush()
+            return {"id": int(record.id), "status": str(record.status)}
 
     def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None:
         with session_scope(self.session_factory) as session:
@@ -2195,6 +2768,161 @@ class SQLAlchemyRepository:
             )
             record.status = status
             record.updated_at = now_utc()
+
+    def _labelable_raw_url_condition(self) -> ColumnElement[bool]:
+        """Return the shared SQL predicate for labelable raw URL statuses.
+
+        Args:
+            None.
+
+        Returns:
+            SQLAlchemy predicate matching ``success`` and ``model:*`` raw URL
+            rows.
+        """
+
+        return or_(
+            RawDiscoveredUrlModel.status == "success",
+            RawDiscoveredUrlModel.status.like(f"{BLOG_LABELING_MODEL_FILTER_STATUS_PREFIX}%"),
+        )
+
+    def _labelable_raw_url_targets(self, session: Session) -> list[dict[str, Any]]:
+        """Load distinct labelable raw URLs with resolved label target IDs.
+
+        Args:
+            session: Active SQLAlchemy session.
+
+        Returns:
+            Ordered dictionaries containing ``target_id``, ``raw_id``, and
+            ``normalized_url``. ``target_id`` is always the earliest raw row ID
+            for that URL.
+        """
+
+        raw_urls = (
+            select(
+                func.min(RawDiscoveredUrlModel.id).label("raw_id"),
+                RawDiscoveredUrlModel.normalized_url.label("normalized_url"),
+                func.min(RawDiscoveredUrlModel.discovered_at).label("raw_created_at"),
+                func.max(RawDiscoveredUrlModel.updated_at).label("raw_updated_at"),
+            )
+            .where(self._labelable_raw_url_condition())
+            .group_by(RawDiscoveredUrlModel.normalized_url)
+            .subquery()
+        )
+        rows = session.execute(
+            select(
+                raw_urls.c.raw_id.label("target_id"),
+                raw_urls.c.raw_id,
+                raw_urls.c.normalized_url,
+                raw_urls.c.raw_created_at,
+                raw_urls.c.raw_updated_at,
+            )
+            .outerjoin(BlogModel, BlogModel.normalized_url == raw_urls.c.normalized_url)
+            .order_by(raw_urls.c.raw_id.asc())
+        ).all()
+        return [
+            {
+                "target_id": int(row.target_id),
+                "raw_id": int(row.raw_id),
+                "normalized_url": str(row.normalized_url),
+                "raw_created_at": row.raw_created_at,
+                "raw_updated_at": row.raw_updated_at,
+            }
+            for row in rows
+        ]
+
+    def _labelable_target_id_for_url_in_session(self, session: Session, *, url: str) -> int | None:
+        """Resolve the label target ID for one eligible raw URL.
+
+        Args:
+            session: Active SQLAlchemy session.
+            url: Raw or normalized URL.
+
+        Returns:
+            Earliest matching ``raw_discovered_urls.id``. ``None`` means the
+            URL is outside the labelable raw URL pool.
+        """
+
+        normalized = normalize_url(url)
+        identity = resolve_blog_identity(url)
+        candidates = [url, normalized.normalized_url]
+        if identity.is_homepage:
+            candidates.append(identity.canonical_url)
+        raw = session.execute(
+            select(RawDiscoveredUrlModel)
+            .where(
+                self._labelable_raw_url_condition(),
+                RawDiscoveredUrlModel.normalized_url.in_(candidates),
+            )
+            .order_by(RawDiscoveredUrlModel.id.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if raw is None:
+            return None
+        return int(raw.id)
+
+    def ensure_labelable_raw_url_blogs(self) -> dict[str, int]:
+        """Return current labelable raw URL coverage without creating blogs.
+
+        Args:
+            None.
+
+        Returns:
+            Counts describing inspected raw URLs. ``created`` is always zero
+            because the labeling flow no longer creates lightweight blogs.
+        """
+
+        with session_scope(self.session_factory) as session:
+            return {"inspected": len(self._labelable_raw_url_targets(session)), "created": 0}
+
+    def get_labelable_blog_by_url(self, *, url: str) -> dict[str, Any] | None:
+        """Return the current label target for one eligible raw URL.
+
+        Args:
+            url: URL from a legacy label CSV or labeling workflow.
+
+        Returns:
+            Label target payload when the URL is in the shared labelable raw
+            URL pool; otherwise ``None``. The payload may be backed by an
+            existing blog row or by the raw URL row itself.
+        """
+
+        normalized = normalize_url(url)
+        identity = resolve_blog_identity(url)
+        normalized_query_url = identity.canonical_url if identity.is_homepage else normalized.normalized_url
+        with session_scope(self.session_factory) as session:
+            raw = session.scalar(
+                select(RawDiscoveredUrlModel)
+                .where(
+                    self._labelable_raw_url_condition(),
+                    RawDiscoveredUrlModel.normalized_url.in_([url, normalized.normalized_url, normalized_query_url]),
+                )
+                .order_by(RawDiscoveredUrlModel.id.asc())
+                .limit(1)
+            )
+            if raw is None:
+                return None
+            row = session.execute(
+                self._blog_select()[0].where(
+                    or_(
+                        BlogModel.normalized_url == raw.normalized_url,
+                        BlogModel.url == url,
+                        BlogModel.identity_key == identity.identity_key,
+                    )
+                )
+            ).first()
+            if row is not None:
+                return self._row_blog_payload(row)
+            raw_normalized = normalize_url(raw.normalized_url)
+            return {
+                "id": int(raw.id),
+                "blog_id": int(raw.id),
+                "url": raw.normalized_url,
+                "normalized_url": raw.normalized_url,
+                "domain": raw_normalized.domain,
+                "title": "",
+                "icon_url": None,
+                "crawl_status": None,
+            }
 
     def list_blogs(self) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
@@ -2340,8 +3068,78 @@ class SQLAlchemyRepository:
             sort=sort,
         )
         with session_scope(self.session_factory) as session:
-            statement, metrics = self._blog_labeling_select()
-            statement = statement.where(BlogModel.crawl_status == CrawlStatus.FINISHED)
+            raw_urls = (
+                select(
+                    func.min(RawDiscoveredUrlModel.id).label("raw_id"),
+                    RawDiscoveredUrlModel.normalized_url.label("normalized_url"),
+                    func.min(RawDiscoveredUrlModel.discovered_at).label("raw_created_at"),
+                    func.max(RawDiscoveredUrlModel.updated_at).label("raw_updated_at"),
+                )
+                .where(self._labelable_raw_url_condition())
+                .group_by(RawDiscoveredUrlModel.normalized_url)
+                .subquery()
+            )
+            latest_labeled_at = (
+                select(
+                    BlogLabelModel.normalized_url.label("normalized_url"),
+                    BlogLabelModel.updated_time.label("last_labeled_at"),
+                )
+                .subquery()
+            )
+            incoming_counts = (
+                select(
+                    EdgeModel.to_blog_id.label("blog_id"),
+                    func.count(EdgeModel.id).label("incoming_count"),
+                )
+                .group_by(EdgeModel.to_blog_id)
+                .subquery()
+            )
+            outgoing_counts = (
+                select(
+                    EdgeModel.from_blog_id.label("blog_id"),
+                    func.count(EdgeModel.id).label("outgoing_count"),
+                )
+                .group_by(EdgeModel.from_blog_id)
+                .subquery()
+            )
+            target_id = raw_urls.c.raw_id.label("target_id")
+            activity_at = func.coalesce(
+                BlogModel.last_crawled_at,
+                BlogModel.updated_at,
+                raw_urls.c.raw_updated_at,
+            ).label("activity_at")
+            statement = (
+                select(
+                    target_id,
+                    raw_urls.c.raw_id,
+                    raw_urls.c.normalized_url,
+                    raw_urls.c.raw_created_at,
+                    raw_urls.c.raw_updated_at,
+                    BlogModel.url.label("blog_url"),
+                    BlogModel.domain.label("blog_domain"),
+                    BlogModel.identity_key,
+                    BlogModel.identity_reason_codes,
+                    BlogModel.identity_ruleset_version,
+                    BlogModel.email,
+                    BlogModel.title,
+                    BlogModel.icon_url,
+                    BlogModel.status_code,
+                    BlogModel.crawl_status,
+                    BlogModel.friend_links_count,
+                    BlogModel.last_crawled_at,
+                    BlogModel.created_at.label("blog_created_at"),
+                    BlogModel.updated_at.label("blog_updated_at"),
+                    func.coalesce(incoming_counts.c.incoming_count, 0).label("incoming_count"),
+                    func.coalesce(outgoing_counts.c.outgoing_count, 0).label("outgoing_count"),
+                    activity_at,
+                    latest_labeled_at.c.last_labeled_at.label("last_labeled_at"),
+                )
+                .select_from(raw_urls)
+                .outerjoin(BlogModel, BlogModel.normalized_url == raw_urls.c.normalized_url)
+                .outerjoin(incoming_counts, incoming_counts.c.blog_id == BlogModel.blog_id)
+                .outerjoin(outgoing_counts, outgoing_counts.c.blog_id == BlogModel.blog_id)
+                .outerjoin(latest_labeled_at, latest_labeled_at.c.normalized_url == raw_urls.c.normalized_url)
+            )
             if query["q"] is not None:
                 pattern = f"%{query['q']}%"
                 statement = statement.where(
@@ -2349,36 +3147,37 @@ class SQLAlchemyRepository:
                         BlogModel.title.ilike(pattern),
                         BlogModel.domain.ilike(pattern),
                         BlogModel.url.ilike(pattern),
-                        BlogModel.normalized_url.ilike(pattern),
+                        raw_urls.c.normalized_url.ilike(pattern),
                     )
-                )
+            )
             if query["label"] is not None:
+                try:
+                    label_filter = str(_label_id_from_name_in_session(session, str(query["label"])))
+                except ValueError:
+                    label_filter = str(query["label"])
                 statement = statement.where(
-                    BlogModel.blog_id.in_(
-                        select(BlogLabelAssignmentModel.blog_id)
-                        .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
-                        .where(BlogLabelTagModel.slug == query["label"])
+                    raw_urls.c.normalized_url.in_(
+                        select(BlogLabelModel.normalized_url)
+                        .where(BlogLabelModel.label_id[label_filter].is_not(None))
                     )
                 )
             if query["labeled"] is True:
-                statement = statement.where(metrics["latest_labeled_at"].is_not(None))
+                statement = statement.where(latest_labeled_at.c.last_labeled_at.is_not(None))
             elif query["labeled"] is False:
-                statement = statement.where(metrics["latest_labeled_at"].is_(None))
+                statement = statement.where(latest_labeled_at.c.last_labeled_at.is_(None))
 
             if query["sort"] == "recent_activity":
                 statement = statement.order_by(
-                    metrics["activity_at"].desc(),
-                    BlogModel.blog_id.desc(),
-                    BlogModel.id.desc(),
+                    activity_at.desc(),
+                    target_id.desc(),
                 )
             elif query["sort"] == "recently_labeled":
                 statement = statement.order_by(
-                    metrics["latest_labeled_at"].desc().nullslast(),
-                    BlogModel.blog_id.desc(),
-                    BlogModel.id.desc(),
+                    latest_labeled_at.c.last_labeled_at.desc().nullslast(),
+                    target_id.desc(),
                 )
             else:
-                statement = statement.order_by(BlogModel.blog_id.desc(), BlogModel.id.desc())
+                statement = statement.order_by(target_id.desc())
 
             rows, total_items, effective_page = _execute_paginated_query(
                 session,
@@ -2386,33 +3185,34 @@ class SQLAlchemyRepository:
                 page=query["page"],
                 page_size=query["page_size"],
             )
-            blog_ids = [int(_business_blog_id(row[0])) for row in rows]
-            label_rows = self._blog_label_assignment_rows(
+            label_names_by_id = _blog_label_names_by_id(session)
+            normalized_urls = [str(row.normalized_url) for row in rows]
+            target_id_by_url = {str(row.normalized_url): int(row.target_id) for row in rows}
+            label_rows_by_url = self._blog_label_rows_by_url(
                 session,
-                blog_ids=blog_ids,
-                order_by_blog_id=True,
+                normalized_urls=normalized_urls,
             )
-            label_states_by_blog = _label_states_by_blog(
-                blog_ids=blog_ids,
-                rows=label_rows,
-                last_labeled_at_by_blog={
-                    int(_business_blog_id(row[0])): row.last_labeled_at for row in rows
-                },
-            )
-            available_tags = self._ordered_row_payloads(
-                session,
-                statement=select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc()),
-                serializer=_blog_label_tag_payload,
-            )
+            label_states_by_url = {
+                normalized_url: _BlogLabelStateView.from_assignment_rows(
+                    blog_id=target_id_by_url[normalized_url],
+                    label_counts=_normalize_label_counts(label_rows_by_url[normalized_url].label_id),
+                    last_labeled_at=label_rows_by_url[normalized_url].updated_time,
+                    label_names=label_names_by_id,
+                )
+                for normalized_url in normalized_urls
+                if normalized_url in label_rows_by_url
+            }
+            available_tags = _blog_label_tag_payloads(session)
             return _catalog_response(
                 items=[
-                    _blog_labeling_payload(
+                    _raw_blog_labeling_payload(
                         row,
-                        label_state=label_states_by_blog.get(
-                            int(_business_blog_id(row[0])),
+                        label_state=label_states_by_url.get(
+                            str(row.normalized_url),
                             _BlogLabelStateView.empty(
-                                blog_id=int(_business_blog_id(row[0])),
+                                blog_id=int(row.target_id),
                                 last_labeled_at=row.last_labeled_at,
+                                label_names=label_names_by_id,
                             ),
                         ),
                     )
@@ -2431,32 +3231,239 @@ class SQLAlchemyRepository:
 
     def list_blog_label_tags(self) -> list[dict[str, Any]]:
         with session_scope(self.session_factory) as session:
-            return self._ordered_row_payloads(
-                session,
-                statement=select(BlogLabelTagModel).order_by(BlogLabelTagModel.name.asc()),
-                serializer=_blog_label_tag_payload,
+            return _blog_label_tag_payloads(session)
+
+    def _blog_label_training_rows(self, session: Session) -> list[Any]:
+        """Load the canonical labeled training rows in deterministic order.
+
+        Args:
+            session: Active SQLAlchemy session.
+
+        Returns:
+            Ordered rows containing ``url``, ``title``, and ``label_name``.
+        """
+
+        raw_urls = (
+            select(
+                func.min(RawDiscoveredUrlModel.id).label("raw_id"),
+                RawDiscoveredUrlModel.normalized_url.label("normalized_url"),
             )
-
-    def export_blog_label_training_csv(self) -> str:
-        with session_scope(self.session_factory) as session:
-            rows = session.execute(
-                select(
-                    BlogModel.url,
-                    BlogModel.title,
-                    BlogLabelTagModel.name.label("label_name"),
-                )
-                .join(BlogLabelAssignmentModel, BlogLabelAssignmentModel.blog_id == BlogModel.blog_id)
-                .join(BlogLabelTagModel, BlogLabelTagModel.id == BlogLabelAssignmentModel.tag_id)
-                .where(BlogModel.crawl_status == CrawlStatus.FINISHED)
-                .order_by(BlogModel.blog_id.asc(), BlogLabelTagModel.name.asc())
-            ).all()
-
-        output = StringIO(newline="")
-        writer = csv.writer(output, lineterminator="\n")
-        writer.writerow(["url", "title", "label"])
+            .where(self._labelable_raw_url_condition())
+            .group_by(RawDiscoveredUrlModel.normalized_url)
+            .subquery()
+        )
+        export_url = raw_urls.c.normalized_url
+        label_names_by_id = _blog_label_names_by_id(session)
+        rows = session.execute(
+            select(
+                export_url.label("url"),
+                BlogLabelModel.title.label("title"),
+                BlogLabelModel.label_id.label("label_counts"),
+            )
+            .select_from(BlogLabelModel)
+            .join(raw_urls, raw_urls.c.normalized_url == BlogLabelModel.normalized_url)
+            .order_by(export_url.asc())
+        ).all()
+        expanded_rows: list[dict[str, str]] = []
         for row in rows:
-            writer.writerow([str(row.url), row.title or "", str(row.label_name)])
-        return output.getvalue()
+            for label_id in sorted(_normalize_label_counts(row.label_counts), key=int):
+                expanded_rows.append(
+                    {
+                        "url": str(row.url),
+                        "title": row.title or "",
+                        "label_name": label_names_by_id.get(int(label_id), label_id),
+                    }
+                )
+        return expanded_rows
+
+    def _blog_label_training_records(self, session: Session) -> list[dict[str, str]]:
+        """Load canonical labeled training records for export snapshots.
+
+        Args:
+            session: Active SQLAlchemy session.
+
+        Returns:
+            Ordered dictionaries with only ``url``, ``title``, and ``label``.
+        """
+
+        return [
+            {
+                "url": str(row["url"] if isinstance(row, dict) else row.url),
+                "title": (row["title"] if isinstance(row, dict) else row.title) or "",
+                "label": str(row["label_name"] if isinstance(row, dict) else row.label_name),
+            }
+            for row in self._blog_label_training_rows(session)
+        ]
+
+    def _write_blog_label_training_parquet(
+        self,
+        records: list[dict[str, str]],
+        *,
+        parquet_path: Path,
+    ) -> None:
+        """Atomically write labeled training records to the parquet snapshot.
+
+        Args:
+            records: Canonical label records to serialize.
+            parquet_path: Destination parquet file path.
+
+        Returns:
+            None. The file is replaced atomically after a successful write.
+        """
+
+        pa = _require_pyarrow()
+        pq = _require_pyarrow_parquet()
+        parquet_path.parent.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_pylist(
+            records,
+            schema=pa.schema(
+                [
+                    ("url", pa.string()),
+                    ("title", pa.string()),
+                    ("label", pa.string()),
+                ]
+            ),
+        )
+        with tempfile.NamedTemporaryFile(
+            dir=parquet_path.parent,
+            prefix=f".{parquet_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+        try:
+            pq.write_table(table, temporary_path)
+            temporary_path.replace(parquet_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    def _read_blog_label_training_parquet_records(self, parquet_path: Path) -> list[dict[str, str]]:
+        """Read the current parquet snapshot into normalized label records.
+
+        Args:
+            parquet_path: Existing parquet file path.
+
+        Returns:
+            Records containing ``url``, ``title``, and ``label``.
+        """
+
+        if not parquet_path.exists():
+            return []
+        pq = _require_pyarrow_parquet()
+        table = pq.read_table(parquet_path, columns=["url", "title", "label"])
+        return [
+            {
+                "url": str(row.get("url") or ""),
+                "title": str(row.get("title") or ""),
+                "label": str(row.get("label") or ""),
+            }
+            for row in table.to_pylist()
+        ]
+
+    def _blog_label_training_status_payload(
+        self,
+        *,
+        parquet_path: Path,
+        total_labeled: int,
+        saved_count: int,
+        missing_count: int,
+        rewritten: bool,
+        message: str,
+    ) -> dict[str, Any]:
+        """Build the shared parquet status/action response payload.
+
+        Args:
+            parquet_path: Canonical parquet snapshot path.
+            total_labeled: Current count of labeled ``blog x label`` rows.
+            saved_count: Current count of rows persisted in parquet.
+            missing_count: Number of labeled rows not present in parquet.
+            rewritten: Whether this action wrote a new parquet snapshot.
+            message: Operator-facing progress/result message.
+
+        Returns:
+            JSON-serializable parquet export status payload.
+        """
+
+        return {
+            "path": str(parquet_path),
+            "filename": parquet_path.name,
+            "exists": parquet_path.exists(),
+            "saved_count": saved_count,
+            "total_labeled": total_labeled,
+            "missing_count": missing_count,
+            "batch_size": BLOG_LABELING_PARQUET_BATCH_SIZE,
+            "rewritten": rewritten,
+            "message": message,
+            "updated_at": _iso(now_utc()),
+        }
+
+    def get_blog_label_training_parquet_status(self) -> dict[str, Any]:
+        parquet_path = _blog_label_training_parquet_path(self.decision_settings)
+        with session_scope(self.session_factory) as session:
+            records = self._blog_label_training_records(session)
+        saved_records = self._read_blog_label_training_parquet_records(parquet_path)
+        missing_count = len({(record["url"], record["label"]) for record in records} - {(record["url"], record["label"]) for record in saved_records})
+        return self._blog_label_training_status_payload(
+            parquet_path=parquet_path,
+            total_labeled=len(records),
+            saved_count=len(saved_records),
+            missing_count=missing_count,
+            rewritten=False,
+            message=f"已保存 {len(saved_records)} 条数据，总计有 label 的有 {len(records)} 条数据。",
+        )
+
+    def sync_blog_label_training_parquet(self) -> dict[str, Any]:
+        parquet_path = _blog_label_training_parquet_path(self.decision_settings)
+        with session_scope(self.session_factory) as session:
+            records = self._blog_label_training_records(session)
+        saved_records = self._read_blog_label_training_parquet_records(parquet_path)
+        record_keys = {(record["url"], record["label"]) for record in records}
+        saved_keys = {(record["url"], record["label"]) for record in saved_records}
+        missing_count = len(record_keys - saved_keys)
+        should_rewrite = (
+            not parquet_path.exists()
+            or missing_count > 0
+            or len(records) < len(saved_records)
+            or (len(records) > 0 and len(records) % BLOG_LABELING_PARQUET_BATCH_SIZE == 0)
+        )
+        if should_rewrite:
+            self._write_blog_label_training_parquet(records, parquet_path=parquet_path)
+            return self._blog_label_training_status_payload(
+                parquet_path=parquet_path,
+                total_labeled=len(records),
+                saved_count=len(records),
+                missing_count=0,
+                rewritten=True,
+                message=f"已保存 {len(records)} 条数据，总计有 label 的有 {len(records)} 条数据。",
+            )
+        return self._blog_label_training_status_payload(
+            parquet_path=parquet_path,
+            total_labeled=len(records),
+            saved_count=len(saved_records),
+            missing_count=missing_count,
+            rewritten=False,
+            message=f"无需重新保存：已保存 {len(saved_records)} 条数据，总计有 label 的有 {len(records)} 条数据。",
+        )
+
+    def rebuild_blog_label_training_parquet(self) -> dict[str, Any]:
+        parquet_path = _blog_label_training_parquet_path(self.decision_settings)
+        with session_scope(self.session_factory) as session:
+            records = self._blog_label_training_records(session)
+        self._write_blog_label_training_parquet(records, parquet_path=parquet_path)
+        return self._blog_label_training_status_payload(
+            parquet_path=parquet_path,
+            total_labeled=len(records),
+            saved_count=len(records),
+            missing_count=0,
+            rewritten=True,
+            message=f"已重置 parquet 文件并重新保存 {len(records)} 条数据。",
+        )
+
+    def export_blog_label_training_parquet(self) -> tuple[bytes, dict[str, Any]]:
+        status = self.sync_blog_label_training_parquet()
+        parquet_path = Path(status["path"])
+        return parquet_path.read_bytes(), status
 
     def create_blog_label_tag(self, *, name: str) -> dict[str, Any]:
         normalized_name = _normalize_catalog_text(name)
@@ -2464,69 +3471,72 @@ class SQLAlchemyRepository:
             raise ValueError("Unsupported blog label name")
         slug = slugify_blog_label(normalized_name)
         with session_scope(self.session_factory) as session:
-            existing = session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == slug))
+            existing = session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == slug).limit(1))
             if existing is not None:
-                return _blog_label_tag_payload(existing)
+                return _label_tag_payload_from_model(existing)
             timestamp = now_utc()
-            tag = BlogLabelTagModel(
-                name=normalized_name,
-                slug=slug,
-                created_at=timestamp,
-                updated_at=timestamp,
-            )
+            if slug in BLOG_LABEL_NAME_TO_ID:
+                tag = BlogLabelTagModel(
+                    id=BLOG_LABEL_NAME_TO_ID[slug],
+                    name=slug,
+                    slug=slug,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+            else:
+                tag = BlogLabelTagModel(
+                    name=normalized_name,
+                    slug=slug,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
             session.add(tag)
             session.flush()
-            return _blog_label_tag_payload(tag)
+            return _label_tag_payload_from_model(tag)
 
-    def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, Any]:
-        unique_tag_ids = sorted({int(tag_id) for tag_id in tag_ids})
+    def replace_blog_link_labels(
+        self,
+        *,
+        blog_id: int,
+        tag_ids: list[int] | None = None,
+        label_id: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        if label_id is not None:
+            label_counts = _normalize_label_counts(label_id)
+        else:
+            label_counts = _label_counts_from_tag_ids(tag_ids)
         with session_scope(self.session_factory) as session:
-            blog = self._get_blog_by_business_id(session, blog_id)
-            if blog is None:
+            label_names_by_id = _blog_label_names_by_id(session)
+            unknown_ids = [int(key) for key in label_counts if int(key) not in label_names_by_id]
+            if unknown_ids:
+                raise ValueError("Unsupported blog label id")
+            raw = session.scalar(
+                select(RawDiscoveredUrlModel)
+                .where(
+                    self._labelable_raw_url_condition(),
+                    RawDiscoveredUrlModel.id == blog_id,
+                )
+                .limit(1)
+            )
+            if raw is None:
+                if self._get_blog_by_business_id(session, blog_id) is not None:
+                    raise BlogLabelingConflictError("blog_labeling_requires_labelable_raw_url")
                 raise BlogLabelingNotFoundError("blog_not_found")
-            if blog.crawl_status != CrawlStatus.FINISHED:
-                raise BlogLabelingConflictError("blog_labeling_requires_finished_blog")
-            resolved_blog_id = int(_business_blog_id(blog))
-            tags = []
-            if unique_tag_ids:
-                tags = session.scalars(
-                    select(BlogLabelTagModel).where(BlogLabelTagModel.id.in_(unique_tag_ids))
-                ).all()
-                if len(tags) != len(unique_tag_ids):
-                    raise ValueError("blog_label_tag_not_found")
-            existing_rows = session.scalars(
-                select(BlogLabelAssignmentModel).where(BlogLabelAssignmentModel.blog_id == resolved_blog_id)
-            )
             timestamp = now_utc()
-            existing_by_tag = {int(row.tag_id): row for row in existing_rows}
-            for tag_id, assignment in list(existing_by_tag.items()):
-                if tag_id not in unique_tag_ids:
-                    session.delete(assignment)
-            for tag in tags:
-                assignment = existing_by_tag.get(int(tag.id))
-                if assignment is not None:
-                    assignment.labeled_at = timestamp
-                    assignment.updated_at = timestamp
-                    continue
-                session.add(
-                    BlogLabelAssignmentModel(
-                        blog_id=resolved_blog_id,
-                        tag_id=int(tag.id),
-                        labeled_at=timestamp,
-                        created_at=timestamp,
-                        updated_at=timestamp,
-                    )
-            )
-            session.flush()
-            refreshed = self._blog_label_assignment_rows(
+            title = session.scalar(select(BlogModel.title).where(BlogModel.normalized_url == raw.normalized_url).limit(1))
+            label_row = self._ensure_blog_label_row(
                 session,
-                blog_ids=[resolved_blog_id],
-                order_by_blog_id=False,
+                normalized_url=str(raw.normalized_url),
+                title=(title or ""),
             )
+            label_row.label_id = label_counts
+            label_row.updated_time = timestamp
+            session.flush()
             return _BlogLabelStateView.from_assignment_rows(
-                blog_id=resolved_blog_id,
-                rows=refreshed,
-                last_labeled_at=timestamp if refreshed else None,
+                blog_id=int(raw.id),
+                label_counts=label_row.label_id,
+                last_labeled_at=timestamp if label_row.label_id else None,
+                label_names=label_names_by_id,
             ).as_payload()
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
@@ -2681,6 +3691,16 @@ class SQLAlchemyRepository:
         settings = self._decision_scan_settings()
         decision_chain = build_url_decision_chain(settings)
         started_at = now_utc()
+        filter_chain_version = _filter_chain_version(settings)
+        log_event(
+            URL_REFILTER_LOGGER,
+            event="maintenance.url_refilter.execute.started",
+            message="url refilter execution started: loading current filter chain and preparing backup",
+            stage="url_refilter",
+            run_id=run_id,
+            filter_chain_version=filter_chain_version,
+            reason="operator_requested_refilter",
+        )
         try:
             with session_scope(self.session_factory) as session:
                 run = self._require_model(
@@ -2693,7 +3713,7 @@ class SQLAlchemyRepository:
                 run.started_at = started_at
                 run.completed_at = None
                 run.error_message = None
-                run.filter_chain_version = _filter_chain_version(settings)
+                run.filter_chain_version = filter_chain_version
                 run.total_count = _count_selectable_rows(session, RawDiscoveredUrlModel)
                 run.scanned_count = 0
                 run.unchanged_count = 0
@@ -2733,6 +3753,7 @@ class SQLAlchemyRepository:
             retagged_count = 0
             last_raw_url_id = 0
             source_domain_cache: dict[int, str] = {}
+            seen_raw_urls: set[str] = set()
             cursor = 0
             batch_size = 1000
 
@@ -2771,11 +3792,44 @@ class SQLAlchemyRepository:
                                 f"retagged={retagged_count}"
                             ),
                         )
+                        log_event(
+                            URL_REFILTER_LOGGER,
+                            event="maintenance.url_refilter.execute.finished",
+                            message="url refilter execution finished: all raw URLs scanned successfully",
+                            stage="url_refilter",
+                            run_id=run_id,
+                            reason="all_raw_urls_scanned",
+                            scanned_count=scanned_count,
+                            total_count=int(run.total_count),
+                            unchanged_count=unchanged_count,
+                            activated_count=activated_count,
+                            deactivated_count=deactivated_count,
+                            retagged_count=retagged_count,
+                            last_raw_url_id=last_raw_url_id or None,
+                            completed_status="SUCCEEDED",
+                        )
                         return _url_refilter_run_payload(run)
 
                     for raw in raws:
                         last_raw_url_id = int(raw.id)
                         source_blog_id = int(raw.source_blog_id)
+                        old_status = str(raw.status)
+                        if raw.normalized_url in seen_raw_urls:
+                            new_status = RAW_DISCOVERED_URL_DUPLICATE_STATUS
+                            if new_status == old_status:
+                                unchanged_count += 1
+                            else:
+                                raw.status = new_status
+                                raw.updated_at = now_utc()
+                                if old_status == "success":
+                                    self._handle_refilter_deactivated_success(session, raw=raw)
+                                    deactivated_count += 1
+                                else:
+                                    retagged_count += 1
+                            scanned_count += 1
+                            cursor = int(raw.id)
+                            continue
+                        seen_raw_urls.add(raw.normalized_url)
                         source_domain = source_domain_cache.get(source_blog_id)
                         if source_domain is None:
                             source_blog = self._get_blog_by_business_id(session, source_blog_id)
@@ -2790,7 +3844,6 @@ class SQLAlchemyRepository:
                             )
                         )
                         new_status = decision.status or "success"
-                        old_status = str(raw.status)
                         if new_status == old_status:
                             unchanged_count += 1
                         else:
@@ -2814,7 +3867,7 @@ class SQLAlchemyRepository:
                     run.retagged_count = retagged_count
                     run.last_raw_url_id = last_raw_url_id
                     run.updated_at = now_utc()
-                    if scanned_count % 10_000 == 0 or scanned_count == int(run.total_count):
+                    if scanned_count % URL_REFILTER_PROGRESS_LOG_INTERVAL == 0:
                         self._append_url_refilter_run_event_in_session(
                             session,
                             run_id=run_id,
@@ -2823,7 +3876,33 @@ class SQLAlchemyRepository:
                                 f"当前记录id={last_raw_url_id}"
                             ),
                         )
+                        log_event(
+                            URL_REFILTER_LOGGER,
+                            event="maintenance.url_refilter.execute.progress",
+                            message="url refilter execution progress",
+                            stage="url_refilter",
+                            run_id=run_id,
+                            scanned_count=scanned_count,
+                            total_count=int(run.total_count),
+                            unchanged_count=unchanged_count,
+                            activated_count=activated_count,
+                            deactivated_count=deactivated_count,
+                            retagged_count=retagged_count,
+                            last_raw_url_id=last_raw_url_id,
+                        )
         except Exception as exc:
+            log_event(
+                URL_REFILTER_LOGGER,
+                event="maintenance.url_refilter.execute.exited",
+                message=f"url refilter execution exited: {exc}",
+                level=logging.ERROR,
+                stage="url_refilter",
+                run_id=run_id,
+                reason="execution_error",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                completed_status="FAILED",
+            )
             self.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
             raise
 
@@ -3035,8 +4114,8 @@ class SQLAlchemyRepository:
             blogs_deleted = _count_selectable_rows(session, BlogModel)
             edges_deleted = _count_selectable_rows(session, EdgeModel)
             requests_deleted = _count_selectable_rows(session, IngestionRequestModel)
-            labels_deleted = _count_selectable_rows(session, BlogLabelAssignmentModel)
-            tag_defs_deleted = _count_selectable_rows(session, BlogLabelTagModel)
+            labels_preserved = _count_selectable_rows(session, BlogLabelModel)
+            label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
             scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
             scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
@@ -3047,8 +4126,7 @@ class SQLAlchemyRepository:
                     text(
                         "TRUNCATE TABLE url_refilter_run_events, url_refilter_runs, "
                         "blog_dedup_scan_run_items, blog_dedup_scan_runs, "
-                        "raw_discovered_urls, blog_label_assignments, blog_label_tags, "
-                        "ingestion_requests, edges, blogs "
+                        "raw_discovered_urls, ingestion_requests, edges, blogs "
                         "RESTART IDENTITY CASCADE"
                     )
                 )
@@ -3058,8 +4136,6 @@ class SQLAlchemyRepository:
                 session.query(BlogDedupScanRunItemModel).delete()
                 session.query(BlogDedupScanRunModel).delete()
                 session.query(RawDiscoveredUrlModel).delete()
-                session.query(BlogLabelAssignmentModel).delete()
-                session.query(BlogLabelTagModel).delete()
                 session.query(IngestionRequestModel).delete()
                 session.query(EdgeModel).delete()
                 session.query(BlogModel).delete()
@@ -3069,8 +4145,12 @@ class SQLAlchemyRepository:
                 "edges_deleted": edges_deleted,
                 "logs_deleted": 0,
                 "ingestion_requests_deleted": requests_deleted,
-                "blog_link_labels_deleted": labels_deleted,
-                "blog_label_tags_deleted": tag_defs_deleted,
+                "blog_link_labels_deleted": 0,
+                "blog_label_tags_deleted": 0,
+                "blog_labels_preserved": labels_preserved,
+                "blog_label_subjects_preserved": 0,
+                "blog_link_labels_preserved": labels_preserved,
+                "blog_label_tags_preserved": label_tags_preserved,
                 "raw_discovered_urls_deleted": raw_urls_deleted,
                 "url_refilter_run_events_deleted": refilter_events_deleted,
                 "url_refilter_runs_deleted": refilter_runs_deleted,
@@ -3099,7 +4179,7 @@ def build_repository(
     """Build the configured repository implementation."""
     if db_dsn is not None:
         try:
-            return SQLAlchemyRepository(db_dsn, decision_settings=settings, startup_schema_sync=False)
+            return SQLAlchemyRepository(db_dsn, decision_settings=settings, startup_schema_sync=True)
         except ModuleNotFoundError as exc:
             if exc.name != "psycopg":
                 raise

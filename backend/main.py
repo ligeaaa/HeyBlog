@@ -19,13 +19,17 @@ from shared.http_clients.crawler_http import CrawlerHttpClient
 from shared.http_clients.persistence_http import PersistenceHttpClient
 from shared.http_clients.search_http import SearchHttpClient
 from shared.observability import RequestIdMiddleware
+from shared.observability import configure_dedicated_event_logger
 from shared.observability import configure_logging
 from shared.observability import get_logger
 from shared.observability import log_event
 
 
 SERVICE_NAME = "backend"
+URL_REFILTER_LOG_SERVICE_NAME = "url-refilter"
+URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
 LOGGER = get_logger(__name__)
+URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
 
 
 @dataclass(slots=True)
@@ -50,7 +54,8 @@ class CreateIngestionRequest(BaseModel):
 
 
 class ReplaceBlogLabelsRequest(BaseModel):
-    tag_ids: list[int]
+    tag_ids: list[int] | None = None
+    label_id: dict[str, int] | None = None
 
 
 class CreateBlogLabelTagRequest(BaseModel):
@@ -79,9 +84,24 @@ def _enter_maintenance(state: BackendState) -> bool:
     return crawler_was_running
 
 
-def _leave_maintenance(state: BackendState) -> None:
-    """Clear backend maintenance mode."""
+def _leave_maintenance(
+    state: BackendState,
+    *,
+    reason: str = "maintenance_completed",
+    message: str = "maintenance mode closed",
+    run_id: int | None = None,
+) -> None:
+    """Clear backend maintenance mode and log URL refilter exits when relevant."""
     state.maintenance_in_progress = False
+    if run_id is not None:
+        log_event(
+            URL_REFILTER_LOGGER,
+            event="maintenance.url_refilter.backend.closed",
+            message=message,
+            stage="url_refilter",
+            run_id=run_id,
+            reason=reason,
+        )
 
 
 def _stop_active_crawler(
@@ -123,6 +143,15 @@ def _mark_url_refilter_run_failed(
     error_message: str,
 ) -> None:
     """Best-effort persistence of a failed URL refilter run."""
+    log_event(
+        URL_REFILTER_LOGGER,
+        event="maintenance.url_refilter.backend.failed",
+        message="url refilter backend marked run failed",
+        level=30,
+        stage="url_refilter",
+        run_id=run_id,
+        error_message=error_message,
+    )
     if run_id is None:
         return
     try:
@@ -139,7 +168,12 @@ def _abort_url_refilter_start(
 ) -> None:
     """Persist a failed refilter start attempt and clear maintenance mode."""
     _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
-    _leave_maintenance(state)
+    _leave_maintenance(
+        state,
+        run_id=run_id,
+        reason="start_failed",
+        message=f"url refilter startup closed: {error_message}",
+    )
 
 
 def _call_upstream_with_http_error_translation(
@@ -253,14 +287,38 @@ def _execute_url_refilter_in_background(
     *,
     run_id: int,
 ) -> None:
+    close_reason = "persistence_execution_completed"
+    close_message = "url refilter backend closed: persistence execution completed"
+    log_event(
+        URL_REFILTER_LOGGER,
+        event="maintenance.url_refilter.backend.execute_requested",
+        message="url refilter backend requested persistence execution",
+        stage="url_refilter",
+        run_id=run_id,
+        reason="background_thread_started",
+    )
     try:
         state.persistence.execute_url_refilter_run(run_id=run_id)
+        log_event(
+            URL_REFILTER_LOGGER,
+            event="maintenance.url_refilter.backend.execute_completed",
+            message="url refilter backend execution request completed: persistence accepted and returned",
+            stage="url_refilter",
+            run_id=run_id,
+            reason="persistence_execution_returned",
+        )
     except httpx.HTTPStatusError as exc:
-        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(_upstream_error_detail(exc)))
+        error_message = str(_upstream_error_detail(exc))
+        close_reason = "persistence_http_error"
+        close_message = f"url refilter backend closed: {error_message}"
+        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
     except Exception as exc:  # noqa: BLE001
-        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=str(exc))
+        error_message = str(exc)
+        close_reason = "unexpected_backend_error"
+        close_message = f"url refilter backend closed: {error_message}"
+        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
     finally:
-        _leave_maintenance(state)
+        _leave_maintenance(state, run_id=run_id, reason=close_reason, message=close_message)
 
 
 def _start_maintenance_background_task(
@@ -329,6 +387,16 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         log_format=settings.log_format,
         retention_days=settings.log_retention_days,
     )
+    configure_dedicated_event_logger(
+        logger_name=URL_REFILTER_LOGGER_NAME,
+        service=URL_REFILTER_LOG_SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Backend Service", version="0.1.0")
     app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.backend_state = state or build_backend_state()
@@ -351,7 +419,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         if token != state.admin_token:
             raise HTTPException(status_code=403, detail="admin_auth_invalid")
 
-    def ensure_runtime_idle(*, retries: int = 20, delay_seconds: float = 0.1) -> dict[str, Any]:
+    def ensure_runtime_idle(*, retries: int = 120, delay_seconds: float = 0.5) -> dict[str, Any]:
         last_runtime = get_state().crawler.runtime_status()
         for _ in range(retries):
             if last_runtime.get("runner_status") == "idle":
@@ -477,19 +545,43 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.replace_blog_link_labels(
                 blog_id=blog_id,
                 tag_ids=payload.tag_ids,
+                label_id=payload.label_id,
             )
         )
 
-    @app.get("/api/admin/blog-labeling/export")
-    def export_blog_label_training_csv(_: None = Depends(require_admin_access)) -> Response:
-        csv_payload = _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.export_blog_label_training_csv()
+    @app.get("/api/admin/blog-labeling/parquet-status")
+    def get_blog_label_training_parquet_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_blog_label_training_parquet_status()
+        )
+
+    @app.post("/api/admin/blog-labeling/parquet-sync")
+    def sync_blog_label_training_parquet(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.sync_blog_label_training_parquet()
+        )
+
+    @app.post("/api/admin/blog-labeling/parquet-rebuild")
+    def rebuild_blog_label_training_parquet(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.rebuild_blog_label_training_parquet()
+        )
+
+    @app.get("/api/admin/blog-labeling/parquet-export")
+    def export_blog_label_training_parquet(_: None = Depends(require_admin_access)) -> Response:
+        parquet_payload, headers = _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.export_blog_label_training_parquet()
         )
         return Response(
-            content=csv_payload,
-            media_type="text/csv",
+            content=parquet_payload,
+            media_type="application/vnd.apache.parquet",
             headers={
-                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+                "content-disposition": headers.get(
+                    "content-disposition",
+                    'attachment; filename="blog-label-training.parquet"',
+                ),
+                "x-heyblog-label-saved-count": headers.get("x-heyblog-label-saved-count", "0"),
+                "x-heyblog-label-total-count": headers.get("x-heyblog-label-total-count", "0"),
             },
         )
 
@@ -637,7 +729,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             run_id = int(payload["id"])
             run_context["run_id"] = run_id
             log_event(
-                LOGGER,
+                URL_REFILTER_LOGGER,
                 event="maintenance.url_refilter.started",
                 message="url refilter run started",
                 stage="url_refilter",
@@ -646,14 +738,35 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             )
             state.persistence.append_url_refilter_run_event(run_id=run_id, message="停止爬虫中")
             if crawler_was_running:
+                log_event(
+                    URL_REFILTER_LOGGER,
+                    event="maintenance.url_refilter.crawler_stop.requested",
+                    message="url refilter crawler stop requested",
+                    stage="url_refilter",
+                    run_id=run_id,
+                )
                 _stop_active_crawler(
                     state,
                     crawler_was_running=True,
                     wait_for_idle=ensure_runtime_idle,
                 )
                 state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已停止")
+                log_event(
+                    URL_REFILTER_LOGGER,
+                    event="maintenance.url_refilter.crawler_stop.succeeded",
+                    message="url refilter crawler stopped",
+                    stage="url_refilter",
+                    run_id=run_id,
+                )
             else:
                 state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已处于停止状态")
+                log_event(
+                    URL_REFILTER_LOGGER,
+                    event="maintenance.url_refilter.crawler_stop.skipped",
+                    message="url refilter crawler was already idle",
+                    stage="url_refilter",
+                    run_id=run_id,
+                )
             return payload, {"run_id": run_id}
 
         def cleanup(error_message: str) -> None:
