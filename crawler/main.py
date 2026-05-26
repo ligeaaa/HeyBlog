@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 from crawler.crawling.pipeline import CrawlPipeline
@@ -146,6 +147,16 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
             Batch crawl result payload from ``CrawlPipeline.run_once``.
         """
         # This is the direct one-shot entrypoint for CrawlPipeline.run_once().
+        capacity = get_state().pipeline.capacity_gate.check()
+        if not capacity.allowed:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": capacity.reason,
+                    "raw_count": capacity.raw_count,
+                    "limit": capacity.limit,
+                },
+            )
         result = get_state().pipeline.run_once(max_nodes=max_nodes)
         log_event(
             LOGGER,
@@ -185,6 +196,16 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
             Updated runtime snapshot after the start request is processed.
         """
         result = get_state().runtime.start()
+        if result.get("accepted") is False and result.get("reason") == "raw_discovered_url_limit_reached":
+            capacity = result.get("capacity", {})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": result.get("reason"),
+                    "raw_count": capacity.get("raw_count"),
+                    "limit": capacity.get("limit"),
+                },
+            )
         log_event(
             LOGGER,
             event="crawler.runtime.started",
@@ -225,6 +246,16 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
         # Runtime batching uses the same pipeline, but with worker-pool state
         # tracking layered on top for long-lived service execution.
         result = get_state().runtime.run_batch(payload.max_nodes)
+        if result.get("accepted") is False and result.get("reason") == "raw_discovered_url_limit_reached":
+            capacity = result.get("capacity", {})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": result.get("reason"),
+                    "raw_count": capacity.get("raw_count"),
+                    "limit": capacity.get("limit"),
+                },
+            )
         log_event(
             LOGGER,
             event="crawler.runtime.batch_completed",

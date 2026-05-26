@@ -3848,10 +3848,12 @@ class SQLAlchemyRepository:
             status_counts = {str(status.value): int(count) for status, count in rows}
             total_blogs = _count_selectable_rows(session, BlogModel)
             total_edges = _count_selectable_rows(session, EdgeModel)
+            raw_discovered_urls = _count_selectable_rows(session, RawDiscoveredUrlModel)
             average_friend_links = float(session.scalar(select(func.avg(BlogModel.friend_links_count))) or 0.0)
             return {
                 "total_blogs": total_blogs,
                 "total_edges": total_edges,
+                "raw_discovered_urls": raw_discovered_urls,
                 "average_friend_links": average_friend_links,
                 "status_counts": status_counts,
                 "pending_tasks": int(status_counts.get(CrawlStatus.WAITING.value, 0)),

@@ -263,7 +263,7 @@ def _run_crawler_action_and_refresh_search(
     action: Callable[[], dict[str, Any]],
 ) -> dict[str, Any]:
     """Run one crawler action and best-effort refresh search before returning."""
-    result = action()
+    result = _call_upstream_with_http_error_translation(action)
     _best_effort_search_reindex(search)
     return result
 

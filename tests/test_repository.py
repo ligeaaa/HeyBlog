@@ -268,6 +268,28 @@ def test_repository_filter_stats_follow_configured_chain_order(tmp_path: Path) -
     assert stats["by_filter_reason"]["rule:platform_blocked"] == 1
 
 
+def test_repository_stats_include_raw_discovered_url_count(tmp_path: Path) -> None:
+    """Repository stats should expose raw URL volume for crawler capacity gating."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://source.example/",
+        normalized_url="https://source.example/",
+        domain="source.example",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://one.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://two.example/",
+        status="rule:same_domain",
+    )
+
+    assert repository.stats()["raw_discovered_urls"] == 2
+
+
 def test_repository_marks_duplicate_raw_urls_before_filter_chain(tmp_path: Path) -> None:
     """Raw URL insertion should only check older rows for duplicate URLs."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")

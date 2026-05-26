@@ -15,6 +15,7 @@ DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
 DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS = 2
 DEFAULT_MAX_FETCHED_PAGE_BYTES = 2_000_000
+DEFAULT_RAW_DISCOVERED_URL_LIMIT = 1_000_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "heyblog.sqlite"
 DEFAULT_SEED_PATH = PROJECT_ROOT / "seed.csv"
@@ -105,6 +106,7 @@ class Settings:
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
     priority_seed_normal_queue_slots: int = DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS
     max_fetched_page_bytes: int = DEFAULT_MAX_FETCHED_PAGE_BYTES
+    raw_discovered_url_limit: int = DEFAULT_RAW_DISCOVERED_URL_LIMIT
     friend_link_domain_blocklist: tuple[str, ...] = ()
     friend_link_tld_blocklist: tuple[str, ...] = ()
     friend_link_exact_url_blocklist: tuple[str, ...] = ()
@@ -205,6 +207,12 @@ class Settings:
                         str(DEFAULT_MAX_FETCHED_PAGE_BYTES),
                     )
                 ),
+            ),
+            raw_discovered_url_limit=int(
+                os.getenv(
+                    "HEYBLOG_RAW_DISCOVERED_URL_LIMIT",
+                    str(DEFAULT_RAW_DISCOVERED_URL_LIMIT),
+                )
             ),
             friend_link_domain_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST"),
             friend_link_tld_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST"),

@@ -174,6 +174,34 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     assert "depth" not in child_blog
 
 
+def test_pipeline_stops_before_claim_when_raw_discovered_url_limit_is_reached(tmp_path: Path) -> None:
+    """One-shot crawl batches should refuse new claims once raw URL volume reaches the limit."""
+    pipeline, repository = build_pipeline(tmp_path)
+    pipeline.settings.raw_discovered_url_limit = 1
+    pipeline.capacity_gate.raw_discovered_url_limit = 1
+    blog = seed_blog(repository)
+    repository.create_raw_discovered_url(
+        source_blog_id=blog["blog_id"],
+        normalized_url="https://existing.example/",
+        status="success",
+    )
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="<html><body></body></html>",
+            ),
+        }
+    )
+
+    result = pipeline.run_once(max_nodes=1)
+
+    assert result["processed"] == 0
+    assert result["stop_reason"] == "raw_discovered_url_limit_reached"
+    assert pipeline.fetcher.calls == []
+
+
 def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
     """Homepage crawl should persist title and icon metadata onto the source blog."""
     pipeline, repository = build_pipeline(tmp_path)

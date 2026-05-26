@@ -5,6 +5,7 @@ from pathlib import Path
 from time import sleep
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import BackendState
@@ -482,6 +483,7 @@ def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -
         def stats(self) -> dict[str, object]:
             return {
                 "total_blogs": 17,
+                "raw_discovered_urls": 12,
                 "pending_tasks": 3,
             }
 
@@ -500,6 +502,7 @@ def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -
     assert stats.status_code == 200
     assert stats.json() == {
         "total_blogs": 17,
+        "raw_discovered_urls": 12,
         "pending_tasks": 3,
     }
 
@@ -1557,6 +1560,63 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     assert reset.json()["blog_label_tags_preserved"] == 2
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/admin/crawl/run?max_nodes=2", None),
+        ("/api/admin/runtime/run-batch", {"max_nodes": 3}),
+    ],
+)
+def test_backend_preserves_crawler_capacity_conflict_detail(
+    path: str,
+    body: dict[str, int] | None,
+) -> None:
+    """Backend should relay crawler raw-limit conflicts without reindexing search."""
+
+    class CapacityBlockedCrawler(StubCrawler):
+        def _raise_capacity_conflict(self) -> None:
+            request = httpx.Request("POST", "http://crawler/internal/runtime/start")
+            response = httpx.Response(
+                409,
+                request=request,
+                json={
+                    "detail": {
+                        "reason": "raw_discovered_url_limit_reached",
+                        "raw_count": 1_000_000,
+                        "limit": 1_000_000,
+                    }
+                },
+            )
+            raise httpx.HTTPStatusError("raw limit reached", request=request, response=response)
+
+        def run(self, max_nodes: int | None = None) -> dict[str, int | None]:
+            self._raise_capacity_conflict()
+
+        def run_batch(self, max_nodes: int) -> dict[str, object]:
+            self._raise_capacity_conflict()
+
+    search = StubSearch()
+    app = create_backend_app(
+        BackendState(
+            persistence=object(),
+            crawler=CapacityBlockedCrawler(),
+            search=search,
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    if body is None:
+        response = client.post(path, headers=admin_headers())
+    else:
+        response = client.post(path, json=body, headers=admin_headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "raw_discovered_url_limit_reached"
+    assert response.json()["detail"]["raw_count"] == 1_000_000
+    assert search.reindex_calls == 0
 
 
 def test_backend_service_removes_legacy_public_routes() -> None:

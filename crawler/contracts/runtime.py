@@ -177,6 +177,7 @@ class RuntimeAggregate:
     discovered: int = 0
     failed: int = 0
     exports: dict[str, Any] = field(default_factory=dict)
+    stop_reason: str | None = None
 
     def include(self, result: dict[str, Any]) -> None:
         """Merge one single-batch result into the aggregate counters.
@@ -192,6 +193,7 @@ class RuntimeAggregate:
         self.discovered += int(result["discovered"])
         self.failed += int(result["failed"])
         self.exports = dict(result["exports"])
+        self.stop_reason = result.get("stop_reason")
 
     def as_result(self) -> dict[str, Any]:
         """Return the aggregate counters using the crawler's dict contract.
@@ -200,9 +202,12 @@ class RuntimeAggregate:
             A dictionary containing the aggregate processed, discovered, failed,
             and export values for the runtime execution.
         """
-        return {
+        payload = {
             "processed": self.processed,
             "discovered": self.discovered,
             "failed": self.failed,
             "exports": dict(self.exports),
         }
+        if self.stop_reason is not None:
+            payload["stop_reason"] = self.stop_reason
+        return payload

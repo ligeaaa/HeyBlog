@@ -12,6 +12,7 @@ None.
 
 ## Completed
 
+- [x] 限制 `raw_discovered_urls` 达到 1000000 后自动停止并禁止启动 crawler，配置同步到 `.env.example` 和 `.env`。Tracker: `tracker/raw-url-limit-crawler-stop-20260526.md` (created 2026-05-26 10:12:20 BST; completed 2026-05-26).
 - [x] 修复随机博客用户标注为单 URL 单选择，支持切换 label 并把 label 按钮合入博客卡片。Tracker: `tracker/random-blog-userlabel-20260526.md` (created 2026-05-26 00:17:32 BST; completed 2026-05-26).
 - [x] 修改随机博客界面，新增独立用户标注表、卡片 label 操作、admin 非 blog 过滤与用户标注加权随机。Tracker: `tracker/random-blog-userlabel-20260526.md` (created 2026-05-26 00:17:32 BST; completed 2026-05-26).
 - [x] 修复标注实时统计，使其按 `blog_labels` 全表聚合而不是按当前候选池统计。Tracker: `tracker/blog-label-counts-full-table-20260525.md` (created 2026-05-25 23:52:31 BST; completed 2026-05-25).

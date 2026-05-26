@@ -218,6 +218,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - `average_friend_links`: blog 的平均友链发现数
 - `status_counts`: 按 `crawl_status` 分组后的原始计数
+- `raw_discovered_urls`: `raw_discovered_urls` 表中的原始发现 URL 总数；crawler 会用它执行 `HEYBLOG_RAW_DISCOVERED_URL_LIMIT` 启动保护，配置为 `-1` 时不限制
 
 #### `GET /api/filter-stats`
 
