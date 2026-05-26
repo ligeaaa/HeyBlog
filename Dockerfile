@@ -24,6 +24,7 @@ COPY backend ./backend
 COPY crawler ./crawler
 COPY persistence_api ./persistence_api
 COPY search ./search
+COPY trainer ./trainer
 COPY frontend ./frontend
 COPY services ./services
 COPY scripts ./scripts

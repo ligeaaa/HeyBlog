@@ -84,6 +84,7 @@ def build_pipeline(tmp_path: Path) -> tuple[CrawlPipeline, Repository]:
         export_dir=tmp_path / "exports",
         max_path_probes_per_blog=2,
         candidate_page_fetch_concurrency=4,
+        decision_model_consensus_enabled=False,
     )
     repository = Repository(settings.db_path)
     pipeline = CrawlPipeline(settings, repository)

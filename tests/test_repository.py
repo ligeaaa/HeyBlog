@@ -382,6 +382,7 @@ def test_repository_run_blog_dedup_scan_removes_rejected_links_and_orphaned_targ
         seed_path=tmp_path / "seed.csv",
         export_dir=tmp_path / "exports",
         friend_link_exact_url_blocklist=("https://rejected.example/",),
+        decision_model_consensus_enabled=False,
     )
     repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
     source_id, inserted = repository.upsert_blog(
@@ -441,6 +442,7 @@ def test_repository_dedup_scan_keeps_valid_blog_urls(tmp_path: Path) -> None:
         seed_path=tmp_path / "seed.csv",
         export_dir=tmp_path / "exports",
         friend_link_exact_url_blocklist=("https://blocked.example/",),
+        decision_model_consensus_enabled=False,
     )
     repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
     first_source_id, inserted = repository.upsert_blog(

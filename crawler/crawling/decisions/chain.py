@@ -158,6 +158,8 @@ class ConfiguredUrlFilterChain:
             if not bool(item.get("enabled", True)):
                 continue
             kind = str(item.get("kind", "")).strip()
+            if kind == "model_consensus" and not settings.decision_model_consensus_enabled:
+                continue
             factory = FILTER_REGISTRY.get(kind)
             if factory is None:
                 raise ValueError(f"unknown_filter_kind:{kind}")
