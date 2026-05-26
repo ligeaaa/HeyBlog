@@ -97,6 +97,11 @@ class ReplaceBlogLabelsRequest(BaseModel):
     title: str | None = None
 
 
+class IncrementBlogUserLabelRequest(BaseModel):
+    label: str
+    previous_label: str | None = None
+
+
 class CreateBlogLabelTagRequest(BaseModel):
     name: str
 
@@ -390,6 +395,21 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 tag_ids=payload.tag_ids,
                 label_id=payload.label_id,
                 title=payload.title,
+            ),
+            exception_translations=(
+                (ValueError, 422, None),
+                (BlogLabelingNotFoundError, 404, None),
+                (BlogLabelingConflictError, 409, None),
+            ),
+        )
+
+    @app.post("/internal/blogs/{blog_id}/user-labels")
+    def increment_blog_user_label(blog_id: int, payload: IncrementBlogUserLabelRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.increment_blog_user_label(
+                blog_id=blog_id,
+                label=payload.label,
+                previous_label=payload.previous_label,
             ),
             exception_translations=(
                 (ValueError, 422, None),

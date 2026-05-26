@@ -21,7 +21,9 @@ from urllib.parse import urlparse
 from sqlalchemy import and_
 from sqlalchemy import case
 from sqlalchemy import cast
+from sqlalchemy import Float
 from sqlalchemy import func
+from sqlalchemy import Integer
 from sqlalchemy import inspect
 from sqlalchemy import ColumnElement
 from sqlalchemy import or_
@@ -37,6 +39,7 @@ from persistence_api.db import session_scope
 from persistence_api.models import Base
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
+from persistence_api.models import BlogUserLabelModel
 from persistence_api.models import BlogModel
 from persistence_api.models import BlogDedupScanRunItemModel
 from persistence_api.models import BlogDedupScanRunModel
@@ -82,6 +85,8 @@ DEFAULT_BLOG_LABEL_TAGS = (
 )
 BLOG_LABEL_NAME_TO_ID = {name: label_id for label_id, name in DEFAULT_BLOG_LABEL_TAGS}
 BLOG_LABEL_ID_TO_NAME = {label_id: name for label_id, name in DEFAULT_BLOG_LABEL_TAGS}
+RANDOM_BLOG_LABEL_SLUGS = frozenset({"blog", "company", "other", "unknown"})
+BLOG_LABEL_BLOG_ID = BLOG_LABEL_NAME_TO_ID["blog"]
 RAW_DISCOVERED_URL_DUPLICATE_STATUS = "rule:duplicate_url"
 URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
 URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
@@ -531,6 +536,39 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
         label_columns = {column["name"] for column in inspector.get_columns("blog_labels")}
         if "title" not in label_columns:
             connection.execute(text("ALTER TABLE blog_labels ADD COLUMN title TEXT DEFAULT '' NOT NULL"))
+        if "blog_labels_userlabel" not in existing_tables:
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        "CREATE TABLE blog_labels_userlabel ("
+                        "normalized_url TEXT PRIMARY KEY, "
+                        "title TEXT DEFAULT '' NOT NULL, "
+                        "label_id JSONB NOT NULL DEFAULT '{}'::jsonb, "
+                        "created_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_blog_labels_userlabel_normalized_url "
+                        "ON blog_labels_userlabel (normalized_url)"
+                    )
+                )
+            else:
+                connection.execute(
+                    text(
+                        "CREATE TABLE blog_labels_userlabel ("
+                        "normalized_url TEXT PRIMARY KEY, "
+                        "title TEXT DEFAULT '' NOT NULL, "
+                        "label_id JSON NOT NULL DEFAULT '{}', "
+                        "created_time DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_time DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+            existing_tables.add("blog_labels_userlabel")
+        user_label_columns = {column["name"] for column in inspector.get_columns("blog_labels_userlabel")}
+        if "title" not in user_label_columns:
+            connection.execute(text("ALTER TABLE blog_labels_userlabel ADD COLUMN title TEXT DEFAULT '' NOT NULL"))
         if "blog_label_tags" not in existing_tables:
             connection.execute(
                 text(
@@ -1034,6 +1072,24 @@ def _label_counts_from_tag_ids(tag_ids: list[int] | None) -> dict[str, int]:
     return _normalize_label_counts({str(tag_id): 1 for tag_id in (tag_ids or [])})
 
 
+def _json_label_count_expr(label_json: Any, label_id: int) -> Any:
+    """Return one JSON label-count SQL expression coerced to an integer."""
+    return cast(func.coalesce(label_json[str(label_id)].as_integer(), 0), Integer)
+
+
+def _non_blog_label_count_expr(label_json: Any) -> Any:
+    """Return the SQL sum of known non-blog label counts for one JSON field."""
+    counts = [
+        _json_label_count_expr(label_json, label_id)
+        for label_id, label_name in DEFAULT_BLOG_LABEL_TAGS
+        if label_id != BLOG_LABEL_BLOG_ID and label_name != "blog"
+    ]
+    total = counts[0]
+    for count in counts[1:]:
+        total = total + count
+    return total
+
+
 def _label_payloads_from_counts(
     label_counts: dict[str, int],
     *,
@@ -1511,6 +1567,14 @@ class RepositoryProtocol(Protocol):
         label_id: dict[str, int] | None = None,
     ) -> dict[str, Any]: ...
 
+    def increment_blog_user_label(
+        self,
+        *,
+        blog_id: int,
+        label: str,
+        previous_label: str | None = None,
+    ) -> dict[str, Any]: ...
+
     def ensure_labelable_raw_url_blogs(self) -> dict[str, int]: ...
 
     def get_labelable_blog_by_url(self, *, url: str) -> dict[str, Any] | None: ...
@@ -1863,6 +1927,66 @@ class SQLAlchemyRepository:
         session.add(label_row)
         session.flush()
         return label_row
+
+    def _ensure_blog_user_label_row(
+        self,
+        session: Session,
+        *,
+        normalized_url: str,
+        title: str | None = None,
+    ) -> BlogUserLabelModel:
+        """Return the random-page user-label row for a normalized URL.
+
+        Args:
+            session: Active SQLAlchemy session.
+            normalized_url: Stable URL key that receives public label votes.
+            title: Optional display title captured with the user vote.
+
+        Returns:
+            Existing or newly-created ``BlogUserLabelModel`` row.
+        """
+
+        label_row = session.scalar(
+            select(BlogUserLabelModel).where(BlogUserLabelModel.normalized_url == normalized_url)
+        )
+        clean_title = (title or "").strip()
+        if label_row is not None:
+            if clean_title:
+                label_row.title = clean_title
+            return label_row
+        timestamp = now_utc()
+        label_row = BlogUserLabelModel(
+            normalized_url=normalized_url,
+            title=clean_title,
+            label_id={},
+            created_time=timestamp,
+            updated_time=timestamp,
+        )
+        session.add(label_row)
+        session.flush()
+        return label_row
+
+    def _random_blog_catalog_statement(self, statement: Any) -> Any:
+        """Apply admin-label exclusion and user-feedback weighting to random catalog reads.
+
+        Args:
+            statement: Base blog catalog select with standard blog metrics.
+
+        Returns:
+            Statement ordered by the capped weighted random expression.
+        """
+
+        admin_non_blog = _non_blog_label_count_expr(BlogLabelModel.label_id)
+        user_blog_count = _json_label_count_expr(BlogUserLabelModel.label_id, BLOG_LABEL_BLOG_ID)
+        user_non_blog_count = _non_blog_label_count_expr(BlogUserLabelModel.label_id)
+        raw_weight = cast(10 + user_blog_count, Float) / cast(1 + user_non_blog_count, Float)
+        random_weight = case((raw_weight > 10, 10.0), else_=raw_weight)
+        return (
+            statement.outerjoin(BlogLabelModel, BlogLabelModel.normalized_url == BlogModel.normalized_url)
+            .outerjoin(BlogUserLabelModel, BlogUserLabelModel.normalized_url == BlogModel.normalized_url)
+            .where(admin_non_blog == 0)
+            .order_by((func.random() * random_weight).desc(), BlogModel.blog_id.desc(), BlogModel.id.desc())
+        )
 
     def _require_model(
         self,
@@ -3034,7 +3158,7 @@ class SQLAlchemyRepository:
             elif query["sort"] == "id_asc":
                 statement = statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
             elif query["sort"] == "random":
-                statement = statement.order_by(func.random())
+                statement = self._random_blog_catalog_statement(statement)
             else:
                 statement = statement.order_by(BlogModel.blog_id.desc(), BlogModel.id.desc())
 
@@ -3585,6 +3709,78 @@ class SQLAlchemyRepository:
                 blog_id=int(raw.id),
                 label_counts=label_row.label_id,
                 last_labeled_at=timestamp if label_row.label_id else None,
+                label_names=label_names_by_id,
+            ).as_payload()
+
+    def increment_blog_user_label(
+        self,
+        *,
+        blog_id: int,
+        label: str,
+        previous_label: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply one page-local public random-page label selection for a blog.
+
+        Args:
+            blog_id: Public/business blog ID from the catalog card.
+            label: Label name, slug, or numeric ID. Only the four random-page
+                labels (`blog`, `company`, `other`, `unknown`) are accepted.
+            previous_label: Optional previous page selection to decrement when
+                switching to a different label.
+
+        Returns:
+            Updated label-state payload backed by ``blog_labels_userlabel``.
+        """
+
+        with session_scope(self.session_factory) as session:
+            label_names_by_id = _blog_label_names_by_id(session)
+            label_id = _label_id_from_name_in_session(session, label)
+            label_slug = slugify_blog_label(label_names_by_id.get(label_id, str(label_id)))
+            if label_slug not in RANDOM_BLOG_LABEL_SLUGS:
+                raise ValueError("Unsupported random blog label")
+            previous_label_id: int | None = None
+            if previous_label is not None:
+                previous_label_id = _label_id_from_name_in_session(session, previous_label)
+                previous_label_slug = slugify_blog_label(
+                    label_names_by_id.get(previous_label_id, str(previous_label_id))
+                )
+                if previous_label_slug not in RANDOM_BLOG_LABEL_SLUGS:
+                    raise ValueError("Unsupported random blog label")
+            blog = self._get_blog_by_business_id(session, blog_id)
+            if blog is None:
+                raise BlogLabelingNotFoundError("blog_not_found")
+            if blog.crawl_status != CrawlStatus.FINISHED:
+                raise BlogLabelingConflictError("blog_user_labeling_requires_finished_blog")
+            timestamp = now_utc()
+            label_row = self._ensure_blog_user_label_row(
+                session,
+                normalized_url=str(blog.normalized_url),
+                title=blog.title or blog.domain,
+            )
+            label_counts = _normalize_label_counts(label_row.label_id)
+            label_key = str(label_id)
+            if previous_label_id == label_id:
+                return _BlogLabelStateView.from_assignment_rows(
+                    blog_id=int(_business_blog_id(blog)),
+                    label_counts=label_counts,
+                    last_labeled_at=label_row.updated_time,
+                    label_names=label_names_by_id,
+                ).as_payload()
+            if previous_label_id is not None and previous_label_id != label_id:
+                previous_key = str(previous_label_id)
+                previous_count = int(label_counts.get(previous_key, 0))
+                if previous_count > 1:
+                    label_counts[previous_key] = previous_count - 1
+                else:
+                    label_counts.pop(previous_key, None)
+            label_counts[label_key] = int(label_counts.get(label_key, 0)) + 1
+            label_row.label_id = label_counts
+            label_row.updated_time = timestamp
+            session.flush()
+            return _BlogLabelStateView.from_assignment_rows(
+                blog_id=int(_business_blog_id(blog)),
+                label_counts=label_row.label_id,
+                last_labeled_at=timestamp,
                 label_names=label_names_by_id,
             ).as_payload()
 
@@ -4164,6 +4360,7 @@ class SQLAlchemyRepository:
             edges_deleted = _count_selectable_rows(session, EdgeModel)
             requests_deleted = _count_selectable_rows(session, IngestionRequestModel)
             labels_preserved = _count_selectable_rows(session, BlogLabelModel)
+            user_labels_preserved = _count_selectable_rows(session, BlogUserLabelModel)
             label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
             scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
@@ -4197,6 +4394,7 @@ class SQLAlchemyRepository:
                 "blog_link_labels_deleted": 0,
                 "blog_label_tags_deleted": 0,
                 "blog_labels_preserved": labels_preserved,
+                "blog_labels_userlabel_preserved": user_labels_preserved,
                 "blog_label_subjects_preserved": 0,
                 "blog_link_labels_preserved": labels_preserved,
                 "blog_label_tags_preserved": label_tags_preserved,

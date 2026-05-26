@@ -106,6 +106,27 @@ class BlogLabelModel(Base):
     updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class BlogUserLabelModel(Base):
+    """Public random-page URL-keyed label vote counters.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One row per normalized URL. The table mirrors ``blog_labels`` but
+        stores public random-page feedback so training labels remain unchanged.
+    """
+
+    __tablename__ = "blog_labels_userlabel"
+
+    normalized_url: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    label_id: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class BlogLabelTagModel(Base):
     """Label definition row used to resolve stored label IDs.
 

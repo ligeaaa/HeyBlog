@@ -453,6 +453,30 @@ class PersistenceHttpClient:
             payload,
         )
 
+    def increment_blog_user_label(
+        self,
+        *,
+        blog_id: int,
+        label: str,
+        previous_label: str | None = None,
+    ) -> dict[str, Any]:
+        """Increment one public random-page label vote for a blog.
+
+        Args:
+            blog_id: Public/business blog ID.
+            label: Label slug, name, or numeric ID to increment.
+            previous_label: Optional page-local previous selection to
+                decrement when the user switches labels.
+
+        Returns:
+            Updated user-label state from persistence.
+        """
+
+        payload: dict[str, object] = {"label": label}
+        if previous_label is not None:
+            payload["previous_label"] = previous_label
+        return self._post(f"/internal/blogs/{blog_id}/user-labels", payload)
+
     def get_blog_label_training_parquet_status(self) -> dict[str, Any]:
         """Fetch the current parquet export status for labeled training data.
 

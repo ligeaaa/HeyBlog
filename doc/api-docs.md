@@ -69,6 +69,7 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `GET /internal/health`
 - `GET /api/status`
 - `GET /api/blogs/catalog`
+- `POST /api/blogs/{blog_id}/user-labels`
 - `GET /api/blogs/lookup`
 - `GET /api/blogs/{blog_id}`
 - `GET /api/graph/views/core`
@@ -288,13 +289,64 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `recent_activity` 按 `activity_at DESC, connection_count DESC, blog_id DESC`
 - `connections` 按 `connection_count DESC, activity_at DESC, blog_id DESC`
 - `recently_discovered` 按 `created_at DESC, blog_id DESC`
-- `random` 按数据库随机顺序返回，适合“随机博客”类入口
+- `random` 按用户反馈权重随机返回，适合“随机博客”类入口；该模式会过滤掉 `blog_labels` 中已有非 `blog` 管理员标签计数的 URL
 - `id_desc` 按业务 `blog_id DESC`
 - 若请求页码超出最后一页且结果集非空，服务端会回退到最后一页，并在响应中返回实际生效页码
 
 响应结构见“数据模型”章节中的 `BlogCatalogPageRecord`。
 
 当前前端使用方式：
+
+#### `POST /api/blogs/{blog_id}/user-labels`
+
+用途：随机博客页为单个博客 URL 增加一次公共用户标注。该接口写入 `blog_labels_userlabel`，表结构和 `blog_labels` 一致，均按 `normalized_url` 存储 `title` 与 `label_id` 计数字典；不会修改训练用的 `blog_labels`。
+
+请求体：
+
+```json
+{
+  "label": "other",
+  "previous_label": "blog"
+}
+```
+
+行为说明：
+
+- `label` 只接受随机博客页使用的四类标签：`blog`、`company`、`other`、`unknown`
+- `previous_label` 可选；用于随机博客页内的单 URL 单选择切换。若传入且与 `label` 不同，服务端会先把旧 label 计数减 `1`，再把新 label 计数加 `1`
+- 前端同一张 URL 卡片重复点击已选中的 label 不会再次请求接口，也不会重复累加计数
+- 随机博客加权时，所有 URL 默认权重为 `10`；设用户表中 `blog` 计数为 `x`、非 `blog` 计数为 `y`，权重为 `(10 + x) / (1 + y)`，最高不超过 `10`
+- 权重只影响 `sort=random` 的随机排序；管理员训练标签只负责过滤非 blog，不会被用户标注改变
+
+错误语义：
+
+- `404`: 目标 blog id 不存在
+- `409`: 目标不是已完成博客
+- `422`: label 非法
+
+成功响应示例：
+
+```json
+{
+  "blog_id": 12,
+  "label_id": {
+    "1": 3,
+    "3": 1
+  },
+  "labels": [
+    {
+      "id": 1,
+      "name": "blog",
+      "slug": "blog",
+      "count": 3,
+      "labeled_at": "2026-05-26T00:20:00+00:00"
+    }
+  ],
+  "label_slugs": ["blog", "other"],
+  "last_labeled_at": "2026-05-26T00:20:00+00:00",
+  "is_labeled": true
+}
+```
 
 - 统一 discovery 主入口固定以 `statuses=WAITING,PROCESSING&sort=id_asc` 渲染“当前博客状态”板块
 - 发现页只请求当前页，不再拉全量 blog 列表

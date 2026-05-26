@@ -643,6 +643,21 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     assert parquet_export.headers["content-type"].startswith("application/vnd.apache.parquet")
     assert parquet_export.headers["x-heyblog-label-saved-count"] == "2"
 
+    user_label = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "blog"},
+    )
+    assert user_label.status_code == 200
+    assert user_label.json()["label_id"] == {"1": 1}
+    assert user_label.json()["label_slugs"] == ["blog"]
+    switched_user_label = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "other", "previous_label": "blog"},
+    )
+    assert switched_user_label.status_code == 200
+    assert switched_user_label.json()["label_id"] == {"3": 1}
+    assert switched_user_label.json()["label_slugs"] == ["other"]
+
     labeled = client.get(
         "/internal/blog-labeling/candidates",
         params={"label": "official", "labeled": "true", "sort": "recently_labeled"},
@@ -1055,6 +1070,22 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "label_slugs": [f"tag-{tag_id}" for tag_id in (tag_ids or [])],
                 "last_labeled_at": "2026-04-05T00:00:00Z" if (tag_ids or label_id) else None,
                 "is_labeled": bool(tag_ids or label_id),
+            },
+            "increment_blog_user_label": lambda self, blog_id, label, previous_label=None: {
+                "blog_id": blog_id,
+                "label_id": {"1": 1},
+                "labels": [
+                    {
+                        "id": 1,
+                        "name": label,
+                        "slug": label,
+                        "count": 1,
+                        "labeled_at": "2026-04-05T00:00:00Z",
+                    }
+                ],
+                "label_slugs": [label],
+                "last_labeled_at": "2026-04-05T00:00:00Z",
+                "is_labeled": True,
             },
             "get_blog": lambda self, blog_id: {
                 "id": blog_id,

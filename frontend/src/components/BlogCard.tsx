@@ -1,8 +1,10 @@
 import { ArrowUpRight, CheckCircle2, Clock3, XCircle } from "lucide-react";
+import type { ReactNode } from "react";
 import type { BlogCatalogItem } from "../types/graph";
 
 interface BlogCardProps {
   blog: BlogCatalogItem;
+  children?: ReactNode;
 }
 
 function statusTone(crawlStatus: string) {
@@ -40,7 +42,7 @@ function statusTone(crawlStatus: string) {
  * @param blog Catalog row returned by `/api/blogs/catalog`.
  * @returns Blog summary card.
  */
-export function BlogCard({ blog }: BlogCardProps) {
+export function BlogCard({ blog, children }: BlogCardProps) {
   const tone = statusTone(blog.crawlStatus);
   const ToneIcon = tone.icon;
 
@@ -77,6 +79,8 @@ export function BlogCard({ blog }: BlogCardProps) {
           <ArrowUpRight className="h-4 w-4" />
         </a>
       </div>
+
+      {children ? <div className="mt-4">{children}</div> : null}
     </article>
   );
 }

@@ -60,6 +60,11 @@ class ReplaceBlogLabelsRequest(BaseModel):
     title: str | None = None
 
 
+class IncrementBlogUserLabelRequest(BaseModel):
+    label: str
+    previous_label: str | None = None
+
+
 class BlogLabelTitlePreviewRequest(BaseModel):
     url: str
 
@@ -600,6 +605,16 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 tag_ids=payload.tag_ids,
                 label_id=payload.label_id,
                 title=payload.title,
+            )
+        )
+
+    @app.post("/api/blogs/{blog_id}/user-labels")
+    def post_blog_user_label(blog_id: int, payload: IncrementBlogUserLabelRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.increment_blog_user_label(
+                blog_id=blog_id,
+                label=payload.label,
+                previous_label=payload.previous_label,
             )
         )
 

@@ -1352,6 +1352,73 @@ def test_repository_blog_catalog_supports_random_sort_for_finished_sampling(tmp_
     assert len(random_page["items"]) == 2
 
 
+def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(tmp_path: Path) -> None:
+    """Random catalog should exclude admin non-blog URLs and store public votes separately."""
+    repository = repository_module.build_repository(db_path=tmp_path / "heyblog.sqlite")
+    blog_tag = repository.create_blog_label_tag(name="blog")
+    company_tag = repository.create_blog_label_tag(name="company")
+    other_tag = repository.create_blog_label_tag(name="other")
+
+    kept_id, kept_inserted = repository.upsert_blog(
+        url="https://kept.example/",
+        normalized_url="https://kept.example/",
+        domain="kept.example",
+    )
+    excluded_id, excluded_inserted = repository.upsert_blog(
+        url="https://excluded.example/",
+        normalized_url="https://excluded.example/",
+        domain="excluded.example",
+    )
+    assert kept_inserted is True
+    assert excluded_inserted is True
+    repository.mark_blog_result(
+        blog_id=kept_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="Kept",
+        icon_url=None,
+    )
+    repository.mark_blog_result(
+        blog_id=excluded_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="Excluded",
+        icon_url=None,
+    )
+    raw_kept = repository.create_raw_discovered_url(
+        source_blog_id=kept_id,
+        normalized_url="https://kept.example/",
+        status="success",
+    )
+    raw_excluded = repository.create_raw_discovered_url(
+        source_blog_id=excluded_id,
+        normalized_url="https://excluded.example/",
+        status="success",
+    )
+    repository.replace_blog_link_labels(
+        blog_id=raw_excluded,
+        label_id={str(company_tag["id"]): 1},
+    )
+
+    user_label = repository.increment_blog_user_label(blog_id=kept_id, label="blog")
+    duplicate_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", previous_label="blog")
+    user_non_blog = repository.increment_blog_user_label(blog_id=kept_id, label="other", previous_label="blog")
+
+    random_page = repository.list_blogs_catalog(status="finished", sort="random", page_size=10)
+    assert [item["url"] for item in random_page["items"]] == ["https://kept.example/"]
+    assert user_label["label_id"] == {str(blog_tag["id"]): 1}
+    assert duplicate_blog["label_id"] == {str(blog_tag["id"]): 1}
+    assert user_non_blog["label_id"] == {str(other_tag["id"]): 1}
+
+    admin_labeled = repository.list_blog_labeling_candidates(labeled=True, page_size=10)
+    assert [item["id"] for item in admin_labeled["items"]] == [raw_excluded]
+    assert raw_kept not in [item["id"] for item in admin_labeled["items"]]
+
+
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:
     """Catalog should remain usable for older rows that were created before metadata capture existed."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")

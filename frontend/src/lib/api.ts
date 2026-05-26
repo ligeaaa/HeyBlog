@@ -224,6 +224,14 @@ interface BackendBlogLabelingCandidate extends BackendGraphNode {
   is_labeled: boolean;
 }
 
+interface BackendBlogLabelState {
+  label_id: Record<string, number>;
+  labels: BackendBlogLabelAssignment[];
+  label_slugs: string[];
+  last_labeled_at: string | null;
+  is_labeled: boolean;
+}
+
 interface BackendBlogLabelingPage {
   items: BackendBlogLabelingCandidate[];
   available_tags: BackendBlogLabelTag[];
@@ -913,6 +921,30 @@ export async function putAdminBlogLabels(
   return {
     labelSlugs: payload.label_slugs,
     isLabeled: payload.is_labeled,
+    lastLabeledAt: payload.last_labeled_at,
+  };
+}
+
+/**
+ * Increment one public random-blog label counter for a catalog card.
+ *
+ * @param blogId Public/business blog ID.
+ * @param label Label slug to select.
+ * @param previousLabel Optional previous page-local label selection to decrement.
+ * @returns Updated label state after persistence saves the vote.
+ */
+export async function postBlogUserLabel(
+  blogId: number,
+  label: string,
+  previousLabel?: string,
+): Promise<{ labelId: Record<string, number>; labelSlugs: string[]; lastLabeledAt: string | null }> {
+  const payload = await apiJson<BackendBlogLabelState>(`/api/blogs/${blogId}/user-labels`, {
+    method: "POST",
+    body: JSON.stringify({ label, previous_label: previousLabel }),
+  });
+  return {
+    labelId: payload.label_id,
+    labelSlugs: payload.label_slugs,
     lastLabeledAt: payload.last_labeled_at,
   };
 }
