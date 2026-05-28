@@ -339,6 +339,18 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `updated_at`
 - `blog`: 若当前 URL 仍在 `blogs` 中，则返回博客摘要；否则为 `null`
 
+#### `GET /api/me/label-stats`
+
+用途：返回当前登录用户的随机博客标注汇总。
+
+请求头：
+
+- `Authorization: Bearer <session-token>`
+
+返回字段：
+
+- `label_count`: 当前用户总共保存的标注选择次数
+
 ### 3.4 Blog 与图结构查询
 
 统一标识约定：

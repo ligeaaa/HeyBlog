@@ -1477,6 +1477,7 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     assert account_blog["label_id"] == {str(other_tag["id"]): 1, str(blog_tag["id"]): 1}
     assert account_other["label_id"] == {str(other_tag["id"]): 2}
     assert repository.list_user_label_selections(user_id=user_id)[0]["label"] == "other"
+    assert repository.count_user_label_selections(user_id=user_id) == 1
 
     admin_labeled = repository.list_blog_labeling_candidates(labeled=True, page_size=10)
     assert [item["id"] for item in admin_labeled["items"]] == [raw_excluded]

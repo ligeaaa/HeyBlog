@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
 import {
   fetchCurrentUser,
-  fetchMyLabelSelections,
+  fetchMyLabelStats,
   loginUser,
   logoutUser,
   registerUser,
@@ -15,7 +15,7 @@ import {
   storeAuthSession,
   updateStoredUser,
 } from "../lib/auth";
-import type { AuthSession, UserLabelSelection, UserProfile } from "../types/graph";
+import type { AuthSession, UserProfile } from "../types/graph";
 
 type AuthMode = "login" | "register";
 
@@ -23,7 +23,7 @@ type AuthMode = "login" | "register";
  * Render the user auth and profile page.
  *
  * @returns Registration/login form when signed out, otherwise the current
- * user profile with recent random-blog label selections.
+ * user profile with a concise random-blog label total.
  */
 export function ProfilePage() {
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -31,7 +31,7 @@ export function ProfilePage() {
   const [password, setPassword] = useState("");
   const [session, setSession] = useState<AuthSession | null>(() => readStoredAuthSession());
   const [user, setUser] = useState<UserProfile | null>(() => session?.user ?? null);
-  const [selections, setSelections] = useState<UserLabelSelection[]>([]);
+  const [labelCount, setLabelCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingProfile, setIsLoadingProfile] = useState(Boolean(session));
 
@@ -46,18 +46,18 @@ export function ProfilePage() {
   async function loadProfile(token: string) {
     try {
       setIsLoadingProfile(true);
-      const [profile, recentSelections] = await Promise.all([
+      const [profile, labelStats] = await Promise.all([
         fetchCurrentUser(token),
-        fetchMyLabelSelections(token, 30),
+        fetchMyLabelStats(token),
       ]);
       setUser(profile);
-      setSelections(recentSelections);
+      setLabelCount(labelStats.labelCount);
       updateStoredUser(profile);
     } catch {
       clearStoredAuthSession();
       setSession(null);
       setUser(null);
-      setSelections([]);
+      setLabelCount(0);
     } finally {
       setIsLoadingProfile(false);
     }
@@ -92,7 +92,7 @@ export function ProfilePage() {
     clearStoredAuthSession();
     setSession(null);
     setUser(null);
-    setSelections([]);
+    setLabelCount(0);
     if (token) {
       try {
         await logoutUser(token);
@@ -178,30 +178,16 @@ export function ProfilePage() {
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-950">最近标注</h2>
+              <h2 className="text-lg font-semibold text-slate-950">数据标注</h2>
               {isLoadingProfile ? (
                 <div className="mt-6 flex items-center gap-2 text-sm text-slate-500">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   正在加载个人数据...
                 </div>
-              ) : selections.length === 0 ? (
-                <p className="mt-4 text-sm text-slate-500">还没有登录态下保存的随机博客标注。</p>
               ) : (
-                <div className="mt-4 divide-y divide-slate-100">
-                  {selections.map((selection) => (
-                    <div key={selection.id} className="flex flex-col gap-2 py-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-slate-900">
-                          {selection.blog?.title || selection.blog?.domain || selection.normalizedUrl}
-                        </p>
-                        <p className="mt-1 truncate text-xs text-slate-500">{selection.normalizedUrl}</p>
-                      </div>
-                      <span className="inline-flex w-fit rounded-md bg-sky-50 px-3 py-1 text-sm text-sky-700">
-                        {selection.labelName}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <p className="mt-4 text-sm text-slate-500">
+                  当前总共标注了 <span className="font-semibold text-slate-950">{labelCount}</span> 次。
+                </p>
               )}
             </div>
           </section>

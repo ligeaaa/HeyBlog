@@ -895,6 +895,8 @@ def test_persistence_http_client_can_manage_user_auth_and_labels() -> None:
             self.get_calls.append((path, params))
             if path == "/internal/users/me":
                 return StubResponse({"id": 7, "email": "user@example.com", "display_name": "user"})
+            if path == "/internal/users/7/label-stats":
+                return StubResponse({"label_count": 3})
             return StubResponse([])
 
         def post(self, path: str, json: dict[str, object], **kwargs: object) -> StubResponse:
@@ -910,11 +912,13 @@ def test_persistence_http_client_can_manage_user_auth_and_labels() -> None:
     assert client.login_user(email="user@example.com", password="long enough")["token"] == "token"
     assert client.get_user_by_session_token(token="token")["id"] == 7
     assert client.list_user_label_selections(user_id=7) == []
+    assert client.get_user_label_stats(user_id=7) == {"label_count": 3}
     client.increment_blog_user_label(blog_id=3, label="blog", user_id=7)
 
     assert stub.post_calls[-1] == ("/internal/blogs/3/user-labels", {"label": "blog", "user_id": 7})
     assert ("/internal/users/me", {"session_token": "token"}) in stub.get_calls
     assert ("/internal/users/7/label-selections", {"limit": 50}) in stub.get_calls
+    assert ("/internal/users/7/label-stats", None) in stub.get_calls
 
 
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -1185,6 +1189,7 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "updated_at": "2026-05-26T00:00:00Z",
             } if token in {"user-token", "login-token"} else None,
             "revoke_user_session": lambda self, token: {"ok": True},
+            "get_user_label_stats": lambda self, user_id: {"label_count": 12},
             "list_user_label_selections": lambda self, user_id, limit=50: [
                 {
                     "id": 1,
@@ -1566,6 +1571,9 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     selections = client.get("/api/me/label-selections", headers={"authorization": "Bearer user-token"})
     assert selections.status_code == 200
     assert selections.json()[0]["label"] == "blog"
+    label_stats = client.get("/api/me/label-stats", headers={"authorization": "Bearer user-token"})
+    assert label_stats.status_code == 200
+    assert label_stats.json() == {"label_count": 12}
 
     labeling = client.get("/api/admin/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true", headers=admin_headers())
     assert labeling.status_code == 200

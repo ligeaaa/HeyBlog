@@ -321,6 +321,10 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   );
   expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
   expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
+  expect(screen.getByAltText("extra-blog-32.example.com icon")).toHaveAttribute(
+    "src",
+    "https://icons.duckduckgo.com/ip3/extra-blog-32.example.com.ico",
+  );
 
   fireEvent.click(screen.getByRole("button", { name: /刷新随机博客/i }));
 

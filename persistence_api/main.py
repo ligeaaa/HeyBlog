@@ -393,6 +393,10 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def list_user_label_selections(user_id: int, limit: int = 50) -> list[dict[str, Any]]:
         return get_state().repository.list_user_label_selections(user_id=user_id, limit=limit)
 
+    @app.get("/internal/users/{user_id}/label-stats")
+    def get_user_label_stats(user_id: int) -> dict[str, int]:
+        return {"label_count": get_state().repository.count_user_label_selections(user_id=user_id)}
+
     @app.get("/internal/blog-labeling/candidates")
     def list_blog_labeling_candidates(
         page: int = 1,

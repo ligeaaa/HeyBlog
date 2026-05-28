@@ -182,6 +182,10 @@ interface BackendUserLabelSelection {
   blog: BackendGraphNode | null;
 }
 
+interface BackendUserLabelStats {
+  label_count: number;
+}
+
 interface BackendRuntimePayload {
   runner_status: string;
   active_run_id: string | null;
@@ -822,6 +826,13 @@ export async function fetchMyLabelSelections(token: string, limit = 50): Promise
     updatedAt: selection.updated_at,
     blog: selection.blog ? toBlogCatalogItem(selection.blog) : null,
   }));
+}
+
+export async function fetchMyLabelStats(token: string): Promise<{ labelCount: number }> {
+  const payload = await apiJson<BackendUserLabelStats>("/api/me/label-stats", {
+    headers: authHeaders(token),
+  });
+  return { labelCount: payload.label_count };
 }
 
 /**

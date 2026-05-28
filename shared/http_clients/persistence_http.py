@@ -233,6 +233,11 @@ class PersistenceHttpClient:
 
         return self._get(f"/internal/users/{user_id}/label-selections", {"limit": limit})
 
+    def get_user_label_stats(self, *, user_id: int) -> dict[str, int]:
+        """Fetch the current label-selection count for one user."""
+
+        return self._get(f"/internal/users/{user_id}/label-stats")
+
     def get_ingestion_request(
         self,
         *,

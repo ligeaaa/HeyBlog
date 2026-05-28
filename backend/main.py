@@ -600,6 +600,12 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.list_user_label_selections(user_id=int(user["id"]), limit=limit)
         )
 
+    @app.get("/api/me/label-stats")
+    def get_my_label_stats(user: dict[str, Any] = Depends(require_user)) -> dict[str, int]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_user_label_stats(user_id=int(user["id"]))
+        )
+
     @app.get("/api/admin/blog-labeling/candidates")
     def get_blog_labeling_candidates(
         page: int = 1,

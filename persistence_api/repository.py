@@ -1681,6 +1681,8 @@ class RepositoryProtocol(Protocol):
 
     def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]: ...
 
+    def count_user_label_selections(self, *, user_id: int) -> int: ...
+
     def get_ingestion_request(
         self,
         *,
@@ -4214,6 +4216,26 @@ class SQLAlchemyRepository:
                     }
                 )
             return items
+
+    def count_user_label_selections(self, *, user_id: int) -> int:
+        """Return the number of current random-page label choices made by one user.
+
+        Args:
+            user_id: Registered user identifier.
+
+        Returns:
+            Count of the user's current per-URL label selections.
+        """
+
+        with session_scope(self.session_factory) as session:
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(BlogUserLabelSelectionModel)
+                    .where(BlogUserLabelSelectionModel.user_id == user_id)
+                )
+                or 0
+            )
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
