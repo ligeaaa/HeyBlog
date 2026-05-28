@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import hashlib
+import hmac
 import json
 import logging
 from math import ceil
@@ -40,6 +42,7 @@ from persistence_api.models import Base
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogUserLabelModel
+from persistence_api.models import BlogUserLabelSelectionModel
 from persistence_api.models import BlogModel
 from persistence_api.models import BlogDedupScanRunItemModel
 from persistence_api.models import BlogDedupScanRunModel
@@ -48,6 +51,8 @@ from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.models import UrlRefilterRunEventModel
 from persistence_api.models import UrlRefilterRunModel
+from persistence_api.models import UserModel
+from persistence_api.models import UserSessionModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.decisions.chain import build_url_decision_chain
 from crawler.crawling.decisions.base import UrlCandidateContext
@@ -106,6 +111,9 @@ ACTIVE_INGESTION_REQUEST_STATUSES = frozenset(
     }
 )
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PASSWORD_MIN_LENGTH = 8
+USER_SESSION_TTL_DAYS = 30
+PASSWORD_HASH_ITERATIONS = 210_000
 
 
 class BlogLabelingError(Exception):
@@ -120,6 +128,10 @@ class BlogLabelingConflictError(BlogLabelingError):
     """Raised when the target blog is not eligible for labeling."""
 
 
+class UserAuthError(Exception):
+    """Raised when a user auth request cannot be completed safely."""
+
+
 def slugify_blog_label(name: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     if not normalized:
@@ -130,6 +142,125 @@ def slugify_blog_label(name: str) -> str:
 def now_utc() -> datetime:
     """Return the current UTC timestamp."""
     return datetime.now(UTC)
+
+
+def _normalize_user_email(email: str) -> str:
+    """Return canonical lowercase email text or raise for invalid input.
+
+    Args:
+        email: User-provided email address.
+
+    Returns:
+        Lowercase email address used for uniqueness and login.
+
+    Raises:
+        ValueError: Raised when the address is empty or syntactically invalid.
+    """
+
+    normalized = email.strip().lower()
+    if not normalized or not EMAIL_PATTERN.match(normalized):
+        raise ValueError("invalid_email")
+    return normalized
+
+
+def _validate_password(password: str) -> str:
+    """Return a valid password or raise a stable validation error.
+
+    Args:
+        password: User-provided plaintext password.
+
+    Returns:
+        The original password when it satisfies the current policy.
+
+    Raises:
+        ValueError: Raised when the password is too short.
+    """
+
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise ValueError("password_too_short")
+    return password
+
+
+def _hash_password(password: str, *, salt: str | None = None) -> str:
+    """Hash one plaintext password with PBKDF2-HMAC-SHA256.
+
+    Args:
+        password: Plaintext password accepted during registration.
+        salt: Optional URL-safe salt text, mainly for deterministic tests.
+
+    Returns:
+        Versioned password hash string containing algorithm, iterations, salt,
+        and derived key.
+    """
+
+    resolved_salt = salt or token_urlsafe(18)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        resolved_salt.encode("utf-8"),
+        PASSWORD_HASH_ITERATIONS,
+    ).hex()
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${resolved_salt}${digest}"
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    """Return whether a plaintext password matches a stored hash.
+
+    Args:
+        password: Plaintext password supplied at login.
+        password_hash: Stored versioned PBKDF2 hash string.
+
+    Returns:
+        True when the password matches; false for mismatches or unsupported
+        hash formats.
+    """
+
+    try:
+        algorithm, iterations_text, salt, expected_digest = password_hash.split("$", 3)
+        iterations = int(iterations_text)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256" or iterations <= 0:
+        return False
+    actual_digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    ).hex()
+    return hmac.compare_digest(actual_digest, expected_digest)
+
+
+def _hash_session_token(token: str) -> str:
+    """Return the database-safe hash for one bearer session token.
+
+    Args:
+        token: Raw bearer token that will be returned to the browser.
+
+    Returns:
+        SHA-256 hex digest used for lookup without storing the raw token.
+    """
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _user_payload(model: UserModel) -> dict[str, Any]:
+    """Return the public user profile payload.
+
+    Args:
+        model: User database row.
+
+    Returns:
+        JSON-serializable user summary safe for frontend profile screens.
+    """
+
+    return {
+        "id": int(model.id),
+        "email": model.email,
+        "display_name": model.display_name,
+        "created_at": _iso(model.created_at),
+        "updated_at": _iso(model.updated_at),
+    }
 
 
 def _sortable_datetime(value: datetime | None) -> datetime:
@@ -569,6 +700,72 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
         user_label_columns = {column["name"] for column in inspector.get_columns("blog_labels_userlabel")}
         if "title" not in user_label_columns:
             connection.execute(text("ALTER TABLE blog_labels_userlabel ADD COLUMN title TEXT DEFAULT '' NOT NULL"))
+        if "users" not in existing_tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE users ("
+                    "id INTEGER PRIMARY KEY, "
+                    "email TEXT NOT NULL UNIQUE, "
+                    "password_hash TEXT NOT NULL, "
+                    "display_name TEXT DEFAULT '' NOT NULL, "
+                    "created_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "updated_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                )
+            )
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_users_email ON users (email)"))
+            existing_tables.add("users")
+        if "user_sessions" not in existing_tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE user_sessions ("
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+                    "token_hash TEXT NOT NULL UNIQUE, "
+                    "created_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "expires_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " NOT NULL, "
+                    "revoked_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ")"
+                )
+            )
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON user_sessions (user_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_sessions_token_hash ON user_sessions (token_hash)"))
+            existing_tables.add("user_sessions")
+        if "blog_user_label_selections" not in existing_tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE blog_user_label_selections ("
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+                    "normalized_url TEXT NOT NULL, "
+                    "label_id INTEGER NOT NULL, "
+                    "created_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "updated_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "CONSTRAINT uq_user_label_selection_user_url UNIQUE (user_id, normalized_url))"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_blog_user_label_selections_user_id ON blog_user_label_selections (user_id)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_blog_user_label_selections_normalized_url "
+                    "ON blog_user_label_selections (normalized_url)"
+                )
+            )
+            existing_tables.add("blog_user_label_selections")
         if "blog_label_tags" not in existing_tables:
             connection.execute(
                 text(
@@ -1474,6 +1671,16 @@ class RepositoryProtocol(Protocol):
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]: ...
 
+    def register_user(self, *, email: str, password: str) -> dict[str, Any]: ...
+
+    def login_user(self, *, email: str, password: str) -> dict[str, Any]: ...
+
+    def get_user_by_session_token(self, *, token: str) -> dict[str, Any] | None: ...
+
+    def revoke_user_session(self, *, token: str) -> bool: ...
+
+    def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]: ...
+
     def get_ingestion_request(
         self,
         *,
@@ -1573,6 +1780,7 @@ class RepositoryProtocol(Protocol):
         blog_id: int,
         label: str,
         previous_label: str | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]: ...
 
     def ensure_labelable_raw_url_blogs(self) -> dict[str, int]: ...
@@ -2544,6 +2752,158 @@ class SQLAlchemyRepository:
                 request,
                 serializer=_ingestion_request_payload,
             )
+
+    def _create_user_session_payload(self, session: Session, user: UserModel) -> dict[str, Any]:
+        """Create one session row and return the auth response payload.
+
+        Args:
+            session: Active SQLAlchemy session.
+            user: User account that owns the new session.
+
+        Returns:
+            Auth payload containing the raw token once, its expiry, and the user
+            summary.
+        """
+
+        timestamp = now_utc()
+        token = token_urlsafe(32)
+        session_row = UserSessionModel(
+            user_id=int(user.id),
+            token_hash=_hash_session_token(token),
+            created_at=timestamp,
+            expires_at=timestamp + timedelta(days=USER_SESSION_TTL_DAYS),
+            revoked_at=None,
+        )
+        session.add(session_row)
+        user.updated_at = timestamp
+        session.flush()
+        return {
+            "token": token,
+            "expires_at": _iso(session_row.expires_at),
+            "user": _user_payload(user),
+        }
+
+    def register_user(self, *, email: str, password: str) -> dict[str, Any]:
+        """Create a user account and first login session.
+
+        Args:
+            email: User email address used as the login identifier.
+            password: Plaintext password to hash and store.
+
+        Returns:
+            Auth payload with bearer token and user profile.
+
+        Raises:
+            ValueError: Raised for invalid email or weak password.
+            UserAuthError: Raised when the email is already registered.
+        """
+
+        normalized_email = _normalize_user_email(email)
+        validated_password = _validate_password(password)
+        timestamp = now_utc()
+        with session_scope(self.session_factory) as session:
+            existing = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
+            if existing is not None:
+                raise UserAuthError("email_already_registered")
+            user = UserModel(
+                email=normalized_email,
+                password_hash=_hash_password(validated_password),
+                display_name=normalized_email.split("@", 1)[0],
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            session.add(user)
+            session.flush()
+            return self._create_user_session_payload(session, user)
+
+    def login_user(self, *, email: str, password: str) -> dict[str, Any]:
+        """Authenticate an existing user and create a fresh session.
+
+        Args:
+            email: User email address.
+            password: Plaintext password supplied at login.
+
+        Returns:
+            Auth payload with bearer token and user profile.
+
+        Raises:
+            ValueError: Raised when the email is malformed.
+            UserAuthError: Raised when credentials do not match an account.
+        """
+
+        normalized_email = _normalize_user_email(email)
+        with session_scope(self.session_factory) as session:
+            user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
+            if user is None or not _verify_password(password, user.password_hash):
+                raise UserAuthError("invalid_credentials")
+            return self._create_user_session_payload(session, user)
+
+    def _active_user_by_session_token(self, session: Session, *, token: str) -> UserModel | None:
+        """Resolve a non-expired session token to its owning user row.
+
+        Args:
+            session: Active SQLAlchemy session.
+            token: Raw bearer token supplied by the caller.
+
+        Returns:
+            Matching user row, or ``None`` when the token is invalid, expired,
+            revoked, or points to a missing user.
+        """
+
+        clean_token = token.strip()
+        if not clean_token:
+            return None
+        timestamp = now_utc()
+        row = session.scalar(
+            select(UserSessionModel).where(
+                UserSessionModel.token_hash == _hash_session_token(clean_token),
+                UserSessionModel.revoked_at.is_(None),
+                UserSessionModel.expires_at > timestamp,
+            ).limit(1)
+        )
+        if row is None:
+            return None
+        return session.scalar(select(UserModel).where(UserModel.id == row.user_id).limit(1))
+
+    def get_user_by_session_token(self, *, token: str) -> dict[str, Any] | None:
+        """Load the current user for one bearer token.
+
+        Args:
+            token: Raw bearer session token.
+
+        Returns:
+            Public user profile payload, or ``None`` when unauthenticated.
+        """
+
+        with session_scope(self.session_factory) as session:
+            user = self._active_user_by_session_token(session, token=token)
+            return _user_payload(user) if user is not None else None
+
+    def revoke_user_session(self, *, token: str) -> bool:
+        """Revoke one active user session token.
+
+        Args:
+            token: Raw bearer session token.
+
+        Returns:
+            True when a session row was found and marked revoked.
+        """
+
+        clean_token = token.strip()
+        if not clean_token:
+            return False
+        with session_scope(self.session_factory) as session:
+            row = session.scalar(
+                select(UserSessionModel).where(
+                    UserSessionModel.token_hash == _hash_session_token(clean_token),
+                    UserSessionModel.revoked_at.is_(None),
+                ).limit(1)
+            )
+            if row is None:
+                return False
+            row.revoked_at = now_utc()
+            session.flush()
+            return True
 
     def get_ingestion_request(
         self,
@@ -3718,6 +4078,7 @@ class SQLAlchemyRepository:
         blog_id: int,
         label: str,
         previous_label: str | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
         """Apply one page-local public random-page label selection for a blog.
 
@@ -3727,6 +4088,9 @@ class SQLAlchemyRepository:
                 labels (`blog`, `company`, `other`, `unknown`) are accepted.
             previous_label: Optional previous page selection to decrement when
                 switching to a different label.
+            user_id: Optional registered user ID. When present, the repository
+                stores one current selection per user and URL, making label
+                changes idempotent across browser refreshes.
 
         Returns:
             Updated label-state payload backed by ``blog_labels_userlabel``.
@@ -3752,6 +4116,20 @@ class SQLAlchemyRepository:
             if blog.crawl_status != CrawlStatus.FINISHED:
                 raise BlogLabelingConflictError("blog_user_labeling_requires_finished_blog")
             timestamp = now_utc()
+            existing_selection: BlogUserLabelSelectionModel | None = None
+            if user_id is not None:
+                if session.scalar(select(UserModel.id).where(UserModel.id == user_id).limit(1)) is None:
+                    raise UserAuthError("user_not_found")
+                existing_selection = session.scalar(
+                    select(BlogUserLabelSelectionModel)
+                    .where(
+                        BlogUserLabelSelectionModel.user_id == user_id,
+                        BlogUserLabelSelectionModel.normalized_url == blog.normalized_url,
+                    )
+                    .limit(1)
+                )
+                if existing_selection is not None:
+                    previous_label_id = int(existing_selection.label_id)
             label_row = self._ensure_blog_user_label_row(
                 session,
                 normalized_url=str(blog.normalized_url),
@@ -3776,6 +4154,20 @@ class SQLAlchemyRepository:
             label_counts[label_key] = int(label_counts.get(label_key, 0)) + 1
             label_row.label_id = label_counts
             label_row.updated_time = timestamp
+            if user_id is not None:
+                if existing_selection is None:
+                    session.add(
+                        BlogUserLabelSelectionModel(
+                            user_id=user_id,
+                            normalized_url=str(blog.normalized_url),
+                            label_id=label_id,
+                            created_at=timestamp,
+                            updated_at=timestamp,
+                        )
+                    )
+                else:
+                    existing_selection.label_id = label_id
+                    existing_selection.updated_at = timestamp
             session.flush()
             return _BlogLabelStateView.from_assignment_rows(
                 blog_id=int(_business_blog_id(blog)),
@@ -3783,6 +4175,45 @@ class SQLAlchemyRepository:
                 last_labeled_at=timestamp,
                 label_names=label_names_by_id,
             ).as_payload()
+
+    def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent random-page label selections made by one user.
+
+        Args:
+            user_id: Registered user identifier.
+            limit: Maximum number of recent selections to return.
+
+        Returns:
+            Recent selections joined to current blog metadata when available.
+        """
+
+        resolved_limit = max(1, min(int(limit), 100))
+        with session_scope(self.session_factory) as session:
+            label_names_by_id = _blog_label_names_by_id(session)
+            rows = session.execute(
+                select(BlogUserLabelSelectionModel, BlogModel)
+                .outerjoin(BlogModel, BlogModel.normalized_url == BlogUserLabelSelectionModel.normalized_url)
+                .where(BlogUserLabelSelectionModel.user_id == user_id)
+                .order_by(BlogUserLabelSelectionModel.updated_at.desc(), BlogUserLabelSelectionModel.id.desc())
+                .limit(resolved_limit)
+            ).all()
+            items: list[dict[str, Any]] = []
+            for selection, blog in rows:
+                label_name = label_names_by_id.get(int(selection.label_id), str(selection.label_id))
+                blog_view = _BlogPayloadView.from_model(blog)
+                items.append(
+                    {
+                        "id": int(selection.id),
+                        "normalized_url": selection.normalized_url,
+                        "label_id": int(selection.label_id),
+                        "label": slugify_blog_label(label_name),
+                        "label_name": label_name,
+                        "created_at": _iso(selection.created_at),
+                        "updated_at": _iso(selection.updated_at),
+                        "blog": blog_view.as_blog_payload() if blog_view is not None else None,
+                    }
+                )
+            return items
 
     def get_blog(self, blog_id: int) -> dict[str, Any] | None:
         with session_scope(self.session_factory) as session:
@@ -4361,8 +4792,11 @@ class SQLAlchemyRepository:
             blogs_deleted = _count_selectable_rows(session, BlogModel)
             edges_deleted = _count_selectable_rows(session, EdgeModel)
             requests_deleted = _count_selectable_rows(session, IngestionRequestModel)
+            users_preserved = _count_selectable_rows(session, UserModel)
+            user_sessions_preserved = _count_selectable_rows(session, UserSessionModel)
             labels_preserved = _count_selectable_rows(session, BlogLabelModel)
             user_labels_preserved = _count_selectable_rows(session, BlogUserLabelModel)
+            user_label_selections_preserved = _count_selectable_rows(session, BlogUserLabelSelectionModel)
             label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
             scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
@@ -4393,10 +4827,13 @@ class SQLAlchemyRepository:
                 "edges_deleted": edges_deleted,
                 "logs_deleted": 0,
                 "ingestion_requests_deleted": requests_deleted,
+                "users_preserved": users_preserved,
+                "user_sessions_preserved": user_sessions_preserved,
                 "blog_link_labels_deleted": 0,
                 "blog_label_tags_deleted": 0,
                 "blog_labels_preserved": labels_preserved,
                 "blog_labels_userlabel_preserved": user_labels_preserved,
+                "blog_user_label_selections_preserved": user_label_selections_preserved,
                 "blog_label_subjects_preserved": 0,
                 "blog_link_labels_preserved": labels_preserved,
                 "blog_label_tags_preserved": label_tags_preserved,

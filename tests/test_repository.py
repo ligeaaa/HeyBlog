@@ -128,6 +128,39 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
     assert new_blog_id == 1
 
 
+def test_repository_register_login_and_session_profile(tmp_path: Path) -> None:
+    """Users can register, log in, and resolve their bearer session profile."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    created = repository.register_user(email="User@Example.com", password="correct horse")
+    assert created["user"]["email"] == "user@example.com"
+    assert created["token"]
+    resolved_user = repository.get_user_by_session_token(token=created["token"])
+    assert resolved_user is not None
+    assert resolved_user["id"] == created["user"]["id"]
+    assert resolved_user["email"] == created["user"]["email"]
+
+    logged_in = repository.login_user(email="user@example.com", password="correct horse")
+    assert logged_in["user"]["id"] == created["user"]["id"]
+    assert logged_in["token"] != created["token"]
+
+    assert repository.revoke_user_session(token=created["token"]) is True
+    assert repository.get_user_by_session_token(token=created["token"]) is None
+
+
+def test_repository_rejects_duplicate_user_and_bad_credentials(tmp_path: Path) -> None:
+    """Email uniqueness and password validation should produce stable errors."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    repository.register_user(email="dupe@example.com", password="long enough")
+
+    with pytest.raises(repository_module.UserAuthError, match="email_already_registered"):
+        repository.register_user(email="DUPE@example.com", password="long enough")
+    with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
+        repository.login_user(email="dupe@example.com", password="wrong password")
+    with pytest.raises(ValueError, match="password_too_short"):
+        repository.register_user(email="short@example.com", password="short")
+
+
 def test_repository_mark_blog_result_persists_site_metadata(tmp_path: Path) -> None:
     """Result updates should store homepage-derived title and icon fields."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -1431,12 +1464,19 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     user_label = repository.increment_blog_user_label(blog_id=kept_id, label="blog")
     duplicate_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", previous_label="blog")
     user_non_blog = repository.increment_blog_user_label(blog_id=kept_id, label="other", previous_label="blog")
+    account = repository.register_user(email="labeler@example.com", password="long enough")
+    user_id = int(account["user"]["id"])
+    account_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", user_id=user_id)
+    account_other = repository.increment_blog_user_label(blog_id=kept_id, label="other", user_id=user_id)
 
     random_page = repository.list_blogs_catalog(status="finished", sort="random", page_size=10)
     assert [item["url"] for item in random_page["items"]] == ["https://kept.example/"]
     assert user_label["label_id"] == {str(blog_tag["id"]): 1}
     assert duplicate_blog["label_id"] == {str(blog_tag["id"]): 1}
     assert user_non_blog["label_id"] == {str(other_tag["id"]): 1}
+    assert account_blog["label_id"] == {str(other_tag["id"]): 1, str(blog_tag["id"]): 1}
+    assert account_other["label_id"] == {str(other_tag["id"]): 2}
+    assert repository.list_user_label_selections(user_id=user_id)[0]["label"] == "other"
 
     admin_labeled = repository.list_blog_labeling_candidates(labeled=True, page_size=10)
     assert [item["id"] for item in admin_labeled["items"]] == [raw_excluded]

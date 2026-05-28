@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { BlogCard } from "../components/BlogCard";
 import { Navigation } from "../components/Navigation";
+import { readStoredAuthSession } from "../lib/auth";
 import { fetchBlogsCatalog, postBlogUserLabel } from "../lib/api";
 import type { BlogCatalogItem } from "../types/graph";
 
@@ -79,9 +80,10 @@ export function RandomBlogPage() {
       return;
     }
     const key = `${blog.id}:${label}`;
+    const session = readStoredAuthSession();
     try {
       setSavingLabelKey(key);
-      await postBlogUserLabel(blog.id, label, selectedLabel);
+      await postBlogUserLabel(blog.id, label, selectedLabel, session?.token);
       setSelectedLabelsByUrl((current) => ({
         ...current,
         [blog.normalizedUrl]: label,

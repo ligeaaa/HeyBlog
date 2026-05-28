@@ -51,11 +51,7 @@ export function BlogCard({ blog, children }: BlogCardProps) {
       <div className="mb-5 flex items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-4">
           <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-slate-100 ring-1 ring-slate-200">
-            {blog.iconUrl ? (
-              <img src={blog.iconUrl} alt={blog.title || blog.domain} className="h-full w-full object-cover" />
-            ) : (
-              <span className="text-lg text-slate-500">{(blog.domain || "?").slice(0, 1).toUpperCase()}</span>
-            )}
+            <span className="text-lg text-slate-500">{(blog.domain || "?").slice(0, 1).toUpperCase()}</span>
           </div>
           <div className="min-w-0">
             <h3 className="truncate text-xl text-slate-900">{blog.title || blog.domain}</h3>

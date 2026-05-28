@@ -21,6 +21,9 @@ import type {
   RecommendedBlog,
   StatsData,
   StatusData,
+  AuthSession,
+  UserLabelSelection,
+  UserProfile,
 } from "../types/graph";
 
 interface BackendGraphNode {
@@ -152,6 +155,31 @@ interface CreateIngestionRequestPayload {
   request_id: number;
   request_token: string;
   status: string;
+}
+
+interface BackendUserProfile {
+  id: number;
+  email: string;
+  display_name: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+interface BackendAuthSession {
+  token: string;
+  expires_at: string | null;
+  user: BackendUserProfile;
+}
+
+interface BackendUserLabelSelection {
+  id: number;
+  normalized_url: string;
+  label_id: number;
+  label: string;
+  label_name: string;
+  created_at: string | null;
+  updated_at: string | null;
+  blog: BackendGraphNode | null;
 }
 
 interface BackendRuntimePayload {
@@ -503,6 +531,30 @@ function adminHeaders(adminToken: string): HeadersInit {
   };
 }
 
+function authHeaders(token: string): HeadersInit {
+  return {
+    authorization: `Bearer ${token.trim()}`,
+  };
+}
+
+function toUserProfile(user: BackendUserProfile): UserProfile {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.display_name,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+  };
+}
+
+function toAuthSession(session: BackendAuthSession): AuthSession {
+  return {
+    token: session.token,
+    expiresAt: session.expires_at,
+    user: toUserProfile(session.user),
+  };
+}
+
 /**
  * Fetch the default core graph view.
  *
@@ -717,6 +769,59 @@ export async function submitBlogInfo(data: {
       email: data.email.trim(),
     }),
   });
+}
+
+export async function registerUser(data: { email: string; password: string }): Promise<AuthSession> {
+  const payload = await apiJson<BackendAuthSession>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      email: data.email.trim(),
+      password: data.password,
+    }),
+  });
+  return toAuthSession(payload);
+}
+
+export async function loginUser(data: { email: string; password: string }): Promise<AuthSession> {
+  const payload = await apiJson<BackendAuthSession>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({
+      email: data.email.trim(),
+      password: data.password,
+    }),
+  });
+  return toAuthSession(payload);
+}
+
+export async function fetchCurrentUser(token: string): Promise<UserProfile> {
+  const payload = await apiJson<BackendUserProfile>("/api/auth/me", {
+    headers: authHeaders(token),
+  });
+  return toUserProfile(payload);
+}
+
+export async function logoutUser(token: string): Promise<void> {
+  await apiJson<{ ok: boolean }>("/api/auth/logout", {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function fetchMyLabelSelections(token: string, limit = 50): Promise<UserLabelSelection[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const payload = await apiJson<BackendUserLabelSelection[]>(`/api/me/label-selections?${params.toString()}`, {
+    headers: authHeaders(token),
+  });
+  return payload.map((selection) => ({
+    id: selection.id,
+    normalizedUrl: selection.normalized_url,
+    labelId: selection.label_id,
+    label: selection.label,
+    labelName: selection.label_name,
+    createdAt: selection.created_at,
+    updatedAt: selection.updated_at,
+    blog: selection.blog ? toBlogCatalogItem(selection.blog) : null,
+  }));
 }
 
 /**
@@ -937,9 +1042,11 @@ export async function postBlogUserLabel(
   blogId: number,
   label: string,
   previousLabel?: string,
+  token?: string | null,
 ): Promise<{ labelId: Record<string, number>; labelSlugs: string[]; lastLabeledAt: string | null }> {
   const payload = await apiJson<BackendBlogLabelState>(`/api/blogs/${blogId}/user-labels`, {
     method: "POST",
+    headers: token ? authHeaders(token) : undefined,
     body: JSON.stringify({ label, previous_label: previousLabel }),
   });
   return {

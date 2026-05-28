@@ -38,6 +38,12 @@ FALLBACK_HTML = """<!DOCTYPE html>
   </body>
 </html>
 """
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <path d="M18 18h18a12 12 0 0 1 0 24H18z" fill="#38bdf8"/>
+  <path d="M24 26h12a4 4 0 0 1 0 8H24z" fill="#ffffff"/>
+</svg>
+"""
 
 
 def _dist_file_for_path(path: str) -> Path | None:
@@ -95,6 +101,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=503, detail="backend_unavailable") from exc
         return {"status": "ok"}
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(content=FAVICON_SVG, media_type="image/svg+xml")
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy_api(path: str, request: Request) -> Response:

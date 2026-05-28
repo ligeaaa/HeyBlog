@@ -1,4 +1,4 @@
-import { Dices, Filter, Home, Info, Network } from "lucide-react";
+import { Dices, Filter, Home, Info, Network, UserCircle } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 const navigationItems = [
@@ -7,6 +7,7 @@ const navigationItems = [
   { to: "/visualization", label: "可视化", icon: Network },
   { to: "/filter-stats", label: "过滤统计", icon: Filter },
   { to: "/about", label: "About", icon: Info },
+  { to: "/profile", label: "我的", icon: UserCircle },
 ];
 
 /**

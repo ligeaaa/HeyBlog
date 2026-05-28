@@ -113,6 +113,31 @@ export interface BlogCatalogPage {
   sort: string;
 }
 
+export interface UserProfile {
+  id: number;
+  email: string;
+  displayName: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface AuthSession {
+  token: string;
+  expiresAt: string | null;
+  user: UserProfile;
+}
+
+export interface UserLabelSelection {
+  id: number;
+  normalizedUrl: string;
+  labelId: number;
+  label: string;
+  labelName: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  blog: BlogCatalogItem | null;
+}
+
 export interface AdminRuntimeStatus {
   runnerStatus: string;
   activeRunId: string | null;

@@ -192,6 +192,47 @@ class PersistenceHttpClient:
             },
         )
 
+    def register_user(self, *, email: str, password: str) -> dict[str, Any]:
+        """Create a user account through persistence.
+
+        Args:
+            email: User email address.
+            password: Plaintext password sent over the internal service link.
+
+        Returns:
+            Auth payload containing token, expiry, and user profile.
+        """
+
+        return self._post("/internal/users/register", {"email": email, "password": password})
+
+    def login_user(self, *, email: str, password: str) -> dict[str, Any]:
+        """Authenticate a user through persistence.
+
+        Args:
+            email: User email address.
+            password: Plaintext password sent over the internal service link.
+
+        Returns:
+            Auth payload containing token, expiry, and user profile.
+        """
+
+        return self._post("/internal/users/login", {"email": email, "password": password})
+
+    def get_user_by_session_token(self, *, token: str) -> dict[str, Any] | None:
+        """Load the user profile for one raw session token."""
+
+        return self._get("/internal/users/me", {"session_token": token})
+
+    def revoke_user_session(self, *, token: str) -> dict[str, Any]:
+        """Revoke one user session token."""
+
+        return self._post(f"/internal/users/logout?session_token={token}", {})
+
+    def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch recent random-page selections for one user."""
+
+        return self._get(f"/internal/users/{user_id}/label-selections", {"limit": limit})
+
     def get_ingestion_request(
         self,
         *,
@@ -459,6 +500,7 @@ class PersistenceHttpClient:
         blog_id: int,
         label: str,
         previous_label: str | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
         """Increment one public random-page label vote for a blog.
 
@@ -467,6 +509,8 @@ class PersistenceHttpClient:
             label: Label slug, name, or numeric ID to increment.
             previous_label: Optional page-local previous selection to
                 decrement when the user switches labels.
+            user_id: Optional registered user ID for persistent per-user
+                selection tracking.
 
         Returns:
             Updated user-label state from persistence.
@@ -475,6 +519,8 @@ class PersistenceHttpClient:
         payload: dict[str, object] = {"label": label}
         if previous_label is not None:
             payload["previous_label"] = previous_label
+        if user_id is not None:
+            payload["user_id"] = user_id
         return self._post(f"/internal/blogs/{blog_id}/user-labels", payload)
 
     def get_blog_label_training_parquet_status(self) -> dict[str, Any]:

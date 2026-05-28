@@ -238,6 +238,21 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     assert "request_token" not in priority_requests.json()[0]
     assert "email" not in priority_requests.json()[0]["blog"]
 
+    auth = client.post(
+        "/internal/users/register",
+        json={"email": "Member@Example.com", "password": "long enough"},
+    )
+    assert auth.status_code == 200
+    assert auth.json()["user"]["email"] == "member@example.com"
+    token = auth.json()["token"]
+    assert client.get("/internal/users/me", params={"session_token": token}).json()["id"] == auth.json()["user"]["id"]
+    login = client.post(
+        "/internal/users/login",
+        json={"email": "member@example.com", "password": "long enough"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["id"] == auth.json()["user"]["id"]
+
     lookup = client.get("/internal/blogs/lookup", params={"url": "https://queued.example.com/"})
     assert lookup.status_code == 200
     assert lookup.json()["match_reason"] == "identity_key"
@@ -660,6 +675,24 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     assert switched_user_label.status_code == 200
     assert switched_user_label.json()["label_id"] == {"3": 1}
     assert switched_user_label.json()["label_slugs"] == ["other"]
+    account = client.post("/internal/users/register", json={"email": "voter@example.com", "password": "long enough"})
+    assert account.status_code == 200
+    account_user_label = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "blog", "user_id": account.json()["user"]["id"]},
+    )
+    assert account_user_label.status_code == 200
+    account_user_label_switch = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "other", "user_id": account.json()["user"]["id"]},
+    )
+    assert account_user_label_switch.status_code == 200
+    selections = client.get(
+        f"/internal/users/{account.json()['user']['id']}/label-selections",
+        params={"limit": 5},
+    )
+    assert selections.status_code == 200
+    assert selections.json()[0]["label"] == "other"
 
     labeled = client.get(
         "/internal/blog-labeling/candidates",
@@ -834,6 +867,54 @@ def test_persistence_http_client_can_manage_blog_label_training_parquet() -> Non
         ("/internal/blog-labeling/parquet-sync", {}),
         ("/internal/blog-labeling/parquet-rebuild", {}),
     ]
+
+
+def test_persistence_http_client_can_manage_user_auth_and_labels() -> None:
+    """The split-service HTTP client should expose user auth helper methods."""
+
+    class StubResponse:
+        content = b""
+        headers: dict[str, str] = {}
+
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.get_calls: list[tuple[str, dict[str, object] | None]] = []
+            self.post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def get(self, path: str, params: dict[str, object] | None = None, **kwargs: object) -> StubResponse:
+            del kwargs
+            self.get_calls.append((path, params))
+            if path == "/internal/users/me":
+                return StubResponse({"id": 7, "email": "user@example.com", "display_name": "user"})
+            return StubResponse([])
+
+        def post(self, path: str, json: dict[str, object], **kwargs: object) -> StubResponse:
+            del kwargs
+            self.post_calls.append((path, json))
+            return StubResponse({"token": "token", "user": {"id": 7, "email": "user@example.com"}})
+
+    client = PersistenceHttpClient("http://persistence.internal")
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    assert client.register_user(email="user@example.com", password="long enough")["token"] == "token"
+    assert client.login_user(email="user@example.com", password="long enough")["token"] == "token"
+    assert client.get_user_by_session_token(token="token")["id"] == 7
+    assert client.list_user_label_selections(user_id=7) == []
+    client.increment_blog_user_label(blog_id=3, label="blog", user_id=7)
+
+    assert stub.post_calls[-1] == ("/internal/blogs/3/user-labels", {"label": "blog", "user_id": 7})
+    assert ("/internal/users/me", {"session_token": "token"}) in stub.get_calls
+    assert ("/internal/users/7/label-selections", {"limit": 50}) in stub.get_calls
 
 
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -1074,7 +1155,49 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "last_labeled_at": "2026-04-05T00:00:00Z" if (tag_ids or label_id) else None,
                 "is_labeled": bool(tag_ids or label_id),
             },
-            "increment_blog_user_label": lambda self, blog_id, label, previous_label=None: {
+            "register_user": lambda self, email, password: {
+                "token": "user-token",
+                "expires_at": "2026-06-25T00:00:00Z",
+                "user": {
+                    "id": 42,
+                    "email": email.lower(),
+                    "display_name": email.split("@", 1)[0],
+                    "created_at": "2026-05-26T00:00:00Z",
+                    "updated_at": "2026-05-26T00:00:00Z",
+                },
+            },
+            "login_user": lambda self, email, password: {
+                "token": "login-token",
+                "expires_at": "2026-06-25T00:00:00Z",
+                "user": {
+                    "id": 42,
+                    "email": email.lower(),
+                    "display_name": email.split("@", 1)[0],
+                    "created_at": "2026-05-26T00:00:00Z",
+                    "updated_at": "2026-05-26T00:00:00Z",
+                },
+            },
+            "get_user_by_session_token": lambda self, token: {
+                "id": 42,
+                "email": "member@example.com",
+                "display_name": "member",
+                "created_at": "2026-05-26T00:00:00Z",
+                "updated_at": "2026-05-26T00:00:00Z",
+            } if token in {"user-token", "login-token"} else None,
+            "revoke_user_session": lambda self, token: {"ok": True},
+            "list_user_label_selections": lambda self, user_id, limit=50: [
+                {
+                    "id": 1,
+                    "normalized_url": "https://catalog.example.com",
+                    "label_id": 1,
+                    "label": "blog",
+                    "label_name": "blog",
+                    "created_at": "2026-05-26T00:00:00Z",
+                    "updated_at": "2026-05-26T00:00:00Z",
+                    "blog": None,
+                }
+            ],
+            "increment_blog_user_label": lambda self, blog_id, label, previous_label=None, user_id=None: {
                 "blog_id": blog_id,
                 "label_id": {"1": 1},
                 "labels": [
@@ -1429,6 +1552,20 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     assert random_catalog.status_code == 200
     assert random_catalog.json()["filters"]["status"] == "FINISHED"
     assert random_catalog.json()["sort"] == "random"
+
+    auth = client.post("/api/auth/register", json={"email": "Member@Example.com", "password": "long enough"})
+    assert auth.status_code == 200
+    assert auth.json()["token"] == "user-token"
+    assert auth.json()["user"]["email"] == "member@example.com"
+    login = client.post("/api/auth/login", json={"email": "member@example.com", "password": "long enough"})
+    assert login.status_code == 200
+    assert login.json()["token"] == "login-token"
+    me = client.get("/api/auth/me", headers={"authorization": "Bearer user-token"})
+    assert me.status_code == 200
+    assert me.json()["id"] == 42
+    selections = client.get("/api/me/label-selections", headers={"authorization": "Bearer user-token"})
+    assert selections.status_code == 200
+    assert selections.json()[0]["label"] == "blog"
 
     labeling = client.get("/api/admin/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true", headers=admin_headers())
     assert labeling.status_code == 200
@@ -2733,10 +2870,13 @@ def test_frontend_service_serves_spa_entry_for_deep_links_but_not_missing_assets
     client = TestClient(app)
 
     deep_link = client.get("/about")
-    missing_asset = client.get("/favicon.ico")
+    favicon = client.get("/favicon.ico")
+    missing_asset = client.get("/missing.png")
 
     assert deep_link.status_code == 200
     assert "Built App" in deep_link.text
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
     assert missing_asset.status_code == 404
 
 

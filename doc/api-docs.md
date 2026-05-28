@@ -68,6 +68,11 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `GET /`
 - `GET /internal/health`
 - `GET /api/status`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+- `GET /api/me/label-selections`
 - `GET /api/blogs/catalog`
 - `POST /api/blogs/{blog_id}/user-labels`
 - `GET /api/blogs/lookup`
@@ -253,7 +258,88 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 }
 ```
 
-### 3.3 Blog 与图结构查询
+### 3.3 用户认证接口
+
+#### `POST /api/auth/register`
+
+用途：使用邮箱和密码注册普通用户，并立即创建登录会话。当前版本不做邮箱验证。
+
+请求体：
+
+```json
+{
+  "email": "user@example.com",
+  "password": "long enough"
+}
+```
+
+成功响应：
+
+```json
+{
+  "token": "session-token",
+  "expires_at": "2026-06-25T00:00:00+00:00",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "display_name": "user",
+    "created_at": "2026-05-26T22:04:50+00:00",
+    "updated_at": "2026-05-26T22:04:50+00:00"
+  }
+}
+```
+
+错误语义：
+
+- `409 email_already_registered`
+- `422 invalid_email`
+- `422 password_too_short`
+
+#### `POST /api/auth/login`
+
+用途：使用邮箱和密码登录，创建新的 bearer session。请求体同注册接口，成功响应也同注册接口。
+
+错误语义：
+
+- `401 invalid_credentials`
+- `422 invalid_email`
+
+#### `GET /api/auth/me`
+
+用途：读取当前登录用户资料。
+
+请求头：
+
+- `Authorization: Bearer <session-token>`
+
+错误语义：
+
+- `401 auth_required`
+
+#### `POST /api/auth/logout`
+
+用途：注销当前 session token。请求头同 `/api/auth/me`。
+
+#### `GET /api/me/label-selections`
+
+用途：返回当前登录用户最近的随机博客标注选择。
+
+查询参数：
+
+- `limit`: 可选，默认 `50`，最大 `100`
+
+返回字段：
+
+- `id`
+- `normalized_url`
+- `label_id`
+- `label`
+- `label_name`
+- `created_at`
+- `updated_at`
+- `blog`: 若当前 URL 仍在 `blogs` 中，则返回博客摘要；否则为 `null`
+
+### 3.4 Blog 与图结构查询
 
 统一标识约定：
 
@@ -311,6 +397,11 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 }
 ```
 
+认证说明：
+
+- 未登录也可提交；服务端只更新公开聚合计数。
+- 登录后提交时可带 `Authorization: Bearer <session-token>`；服务端会同时记录该用户对当前 URL 的最新选择，并用已有选择推导旧 label，因此跨刷新切换也不会重复累加同一用户的旧选择。
+
 行为说明：
 
 - `label` 只接受随机博客页使用的四类标签：`blog`、`company`、`other`、`unknown`
@@ -324,6 +415,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `404`: 目标 blog id 不存在
 - `409`: 目标不是已完成博客
 - `422`: label 非法
+- `401`: bearer token 非法或过期
 
 成功响应示例：
 
@@ -975,7 +1067,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 后端会先做 URL normalize 与 email 基础校验
 - 当前去重主键已经扩展为 `identity_key`；它会忽略 `http/https`、主页默认首页路径、`www.`，以及白名单博客别名子域（如 `blog.`）
 - 活跃请求会按 `identity_key + ACTIVE_INGESTION_REQUEST_STATUSES` 复用，而不是重复创建 crawl
-- `request_token` 是无账号体系下查询请求状态所需的轻量凭证
+- `request_token` 仍作为自助提交状态查询的轻量凭证；当前账号系统暂未接管 ingestion request 的所有权
 
 #### `GET /api/ingestion-requests/{request_id}?request_token=...`
 
@@ -991,7 +1083,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 补充说明：
 
-- 当前首版未引入账号系统，因此状态查询依赖 `request_id + request_token`
+- 当前 ingestion request 状态查询仍依赖 `request_id + request_token`
 - 若 `request_token` 不匹配，返回 `404`
 - 统一 discovery 页的公开优先队列列表不会暴露该 `request_token`；只有创建者通过该单条接口查询时才会使用它
 

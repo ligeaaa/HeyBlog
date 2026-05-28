@@ -54,6 +54,11 @@ class CreateIngestionRequest(BaseModel):
     email: str
 
 
+class UserAuthRequest(BaseModel):
+    email: str
+    password: str
+
+
 class ReplaceBlogLabelsRequest(BaseModel):
     tag_ids: list[int] | None = None
     label_id: dict[str, int] | None = None
@@ -464,6 +469,24 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         if token != state.admin_token:
             raise HTTPException(status_code=403, detail="admin_auth_invalid")
 
+    def optional_user(request: Request) -> dict[str, Any] | None:
+        authorization = request.headers.get("authorization", "").strip()
+        if not authorization:
+            return None
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="auth_required")
+        try:
+            return get_state().persistence.get_user_by_session_token(token=token)
+        except httpx.HTTPStatusError as exc:
+            _raise_upstream_http_error(exc, default="auth_required", detail_override="auth_required")
+
+    def require_user(request: Request) -> dict[str, Any]:
+        user = optional_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="auth_required")
+        return user
+
     def ensure_runtime_idle(*, retries: int = 120, delay_seconds: float = 0.5) -> dict[str, Any]:
         last_runtime = get_state().crawler.runtime_status()
         for _ in range(retries):
@@ -544,6 +567,39 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.lookup_blog_candidates(url=url)
         )
 
+    @app.post("/api/auth/register")
+    def register_user(payload: UserAuthRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.register_user(email=payload.email, password=payload.password)
+        )
+
+    @app.post("/api/auth/login")
+    def login_user(payload: UserAuthRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.login_user(email=payload.email, password=payload.password)
+        )
+
+    @app.get("/api/auth/me")
+    def get_current_user(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+        return user
+
+    @app.post("/api/auth/logout")
+    def logout_user(request: Request, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+        del user
+        _, _, token = request.headers.get("authorization", "").strip().partition(" ")
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.revoke_user_session(token=token)
+        )
+
+    @app.get("/api/me/label-selections")
+    def get_my_label_selections(
+        limit: int = 50,
+        user: dict[str, Any] = Depends(require_user),
+    ) -> list[dict[str, Any]]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_user_label_selections(user_id=int(user["id"]), limit=limit)
+        )
+
     @app.get("/api/admin/blog-labeling/candidates")
     def get_blog_labeling_candidates(
         page: int = 1,
@@ -609,12 +665,17 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         )
 
     @app.post("/api/blogs/{blog_id}/user-labels")
-    def post_blog_user_label(blog_id: int, payload: IncrementBlogUserLabelRequest) -> dict[str, Any]:
+    def post_blog_user_label(
+        blog_id: int,
+        payload: IncrementBlogUserLabelRequest,
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> dict[str, Any]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.increment_blog_user_label(
                 blog_id=blog_id,
                 label=payload.label,
                 previous_label=payload.previous_label,
+                user_id=int(user["id"]) if user is not None else None,
             )
         )
 

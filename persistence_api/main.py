@@ -20,6 +20,7 @@ from persistence_api.repository import BlogLabelingNotFoundError
 from persistence_api.graph_service import GraphService
 from persistence_api.migrations import run_postgres_migrations
 from persistence_api.repository import RepositoryProtocol
+from persistence_api.repository import UserAuthError
 from persistence_api.repository import build_repository
 from persistence_api.stats_service import StatsService
 from shared.config import Settings
@@ -56,6 +57,11 @@ class UpsertBlogRequest(BaseModel):
 class CreateIngestionRequest(BaseModel):
     homepage_url: str
     email: str
+
+
+class UserAuthRequest(BaseModel):
+    email: str
+    password: str
 
 
 class BlogResultRequest(BaseModel):
@@ -100,6 +106,7 @@ class ReplaceBlogLabelsRequest(BaseModel):
 class IncrementBlogUserLabelRequest(BaseModel):
     label: str
     previous_label: str | None = None
+    user_id: int | None = None
 
 
 class CreateBlogLabelTagRequest(BaseModel):
@@ -351,6 +358,41 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
         return get_state().repository.list_priority_ingestion_requests()
 
+    @app.post("/internal/users/register")
+    def register_user(payload: UserAuthRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.register_user(email=payload.email, password=payload.password),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 409, None),
+            ),
+        )
+
+    @app.post("/internal/users/login")
+    def login_user(payload: UserAuthRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.login_user(email=payload.email, password=payload.password),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.get("/internal/users/me")
+    def get_current_user(session_token: str) -> dict[str, Any]:
+        user = get_state().repository.get_user_by_session_token(token=session_token)
+        if user is None:
+            raise HTTPException(status_code=401, detail="auth_required")
+        return user
+
+    @app.post("/internal/users/logout")
+    def logout_user(session_token: str) -> dict[str, bool]:
+        return {"ok": get_state().repository.revoke_user_session(token=session_token)}
+
+    @app.get("/internal/users/{user_id}/label-selections")
+    def list_user_label_selections(user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        return get_state().repository.list_user_label_selections(user_id=user_id, limit=limit)
+
     @app.get("/internal/blog-labeling/candidates")
     def list_blog_labeling_candidates(
         page: int = 1,
@@ -410,9 +452,11 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 blog_id=blog_id,
                 label=payload.label,
                 previous_label=payload.previous_label,
+                user_id=payload.user_id,
             ),
             exception_translations=(
                 (ValueError, 422, None),
+                (UserAuthError, 401, None),
                 (BlogLabelingNotFoundError, 404, None),
                 (BlogLabelingConflictError, 409, None),
             ),
