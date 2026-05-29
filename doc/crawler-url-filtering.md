@@ -236,6 +236,8 @@ crawler 的两种主要运行方式：
 
 如果没有明确命中的 friend-links 容器，会退化到一个 fallback 容器继续抽取，保证 pipeline 不会因为站点 HTML 形态不标准而完全停住。
 
+单个候选友链页如果抽取出超过 50 条候选链接，会在进入 `raw_discovered_urls` 和过滤链之前整页跳过。这样可以避免聚合页、目录页或误判页面把大量低质量 URL 写入后续流程；同一博客的其他候选友链页仍会继续处理。
+
 ## 7. URL 过滤总览
 
 当前 URL 过滤不是单一函数，而是一条决策链，由 [crawler/crawling/decisions/chain.py](../crawler/crawling/decisions/chain.py) 组装。

@@ -202,7 +202,11 @@ class CrawlOrchestrator:
         """
         stored_count = 0
 
-        for link in extract_candidate_links(page.url, page.text):
+        extracted_links = extract_candidate_links(page.url, page.text)
+        if len(extracted_links) > self.settings.max_candidate_links_per_page:
+            return 0
+
+        for link in extracted_links:
             normalized = normalize_url(link.url)
             raw_record = self.repository.create_raw_discovered_url_record(
                 source_blog_id=blog.id,

@@ -376,6 +376,57 @@ def test_pipeline_deduplicates_normalized_child_links(tmp_path: Path) -> None:
     assert edges[0]["link_url_raw"] == "https://friend.example/"
 
 
+def test_pipeline_skips_candidate_page_with_more_than_50_links(tmp_path: Path) -> None:
+    """Overlarge candidate pages should not create raw URL records or edges."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+    noisy_links = "\n".join(
+        f"<a href='https://friend-{index}.example/'>Friend {index}</a>"
+        for index in range(51)
+    )
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="""
+                <html><body>
+                <footer>
+                  <a href="/friends">友情链接</a>
+                  <a href="/friends-small">友情链接 Small</a>
+                </footer>
+                </body></html>
+                """,
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends",
+                status_code=200,
+                text=f"<html><body><section><h2>友情链接</h2>{noisy_links}</section></body></html>",
+            ),
+            "https://blog.example.com/friends-small": FetchResult(
+                url="https://blog.example.com/friends-small",
+                status_code=200,
+                text="""
+                <html><body><section><h2>友情链接</h2>
+                <a href='https://small-friend.example/'>Small Friend</a>
+                </section></body></html>
+                """,
+            ),
+        }
+    )
+
+    discovered = pipeline._crawl_blog(blog)
+
+    assert discovered == 1
+    edges = repository.list_edges()
+    assert len(edges) == 1
+    assert edges[0]["link_url_raw"] == "https://small-friend.example/"
+    with session_scope(repository.session_factory) as session:
+        raw_urls = session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id).all()
+        assert [row.normalized_url for row in raw_urls] == ["https://small-friend.example/"]
+
+
 def test_pipeline_fetches_candidate_pages_concurrently_but_persists_in_candidate_order(
     tmp_path: Path,
 ) -> None:

@@ -933,6 +933,15 @@ def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> No
     assert settings.db_dsn == "postgresql://heyblog:heyblog@persistence-db:5432/heyblog"
 
 
+def test_settings_loads_candidate_link_page_limit(monkeypatch) -> None:
+    """Environment loading should expose the per-candidate-page link limit."""
+    monkeypatch.setenv("HEYBLOG_MAX_CANDIDATE_LINKS_PER_PAGE", "17")
+
+    settings = Settings.from_env()
+
+    assert settings.max_candidate_links_per_page == 17
+
+
 def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch) -> None:
     """Environment loading should default runtime model reads to published resources."""
     monkeypatch.delenv("HEYBLOG_DECISION_MODEL_ROOT", raising=False)

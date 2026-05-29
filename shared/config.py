@@ -11,6 +11,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_BLOG_CRAWL_TIMEOUT_SECONDS = 60.0
 DEFAULT_MAX_NODES_PER_RUN = 10
 DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
+DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
 DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS = 2
@@ -102,6 +103,7 @@ class Settings:
     blog_crawl_timeout_seconds: float = DEFAULT_BLOG_CRAWL_TIMEOUT_SECONDS
     max_nodes_per_run: int = DEFAULT_MAX_NODES_PER_RUN
     max_path_probes_per_blog: int = DEFAULT_MAX_PATH_PROBES_PER_BLOG
+    max_candidate_links_per_page: int = DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
     priority_seed_normal_queue_slots: int = DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS
@@ -171,6 +173,15 @@ class Settings:
                     "HEYBLOG_MAX_PATH_PROBES_PER_BLOG",
                     str(DEFAULT_MAX_PATH_PROBES_PER_BLOG),
                 )
+            ),
+            max_candidate_links_per_page=max(
+                1,
+                int(
+                    os.getenv(
+                        "HEYBLOG_MAX_CANDIDATE_LINKS_PER_PAGE",
+                        str(DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE),
+                    )
+                ),
             ),
             candidate_page_fetch_concurrency=max(
                 1,
