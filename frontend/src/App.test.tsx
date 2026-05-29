@@ -349,6 +349,8 @@ test("lets visualization users choose a deterministic sampled graph size", async
 
   expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "10000" })).toBeInTheDocument();
+  expect(screen.queryByText(/使用固定随机种子 42 选择起点/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/显示实际下载大小/)).not.toBeInTheDocument();
   expect(screen.queryByText("该功能仍不成熟！")).not.toBeInTheDocument();
   expect(screen.queryByText("数据统计")).not.toBeInTheDocument();
 
@@ -364,7 +366,7 @@ test("lets visualization users choose a deterministic sampled graph size", async
     ),
     expect.anything(),
   );
-  expect(screen.getByText(/当前使用固定随机种子 42 展示 500 个节点，本次图谱数据约 0\.00 MB/)).toBeInTheDocument();
+  expect(screen.queryByText(/当前使用固定随机种子 42 展示 500 个节点/)).not.toBeInTheDocument();
   expect(screen.queryByText("全图最大节点数")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /刷新全图|返回全图/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /搜索博客/i })).not.toBeInTheDocument();
@@ -396,7 +398,7 @@ test("uses cached visualization graph data for repeated sampled sizes", async ()
 
   fireEvent.click(screen.getByRole("button", { name: "200" }));
 
-  expect(screen.getByText(/当前使用固定随机种子 42 展示 200 个节点，本次图谱数据约 0\.00 MB，已从本地缓存读取/)).toBeInTheDocument();
+  expect(screen.queryByText(/当前使用固定随机种子 42 展示 200 个节点/)).not.toBeInTheDocument();
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/graph/views/core"), expect.anything());
 });
 

@@ -153,13 +153,6 @@ export function VisualizationPage() {
 
       <div className="absolute left-6 top-24 z-20 max-w-sm text-white sm:left-8">
         <h1 className="text-3xl font-semibold tracking-normal">博客关系图谱</h1>
-        {selectedLimit ? (
-          <p className="mt-2 text-sm leading-6 text-slate-300">
-            当前使用固定随机种子 {GRAPH_SAMPLE_SEED} 展示 {selectedLimit} 个节点
-            {graphSizeMb ? `，本次图谱数据约 ${graphSizeMb} MB` : ""}
-            {usedCachedGraph ? "，已从本地缓存读取" : ""}
-          </p>
-        ) : null}
       </div>
 
       <div className="relative min-h-0 flex-1">
@@ -178,12 +171,6 @@ export function VisualizationPage() {
             <h2 id="visualization-limit-title" className="text-2xl font-semibold tracking-normal text-slate-950">
               选择图谱规模
             </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-600">
-              使用固定随机种子 {GRAPH_SAMPLE_SEED} 选择起点，并按 BFS 扩展关联节点。本地缓存命中时会直接读取已下载的数据。
-            </p>
-            <p className="mt-2 text-sm leading-6 text-slate-500">
-              选择后会先获取图谱 JSON，并显示实际下载大小（MB）。
-            </p>
             <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {GRAPH_LIMIT_OPTIONS.map((limit) => (
                 <button
