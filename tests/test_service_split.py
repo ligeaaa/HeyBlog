@@ -1,14 +1,17 @@
 """Tests for the split-service entrypoints."""
 
+import json
 from pathlib import Path
 from time import sleep
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import BackendState
 from backend.main import create_app as create_backend_app
 from frontend.server import create_app as create_frontend_app
+from persistence_api.main import PersistenceState
 from persistence_api.main import build_persistence_state
 from persistence_api.main import create_app as create_persistence_app
 from search.main import SearchService
@@ -16,6 +19,20 @@ from search.main import create_app as create_search_app
 from shared.config import PROJECT_ROOT
 from shared.config import Settings
 from shared.http_clients.persistence_http import PersistenceHttpClient
+
+
+def _read_json_lines(path: Path) -> list[dict[str, object]]:
+    """Read one JSON-lines log file."""
+
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _single_log_file(path: Path) -> Path:
+    """Return the only log file in a directory."""
+
+    files = list(path.glob("*.log"))
+    assert len(files) == 1
+    return files[0]
 
 
 class StubCrawler:
@@ -189,6 +206,7 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     assert detail.status_code == 200
     assert detail.json()["incoming_edges"][0]["neighbor_blog"] == {
         "id": 2,
+        "blog_id": 2,
         "domain": "friend.example.com",
         "title": "Friend Example",
         "icon_url": "https://friend.example.com/favicon.ico",
@@ -220,10 +238,29 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     assert "request_token" not in priority_requests.json()[0]
     assert "email" not in priority_requests.json()[0]["blog"]
 
+    auth = client.post(
+        "/internal/users/register",
+        json={"email": "Member@Example.com", "password": "long enough"},
+    )
+    assert auth.status_code == 200
+    assert auth.json()["user"]["email"] == "member@example.com"
+    token = auth.json()["token"]
+    assert client.get("/internal/users/me", params={"session_token": token}).json()["id"] == auth.json()["user"]["id"]
+    login = client.post(
+        "/internal/users/login",
+        json={"email": "member@example.com", "password": "long enough"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["id"] == auth.json()["user"]["id"]
+
     lookup = client.get("/internal/blogs/lookup", params={"url": "https://queued.example.com/"})
     assert lookup.status_code == 200
     assert lookup.json()["match_reason"] == "identity_key"
     assert lookup.json()["items"][0]["id"] == request.json()["seed_blog_id"]
+
+    filter_stats = client.get("/internal/filter-stats")
+    assert filter_stats.status_code == 200
+    assert filter_stats.json()["by_filter_reason"]["raw"] == 0
 
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
@@ -252,6 +289,245 @@ def test_persistence_service_removes_legacy_read_shortcuts(tmp_path: Path) -> No
     assert client.get("/internal/edges").status_code == 405
     assert client.get("/internal/logs").status_code == 405
     assert client.get("/internal/graph").status_code == 404
+
+
+def test_persistence_service_queue_routes_preserve_optional_row_serialization() -> None:
+    """Queue routes should keep dict payloads and null semantics unchanged."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.include_priority_calls: list[bool] = []
+
+        def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, object] | None:
+            self.include_priority_calls.append(include_priority)
+            return {
+                "id": 11,
+                "blog_id": 11,
+                "domain": "queued.example.com",
+                "crawl_status": "PROCESSING",
+            }
+
+        def get_next_priority_blog(self) -> dict[str, object] | None:
+            return None
+
+    repository = StubRepository()
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    waiting = client.get("/internal/queue/next", params={"include_priority": "false"})
+    priority = client.get("/internal/queue/priority-next")
+
+    assert waiting.status_code == 200
+    assert waiting.json() == {
+        "id": 11,
+        "blog_id": 11,
+        "domain": "queued.example.com",
+        "crawl_status": "PROCESSING",
+    }
+    assert repository.include_priority_calls == [False]
+
+    assert priority.status_code == 200
+    assert priority.json() is None
+
+
+def test_persistence_service_maintenance_run_create_routes_preserve_bool_passthrough() -> None:
+    """Maintenance create routes should keep bool passthrough and payload shape unchanged."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.url_refilter_calls: list[bool] = []
+            self.blog_dedup_calls: list[bool] = []
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.url_refilter_calls.append(crawler_was_running)
+            return {"id": 21, "status": "PENDING", "crawler_was_running": crawler_was_running}
+
+        def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.blog_dedup_calls.append(crawler_was_running)
+            return {"id": 34, "status": "RUNNING", "crawler_was_running": crawler_was_running}
+
+    repository = StubRepository()
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    url_refilter = client.post("/internal/url-refilter-runs", params={"crawler_was_running": "true"})
+    blog_dedup = client.post("/internal/blog-dedup-scans/runs")
+
+    assert url_refilter.status_code == 200
+    assert url_refilter.json() == {"id": 21, "status": "PENDING", "crawler_was_running": True}
+    assert repository.url_refilter_calls == [True]
+
+    assert blog_dedup.status_code == 200
+    assert blog_dedup.json() == {"id": 34, "status": "RUNNING", "crawler_was_running": False}
+    assert repository.blog_dedup_calls == [False]
+
+
+def test_persistence_service_maintenance_child_list_routes_preserve_run_id_passthrough() -> None:
+    """Maintenance child-list routes should keep run_id passthrough and list payloads unchanged."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.url_refilter_calls: list[int] = []
+            self.blog_dedup_calls: list[int] = []
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            self.url_refilter_calls.append(run_id)
+            return [{"id": 1, "run_id": run_id, "message": "started"}]
+
+        def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, object]]:
+            self.blog_dedup_calls.append(run_id)
+            return [{"id": 2, "run_id": run_id, "reason_code": "blog_alias_collapsed"}]
+
+    repository = StubRepository()
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    url_refilter = client.get("/internal/url-refilter-runs/7/events")
+    blog_dedup = client.get("/internal/blog-dedup-scans/9/items")
+
+    assert url_refilter.status_code == 200
+    assert url_refilter.json() == [{"id": 1, "run_id": 7, "message": "started"}]
+    assert repository.url_refilter_calls == [7]
+
+    assert blog_dedup.status_code == 200
+    assert blog_dedup.json() == [{"id": 2, "run_id": 9, "reason_code": "blog_alias_collapsed"}]
+    assert repository.blog_dedup_calls == [9]
+
+
+def test_persistence_service_zero_arg_list_routes_preserve_payload_passthrough() -> None:
+    """Zero-arg list routes should keep list payloads and ordering unchanged."""
+
+    class StubRepository:
+        def list_priority_ingestion_requests(self) -> list[dict[str, object]]:
+            return [
+                {"request_id": 2, "status": "QUEUED"},
+                {"request_id": 5, "status": "CRAWLING"},
+            ]
+
+        def list_blog_label_tags(self) -> list[dict[str, object]]:
+            return [
+                {"id": 7, "slug": "blog"},
+                {"id": 8, "slug": "official"},
+            ]
+
+    app = create_persistence_app(
+        PersistenceState(
+            repository=StubRepository(),  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    ingestion_requests = client.get("/internal/ingestion-requests")
+    blog_label_tags = client.get("/internal/blog-labeling/tags")
+
+    assert ingestion_requests.status_code == 200
+    assert ingestion_requests.json() == [
+        {"request_id": 2, "status": "QUEUED"},
+        {"request_id": 5, "status": "CRAWLING"},
+    ]
+
+    assert blog_label_tags.status_code == 200
+    assert blog_label_tags.json() == [
+        {"id": 7, "slug": "blog"},
+        {"id": 8, "slug": "official"},
+    ]
+
+
+def test_persistence_service_zero_arg_dict_routes_preserve_payload_passthrough() -> None:
+    """Zero-arg dict routes should keep dict payloads unchanged."""
+
+    class StubGraphService:
+        def graph_status(self) -> dict[str, object]:
+            return {"backend": "snapshot", "enabled": True}
+
+        def latest_snapshot_manifest(self) -> dict[str, object]:
+            return {"version": "v7", "total_nodes": 42}
+
+    app = create_persistence_app(
+        PersistenceState(
+            repository=object(),  # type: ignore[arg-type]
+            graph_service=StubGraphService(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    graph_status = client.get("/internal/graph/status")
+    latest_snapshot = client.get("/internal/graph/snapshots/latest")
+
+    assert graph_status.status_code == 200
+    assert graph_status.json() == {"backend": "snapshot", "enabled": True}
+
+    assert latest_snapshot.status_code == 200
+    assert latest_snapshot.json() == {"version": "v7", "total_nodes": 42}
+
+
+def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -> None:
+    """Stats routes should keep zero-arg dict payloads unchanged."""
+
+    class StubRepository:
+        def get_filter_stats_by_chain_order(self) -> dict[str, object]:
+            return {
+                "by_filter_reason": {
+                    "raw": 12,
+                    "rule:same_domain": 9,
+                }
+            }
+
+    class StubStatsService:
+        def stats(self) -> dict[str, object]:
+            return {
+                "total_blogs": 17,
+                "raw_discovered_urls": 12,
+                "pending_tasks": 3,
+            }
+
+    app = create_persistence_app(
+        PersistenceState(
+            repository=StubRepository(),  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=StubStatsService(),  # type: ignore[arg-type]
+        )
+    )
+    client = TestClient(app)
+
+    stats = client.get("/internal/stats")
+    filter_stats = client.get("/internal/filter-stats")
+
+    assert stats.status_code == 200
+    assert stats.json() == {
+        "total_blogs": 17,
+        "raw_discovered_urls": 12,
+        "pending_tasks": 3,
+    }
+
+    assert filter_stats.status_code == 200
+    assert filter_stats.json() == {
+        "by_filter_reason": {
+            "raw": 12,
+            "rule:same_domain": 9,
+        }
+    }
 
 
 def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> None:
@@ -295,10 +571,40 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
         },
     )
     assert mark_finished.status_code == 200
+    accepted_raw = client.post(
+        "/internal/raw-discovered-urls",
+        json={
+            "source_blog_id": finished.json()["id"],
+            "normalized_url": "https://alpha.example/",
+            "status": "success",
+        },
+    )
+    model_filtered_raw = client.post(
+        "/internal/raw-discovered-urls",
+        json={
+            "source_blog_id": finished.json()["id"],
+            "normalized_url": "https://model-filtered.example/",
+            "status": "model:model_consensus_all_non_blog",
+        },
+    )
+    rule_filtered_raw = client.post(
+        "/internal/raw-discovered-urls",
+        json={
+            "source_blog_id": finished.json()["id"],
+            "normalized_url": "https://rule-filtered.example/",
+            "status": "rule:blocked_tld",
+        },
+    )
+    assert accepted_raw.status_code == 200
+    assert model_filtered_raw.status_code == 200
+    assert rule_filtered_raw.status_code == 200
 
     candidates = client.get("/internal/blog-labeling/candidates", params={"labeled": "false"})
     assert candidates.status_code == 200
-    assert [row["id"] for row in candidates.json()["items"]] == [finished.json()["id"]]
+    assert [row["url"] for row in candidates.json()["items"]] == [
+        "https://model-filtered.example/",
+        "https://alpha.example/",
+    ]
     assert candidates.json()["items"][0]["labels"] == []
     assert candidates.json()["filters"]["labeled"] is False
 
@@ -309,38 +615,108 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
 
     tags = client.get("/internal/blog-labeling/tags")
     assert tags.status_code == 200
-    assert [row["slug"] for row in tags.json()] == ["blog", "official"]
+    assert [row["slug"] for row in tags.json()] == [
+        "blog",
+        "company",
+        "other",
+        "unknown",
+        "official",
+        "government",
+    ]
 
     put_label = client.put(
-        f"/internal/blog-labeling/labels/{finished.json()['id']}",
-        json={"tag_ids": [create_blog.json()["id"], create_official.json()["id"]]},
+        f"/internal/blog-labeling/labels/{candidates.json()['items'][0]['id']}",
+        json={"label_id": {str(create_blog.json()["id"]): 10, str(create_official.json()["id"]): 1}},
     )
     assert put_label.status_code == 200
+    assert put_label.json()["label_id"] == {"1": 10, "5": 1}
     assert put_label.json()["label_slugs"] == ["blog", "official"]
 
+    counts = client.get("/internal/blog-labeling/counts")
+    assert counts.status_code == 200
+    assert counts.json()["total_labeled"] == 1
+    assert counts.json()["by_label"]["blog"] == 1
+    assert counts.json()["by_label"]["official"] == 1
+
+    candidates_after_label = client.get("/internal/blog-labeling/candidates", params={"labeled": "false"})
+    assert candidates_after_label.status_code == 200
+    assert [row["url"] for row in candidates_after_label.json()["items"]] == ["https://alpha.example/"]
+
     export_csv = client.get("/internal/blog-labeling/export")
-    assert export_csv.status_code == 200
-    assert export_csv.headers["content-type"].startswith("text/csv")
-    assert export_csv.text.splitlines() == [
-        "url,title,label",
-        "https://alpha.example/,Alpha,blog",
-        "https://alpha.example/,Alpha,official",
-    ]
+    assert export_csv.status_code == 404
+
+    parquet_status = client.get("/internal/blog-labeling/parquet-status")
+    assert parquet_status.status_code == 200
+    assert parquet_status.json()["total_labeled"] == 2
+    assert parquet_status.json()["saved_count"] == 0
+    assert parquet_status.json()["missing_count"] == 2
+
+    parquet_sync = client.post("/internal/blog-labeling/parquet-sync")
+    assert parquet_sync.status_code == 200
+    assert parquet_sync.json()["saved_count"] == 2
+    assert parquet_sync.json()["missing_count"] == 0
+
+    parquet_export = client.get("/internal/blog-labeling/parquet-export")
+    assert parquet_export.status_code == 200
+    assert parquet_export.headers["content-type"].startswith("application/vnd.apache.parquet")
+    assert parquet_export.headers["x-heyblog-label-saved-count"] == "2"
+
+    user_label = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "blog"},
+    )
+    assert user_label.status_code == 200
+    assert user_label.json()["label_id"] == {"1": 1}
+    assert user_label.json()["label_slugs"] == ["blog"]
+    switched_user_label = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "other", "previous_label": "blog"},
+    )
+    assert switched_user_label.status_code == 200
+    assert switched_user_label.json()["label_id"] == {"3": 1}
+    assert switched_user_label.json()["label_slugs"] == ["other"]
+    account = client.post("/internal/users/register", json={"email": "voter@example.com", "password": "long enough"})
+    assert account.status_code == 200
+    account_user_label = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "blog", "user_id": account.json()["user"]["id"]},
+    )
+    assert account_user_label.status_code == 200
+    account_user_label_switch = client.post(
+        f"/internal/blogs/{finished.json()['id']}/user-labels",
+        json={"label": "other", "user_id": account.json()["user"]["id"]},
+    )
+    assert account_user_label_switch.status_code == 200
+    selections = client.get(
+        f"/internal/users/{account.json()['user']['id']}/label-selections",
+        params={"limit": 5},
+    )
+    assert selections.status_code == 200
+    assert selections.json()[0]["label"] == "other"
 
     labeled = client.get(
         "/internal/blog-labeling/candidates",
         params={"label": "official", "labeled": "true", "sort": "recently_labeled"},
     )
     assert labeled.status_code == 200
-    assert [row["id"] for row in labeled.json()["items"]] == [finished.json()["id"]]
+    assert [row["id"] for row in labeled.json()["items"]] == [candidates.json()["items"][0]["id"]]
     assert labeled.json()["items"][0]["is_labeled"] is True
     assert [row["slug"] for row in labeled.json()["items"][0]["labels"]] == ["blog", "official"]
 
     invalid_label = client.post("/internal/blog-labeling/tags", json={"name": "   "})
     assert invalid_label.status_code == 422
 
+    unrelated = client.post(
+        "/internal/blogs/upsert",
+        json={
+            "url": "https://gamma.example/",
+            "normalized_url": "https://gamma.example/",
+            "domain": "gamma.example",
+        },
+    )
+    assert unrelated.status_code == 200
     conflict = client.put(
-        f"/internal/blog-labeling/labels/{waiting.json()['id']}",
+        f"/internal/blog-labeling/labels/{unrelated.json()['id']}",
         json={"tag_ids": [create_blog.json()["id"]]},
     )
     assert conflict.status_code == 409
@@ -348,11 +724,11 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     missing = client.put("/internal/blog-labeling/labels/999", json={"tag_ids": [create_blog.json()["id"]]})
     assert missing.status_code == 404
 
-    unknown_tag = client.put(
+    unknown_label = client.put(
         f"/internal/blog-labeling/labels/{finished.json()['id']}",
         json={"tag_ids": [999]},
     )
-    assert unknown_tag.status_code == 422
+    assert unknown_label.status_code == 422
 
 
 def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
@@ -385,38 +761,164 @@ def test_persistence_http_client_uses_put_for_blog_labeling_updates() -> None:
     stub = StubClient()
     client.client = stub  # type: ignore[assignment]
 
-    response = client.replace_blog_link_labels(blog_id=7, tag_ids=[3, 5])
+    response = client.replace_blog_link_labels(blog_id=7, tag_ids=[3, 5], title="Temporary")
 
     assert response == {"ok": True}
-    assert stub.put_calls == [("/internal/blog-labeling/labels/7", {"tag_ids": [3, 5]})]
+    assert stub.put_calls == [("/internal/blog-labeling/labels/7", {"tag_ids": [3, 5], "title": "Temporary"})]
     assert stub.post_calls == []
 
 
-def test_persistence_http_client_can_fetch_blog_label_training_csv() -> None:
-    """The split-service HTTP client should support plain-text CSV exports."""
+def test_persistence_http_client_uses_long_timeout_for_url_refilter_execute() -> None:
+    """URL refilter execution should not inherit the short default request timeout."""
 
     class StubResponse:
-        text = "url,title,label\nhttps://alpha.example/,Alpha,blog\n"
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"status": "SUCCEEDED"}
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.post_calls: list[tuple[str, dict[str, object], float | None]] = []
+
+        def post(
+            self,
+            path: str,
+            json: dict[str, object],
+            timeout: float | None = None,
+            **kwargs: object,
+        ) -> StubResponse:
+            del kwargs
+            self.post_calls.append((path, json, timeout))
+            return StubResponse()
+
+    client = PersistenceHttpClient("http://persistence.internal", timeout_seconds=10.0)
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    response = client.execute_url_refilter_run(run_id=42)
+
+    assert response == {"status": "SUCCEEDED"}
+    assert stub.post_calls == [
+        (
+            "/internal/url-refilter-runs/42/execute",
+            {},
+            24 * 7 * 60 * 60,
+        )
+    ]
+
+
+def test_persistence_http_client_can_manage_blog_label_training_parquet() -> None:
+    """The split-service HTTP client should expose parquet status, sync, rebuild, and download."""
+
+    status_payload = {
+        "path": "/tmp/blog-label-training.parquet",
+        "filename": "blog-label-training.parquet",
+        "exists": True,
+        "saved_count": 1,
+        "total_labeled": 1,
+        "missing_count": 0,
+        "batch_size": 100,
+        "rewritten": False,
+        "message": "ok",
+        "updated_at": "2026-05-24T00:00:00Z",
+    }
+
+    class StubResponse:
+        content = b"PAR1"
+        headers = {"content-disposition": 'attachment; filename="blog-label-training.parquet"'}
 
         def raise_for_status(self) -> None:
             return None
 
+        def json(self) -> dict[str, object]:
+            return status_payload
+
     class StubClient:
         def __init__(self) -> None:
-            self.get_calls: list[tuple[str, dict[str, object] | None]] = []
+            self.get_calls: list[str] = []
+            self.post_calls: list[tuple[str, dict[str, object]]] = []
 
         def get(self, path: str, params: dict[str, object] | None = None) -> StubResponse:
-            self.get_calls.append((path, params))
+            self.get_calls.append(path)
+            return StubResponse()
+
+        def post(self, path: str, json: dict[str, object]) -> StubResponse:
+            self.post_calls.append((path, json))
             return StubResponse()
 
     client = PersistenceHttpClient("http://persistence.internal")
     stub = StubClient()
     client.client = stub  # type: ignore[assignment]
 
-    response = client.export_blog_label_training_csv()
+    assert client.get_blog_label_training_parquet_status()["saved_count"] == 1
+    assert client.sync_blog_label_training_parquet()["missing_count"] == 0
+    assert client.rebuild_blog_label_training_parquet()["rewritten"] is False
+    parquet_bytes, parquet_headers = client.export_blog_label_training_parquet()
 
-    assert response == "url,title,label\nhttps://alpha.example/,Alpha,blog\n"
-    assert stub.get_calls == [("/internal/blog-labeling/export", None)]
+    assert parquet_bytes == b"PAR1"
+    assert parquet_headers["content-disposition"] == 'attachment; filename="blog-label-training.parquet"'
+    assert stub.get_calls == [
+        "/internal/blog-labeling/parquet-status",
+        "/internal/blog-labeling/parquet-export",
+    ]
+    assert stub.post_calls == [
+        ("/internal/blog-labeling/parquet-sync", {}),
+        ("/internal/blog-labeling/parquet-rebuild", {}),
+    ]
+
+
+def test_persistence_http_client_can_manage_user_auth_and_labels() -> None:
+    """The split-service HTTP client should expose user auth helper methods."""
+
+    class StubResponse:
+        content = b""
+        headers: dict[str, str] = {}
+
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.get_calls: list[tuple[str, dict[str, object] | None]] = []
+            self.post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def get(self, path: str, params: dict[str, object] | None = None, **kwargs: object) -> StubResponse:
+            del kwargs
+            self.get_calls.append((path, params))
+            if path == "/internal/users/me":
+                return StubResponse({"id": 7, "email": "user@example.com", "display_name": "user"})
+            if path == "/internal/users/7/label-stats":
+                return StubResponse({"label_count": 3})
+            return StubResponse([])
+
+        def post(self, path: str, json: dict[str, object], **kwargs: object) -> StubResponse:
+            del kwargs
+            self.post_calls.append((path, json))
+            return StubResponse({"token": "token", "user": {"id": 7, "email": "user@example.com"}})
+
+    client = PersistenceHttpClient("http://persistence.internal")
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    assert client.register_user(email="user@example.com", password="long enough")["token"] == "token"
+    assert client.login_user(email="user@example.com", password="long enough")["token"] == "token"
+    assert client.get_user_by_session_token(token="token")["id"] == 7
+    assert client.list_user_label_selections(user_id=7) == []
+    assert client.get_user_label_stats(user_id=7) == {"label_count": 3}
+    client.increment_blog_user_label(blog_id=3, label="blog", user_id=7)
+
+    assert stub.post_calls[-1] == ("/internal/blogs/3/user-labels", {"label": "blog", "user_id": 7})
+    assert ("/internal/users/me", {"session_token": "token"}) in stub.get_calls
+    assert ("/internal/users/7/label-selections", {"limit": 50}) in stub.get_calls
+    assert ("/internal/users/7/label-stats", None) in stub.get_calls
 
 
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -440,7 +942,7 @@ def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch)
     assert settings.decision_model_root == PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
 
 
-def test_backend_service_preserves_supported_public_api_shape() -> None:
+def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> None:
     """Backend service should preserve the supported public API fields."""
     persistence = type(
         "PersistenceStub",
@@ -578,9 +1080,49 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                     "updated_at": "2026-04-05T00:00:00Z",
                 }
             ],
-            "export_blog_label_training_csv": lambda self: (
-                "url,title,label\n"
-                "https://catalog.example.com,Catalog Example,official\n"
+            "get_blog_label_training_parquet_status": lambda self: {
+                "path": "/tmp/blog-label-training.parquet",
+                "filename": "blog-label-training.parquet",
+                "exists": True,
+                "saved_count": 1,
+                "total_labeled": 1,
+                "missing_count": 0,
+                "batch_size": 100,
+                "rewritten": False,
+                "message": "已保存 1 条数据，总计有 label 的有 1 条数据。",
+                "updated_at": "2026-05-24T00:00:00Z",
+            },
+            "sync_blog_label_training_parquet": lambda self: {
+                "path": "/tmp/blog-label-training.parquet",
+                "filename": "blog-label-training.parquet",
+                "exists": True,
+                "saved_count": 1,
+                "total_labeled": 1,
+                "missing_count": 0,
+                "batch_size": 100,
+                "rewritten": False,
+                "message": "无需重新保存：已保存 1 条数据，总计有 label 的有 1 条数据。",
+                "updated_at": "2026-05-24T00:00:00Z",
+            },
+            "rebuild_blog_label_training_parquet": lambda self: {
+                "path": "/tmp/blog-label-training.parquet",
+                "filename": "blog-label-training.parquet",
+                "exists": True,
+                "saved_count": 1,
+                "total_labeled": 1,
+                "missing_count": 0,
+                "batch_size": 100,
+                "rewritten": True,
+                "message": "已重置 parquet 文件并重新保存 1 条数据。",
+                "updated_at": "2026-05-24T00:00:00Z",
+            },
+            "export_blog_label_training_parquet": lambda self: (
+                b"PAR1",
+                {
+                    "content-disposition": 'attachment; filename="blog-label-training.parquet"',
+                    "x-heyblog-label-saved-count": "1",
+                    "x-heyblog-label-total-count": "1",
+                },
             ),
             "create_blog_label_tag": lambda self, name: {
                 "id": 12,
@@ -589,8 +1131,19 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                 "created_at": "2026-04-05T00:00:00Z",
                 "updated_at": "2026-04-05T00:00:00Z",
             },
-            "replace_blog_link_labels": lambda self, blog_id, tag_ids: {
+            "get_blog_label_counts": lambda self: {
+                "total_labeled": 2373,
+                "by_label": {
+                    "blog": 651,
+                    "company": 226,
+                    "other": 1496,
+                    "unknown": 0,
+                },
+            },
+            "replace_blog_link_labels": lambda self, blog_id, tag_ids=None, label_id=None, title=None: {
                 "blog_id": blog_id,
+                "title": title,
+                "label_id": label_id or {str(tag_id): 1 for tag_id in (tag_ids or [])},
                 "labels": [
                     {
                         "id": tag_id,
@@ -600,11 +1153,70 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                         "updated_at": "2026-04-05T00:00:00Z",
                         "labeled_at": "2026-04-05T00:00:00Z",
                     }
-                    for tag_id in tag_ids
+                    for tag_id in (tag_ids or [])
                 ],
-                "label_slugs": [f"tag-{tag_id}" for tag_id in tag_ids],
-                "last_labeled_at": "2026-04-05T00:00:00Z" if tag_ids else None,
-                "is_labeled": bool(tag_ids),
+                "label_slugs": [f"tag-{tag_id}" for tag_id in (tag_ids or [])],
+                "last_labeled_at": "2026-04-05T00:00:00Z" if (tag_ids or label_id) else None,
+                "is_labeled": bool(tag_ids or label_id),
+            },
+            "register_user": lambda self, email, password: {
+                "token": "user-token",
+                "expires_at": "2026-06-25T00:00:00Z",
+                "user": {
+                    "id": 42,
+                    "email": email.lower(),
+                    "display_name": email.split("@", 1)[0],
+                    "created_at": "2026-05-26T00:00:00Z",
+                    "updated_at": "2026-05-26T00:00:00Z",
+                },
+            },
+            "login_user": lambda self, email, password: {
+                "token": "login-token",
+                "expires_at": "2026-06-25T00:00:00Z",
+                "user": {
+                    "id": 42,
+                    "email": email.lower(),
+                    "display_name": email.split("@", 1)[0],
+                    "created_at": "2026-05-26T00:00:00Z",
+                    "updated_at": "2026-05-26T00:00:00Z",
+                },
+            },
+            "get_user_by_session_token": lambda self, token: {
+                "id": 42,
+                "email": "member@example.com",
+                "display_name": "member",
+                "created_at": "2026-05-26T00:00:00Z",
+                "updated_at": "2026-05-26T00:00:00Z",
+            } if token in {"user-token", "login-token"} else None,
+            "revoke_user_session": lambda self, token: {"ok": True},
+            "get_user_label_stats": lambda self, user_id: {"label_count": 12},
+            "list_user_label_selections": lambda self, user_id, limit=50: [
+                {
+                    "id": 1,
+                    "normalized_url": "https://catalog.example.com",
+                    "label_id": 1,
+                    "label": "blog",
+                    "label_name": "blog",
+                    "created_at": "2026-05-26T00:00:00Z",
+                    "updated_at": "2026-05-26T00:00:00Z",
+                    "blog": None,
+                }
+            ],
+            "increment_blog_user_label": lambda self, blog_id, label, previous_label=None, user_id=None: {
+                "blog_id": blog_id,
+                "label_id": {"1": 1},
+                "labels": [
+                    {
+                        "id": 1,
+                        "name": label,
+                        "slug": label,
+                        "count": 1,
+                        "labeled_at": "2026-04-05T00:00:00Z",
+                    }
+                ],
+                "label_slugs": [label],
+                "last_labeled_at": "2026-04-05T00:00:00Z",
+                "is_labeled": True,
             },
             "get_blog": lambda self, blog_id: {
                 "id": blog_id,
@@ -887,14 +1499,23 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
                 "total_matches": 1,
                 "match_reason": "identity_key",
             },
+            "get_filter_stats_by_chain_order": lambda self: {
+                "by_filter_reason": {
+                    "raw": 3,
+                    "rule:same_domain": 2,
+                }
+            },
             "reset": lambda self: {
                 "ok": True,
                 "blogs_deleted": 3,
                 "edges_deleted": 4,
                 "logs_deleted": 0,
                 "ingestion_requests_deleted": 1,
-                "blog_link_labels_deleted": 1,
-                "blog_label_tags_deleted": 2,
+                "blog_link_labels_deleted": 0,
+                "blog_label_tags_deleted": 0,
+                "blog_label_subjects_preserved": 1,
+                "blog_link_labels_preserved": 1,
+                "blog_label_tags_preserved": 2,
             },
         },
     )()
@@ -909,6 +1530,10 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     status = client.get("/api/status")
     assert status.status_code == 200
     assert status.json()["total_blogs"] == 3
+
+    filter_stats = client.get("/api/filter-stats")
+    assert filter_stats.status_code == 200
+    assert filter_stats.json()["by_filter_reason"]["rule:same_domain"] == 2
 
     detail = client.get("/api/blogs/1")
     assert detail.status_code == 200
@@ -933,6 +1558,23 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert random_catalog.json()["filters"]["status"] == "FINISHED"
     assert random_catalog.json()["sort"] == "random"
 
+    auth = client.post("/api/auth/register", json={"email": "Member@Example.com", "password": "long enough"})
+    assert auth.status_code == 200
+    assert auth.json()["token"] == "user-token"
+    assert auth.json()["user"]["email"] == "member@example.com"
+    login = client.post("/api/auth/login", json={"email": "member@example.com", "password": "long enough"})
+    assert login.status_code == 200
+    assert login.json()["token"] == "login-token"
+    me = client.get("/api/auth/me", headers={"authorization": "Bearer user-token"})
+    assert me.status_code == 200
+    assert me.json()["id"] == 42
+    selections = client.get("/api/me/label-selections", headers={"authorization": "Bearer user-token"})
+    assert selections.status_code == 200
+    assert selections.json()[0]["label"] == "blog"
+    label_stats = client.get("/api/me/label-stats", headers={"authorization": "Bearer user-token"})
+    assert label_stats.status_code == 200
+    assert label_stats.json() == {"label_count": 12}
+
     labeling = client.get("/api/admin/blog-labeling/candidates?page=2&page_size=25&label=official&labeled=true", headers=admin_headers())
     assert labeling.status_code == 200
     assert labeling.json()["page"] == 2
@@ -940,18 +1582,66 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert labeling.json()["filters"]["labeled"] == "true"
     assert labeling.json()["available_tags"][0]["slug"] == "blog"
 
-    labeling_export = client.get("/api/admin/blog-labeling/export", headers=admin_headers())
-    assert labeling_export.status_code == 200
-    assert labeling_export.headers["content-type"].startswith("text/csv")
-    assert labeling_export.text == "url,title,label\nhttps://catalog.example.com,Catalog Example,official\n"
+    label_counts = client.get("/api/admin/blog-labeling/counts", headers=admin_headers())
+    assert label_counts.status_code == 200
+    assert label_counts.json() == {
+        "total_labeled": 2373,
+        "by_label": {
+            "blog": 651,
+            "company": 226,
+            "other": 1496,
+            "unknown": 0,
+        },
+    }
+
+    parquet_status = client.get("/api/admin/blog-labeling/parquet-status", headers=admin_headers())
+    assert parquet_status.status_code == 200
+    assert parquet_status.json()["saved_count"] == 1
+
+    parquet_sync = client.post("/api/admin/blog-labeling/parquet-sync", headers=admin_headers())
+    assert parquet_sync.status_code == 200
+    assert parquet_sync.json()["missing_count"] == 0
+
+    parquet_rebuild = client.post("/api/admin/blog-labeling/parquet-rebuild", headers=admin_headers())
+    assert parquet_rebuild.status_code == 200
+    assert parquet_rebuild.json()["rewritten"] is True
+
+    parquet_export = client.get("/api/admin/blog-labeling/parquet-export", headers=admin_headers())
+    assert parquet_export.status_code == 200
+    assert parquet_export.content == b"PAR1"
+    assert parquet_export.headers["content-type"].startswith("application/vnd.apache.parquet")
 
     tag_create = client.post("/api/admin/blog-labeling/tags", json={"name": "government"}, headers=admin_headers())
     assert tag_create.status_code == 200
     assert tag_create.json()["slug"] == "government"
 
-    label_update = client.put("/api/admin/blog-labeling/labels/3", json={"tag_ids": [10, 11]}, headers=admin_headers())
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        request = httpx.Request("GET", url)
+        assert kwargs["follow_redirects"] is True
+        assert kwargs["timeout"] == 5.0
+        return httpx.Response(
+            200,
+            request=request,
+            text="<html><head><title>Raw Only Title</title></head><body></body></html>",
+        )
+
+    monkeypatch.setattr("backend.main.httpx.get", fake_get)
+    title_preview = client.post(
+        "/api/admin/blog-labeling/title-preview",
+        json={"url": "https://raw-only.example/"},
+        headers=admin_headers(),
+    )
+    assert title_preview.status_code == 200
+    assert title_preview.json() == {"url": "https://raw-only.example/", "title": "Raw Only Title"}
+
+    label_update = client.put(
+        "/api/admin/blog-labeling/labels/3",
+        json={"tag_ids": [10, 11], "title": "Temporary Label Title"},
+        headers=admin_headers(),
+    )
     assert label_update.status_code == 200
     assert label_update.json()["blog_id"] == 3
+    assert label_update.json()["title"] == "Temporary Label Title"
     assert label_update.json()["label_slugs"] == ["tag-10", "tag-11"]
 
     core_view = client.get("/api/graph/views/core?strategy=degree&limit=80")
@@ -1009,10 +1699,69 @@ def test_backend_service_preserves_supported_public_api_shape() -> None:
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
     assert reset.json()["ingestion_requests_deleted"] == 1
-    assert reset.json()["blog_link_labels_deleted"] == 1
-    assert reset.json()["blog_label_tags_deleted"] == 2
+    assert reset.json()["blog_link_labels_deleted"] == 0
+    assert reset.json()["blog_label_tags_deleted"] == 0
+    assert reset.json()["blog_link_labels_preserved"] == 1
+    assert reset.json()["blog_label_tags_preserved"] == 2
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/admin/crawl/run?max_nodes=2", None),
+        ("/api/admin/runtime/run-batch", {"max_nodes": 3}),
+    ],
+)
+def test_backend_preserves_crawler_capacity_conflict_detail(
+    path: str,
+    body: dict[str, int] | None,
+) -> None:
+    """Backend should relay crawler raw-limit conflicts without reindexing search."""
+
+    class CapacityBlockedCrawler(StubCrawler):
+        def _raise_capacity_conflict(self) -> None:
+            request = httpx.Request("POST", "http://crawler/internal/runtime/start")
+            response = httpx.Response(
+                409,
+                request=request,
+                json={
+                    "detail": {
+                        "reason": "raw_discovered_url_limit_reached",
+                        "raw_count": 1_000_000,
+                        "limit": 1_000_000,
+                    }
+                },
+            )
+            raise httpx.HTTPStatusError("raw limit reached", request=request, response=response)
+
+        def run(self, max_nodes: int | None = None) -> dict[str, int | None]:
+            self._raise_capacity_conflict()
+
+        def run_batch(self, max_nodes: int) -> dict[str, object]:
+            self._raise_capacity_conflict()
+
+    search = StubSearch()
+    app = create_backend_app(
+        BackendState(
+            persistence=object(),
+            crawler=CapacityBlockedCrawler(),
+            search=search,
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    if body is None:
+        response = client.post(path, headers=admin_headers())
+    else:
+        response = client.post(path, json=body, headers=admin_headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "raw_discovered_url_limit_reached"
+    assert response.json()["detail"]["raw_count"] == 1_000_000
+    assert search.reindex_calls == 0
 
 
 def test_backend_service_removes_legacy_public_routes() -> None:
@@ -1085,18 +1834,21 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
             response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
-        def replace_blog_link_labels(self, *, blog_id: int, tag_ids: list[int]) -> dict[str, object]:
+        def replace_blog_link_labels(
+            self,
+            *,
+            blog_id: int,
+            tag_ids: list[int] | None = None,
+            label_id: dict[str, int] | None = None,
+            title: str | None = None,
+        ) -> dict[str, object]:
+            del tag_ids, label_id, title
             request = httpx.Request("PUT", f"http://persistence/internal/blog-labeling/labels/{blog_id}")
             response = httpx.Response(
                 409,
                 request=request,
                 json={"detail": "blog_labeling_requires_finished_blog"},
             )
-            raise httpx.HTTPStatusError("boom", request=request, response=response)
-
-        def export_blog_label_training_csv(self) -> str:
-            request = httpx.Request("GET", "http://persistence/internal/blog-labeling/export")
-            response = httpx.Response(422, request=request, json={"detail": "Unsupported blog label name"})
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
         def get_blog(self, blog_id: int) -> None:
@@ -1147,8 +1899,7 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
     assert put_response.json()["detail"] == "blog_labeling_requires_finished_blog"
 
     export_response = client.get("/api/admin/blog-labeling/export", headers=admin_headers())
-    assert export_response.status_code == 422
-    assert export_response.json()["detail"] == "Unsupported blog label name"
+    assert export_response.status_code == 404
 
 
 def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
@@ -1657,6 +2408,359 @@ def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_a
     assert items.json()[0]["reason_code"] == "blog_alias_collapsed"
 
 
+def test_persistence_service_exposes_url_refilter_run_endpoints(tmp_path: Path) -> None:
+    """Persistence service should expose URL refilter run creation and event listing."""
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    app = create_persistence_app(build_persistence_state(settings))
+    client = TestClient(app)
+
+    run = client.post("/internal/url-refilter-runs", params={"crawler_was_running": "false"})
+    assert run.status_code == 200
+    assert run.json()["status"] == "PENDING"
+
+    appended = client.post(
+        f"/internal/url-refilter-runs/{run.json()['id']}/events",
+        json={"message": "停止爬虫中"},
+    )
+    assert appended.status_code == 200
+    assert appended.json()["message"] == "停止爬虫中"
+
+    latest = client.get("/internal/url-refilter-runs/latest")
+    assert latest.status_code == 200
+    assert latest.json()["id"] == run.json()["id"]
+
+    events = client.get(f"/internal/url-refilter-runs/{run.json()['id']}/events")
+    assert events.status_code == 200
+    assert events.json()[0]["message"] == "停止爬虫中"
+
+
+def test_backend_url_refilter_run_stops_crawler_and_persists_progress_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Admin URL refilter should stop crawler first and expose latest run logs."""
+    monkeypatch.setenv("HEYBLOG_LOG_DIR", str(tmp_path / "logs"))
+
+    class RefilterPersistenceStub:
+        def __init__(self) -> None:
+            self.run = {
+                "id": 9,
+                "status": "PENDING",
+                "filter_chain_version": "rule:same_domain",
+                "crawler_was_running": True,
+                "backup_path": None,
+                "total_count": 0,
+                "scanned_count": 0,
+                "unchanged_count": 0,
+                "activated_count": 0,
+                "deactivated_count": 0,
+                "retagged_count": 0,
+                "last_raw_url_id": None,
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "created_at": "2026-04-22T00:00:00Z",
+                "updated_at": "2026-04-22T00:00:00Z",
+            }
+            self.events: list[dict[str, object]] = []
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run["crawler_was_running"] = crawler_was_running
+            return dict(self.run)
+
+        def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, object]:
+            event = {
+                "id": len(self.events) + 1,
+                "run_id": run_id,
+                "message": message,
+                "created_at": "2026-04-22T00:00:00Z",
+            }
+            self.events.append(event)
+            return dict(event)
+
+        def execute_url_refilter_run(self, *, run_id: int) -> dict[str, object]:
+            self.append_url_refilter_run_event(run_id=run_id, message="备份中")
+            self.append_url_refilter_run_event(run_id=run_id, message="备份完成，文件保存在 /tmp/backup.sqlite")
+            self.run["status"] = "SUCCEEDED"
+            self.run["backup_path"] = "/tmp/backup.sqlite"
+            self.run["total_count"] = 12
+            self.run["scanned_count"] = 12
+            self.run["unchanged_count"] = 10
+            self.run["activated_count"] = 1
+            self.run["deactivated_count"] = 1
+            self.run["updated_at"] = "2026-04-22T00:00:05Z"
+            return dict(self.run)
+
+        def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, object]:
+            self.run["status"] = "FAILED"
+            self.run["error_message"] = error_message
+            return dict(self.run)
+
+        def latest_url_refilter_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            assert run_id == 9
+            return [dict(event) for event in self.events]
+
+    class ToggleCrawler:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+            self.runner_status = "running"
+
+        def runtime_status(self) -> dict[str, object]:
+            return {
+                "runner_status": self.runner_status,
+                "active_run_id": None,
+                "worker_count": 3,
+                "active_workers": 1 if self.runner_status != "idle" else 0,
+                "current_worker_id": None,
+                "current_blog_id": None,
+                "current_url": None,
+                "current_stage": None,
+                "task_started_at": None,
+                "elapsed_seconds": None,
+                "last_started_at": None,
+                "last_stopped_at": None,
+                "last_error": None,
+                "last_result": None,
+                "workers": [],
+            }
+
+        def current(self) -> dict[str, object]:
+            return self.runtime_status()
+
+        def stop(self) -> dict[str, object]:
+            self.stop_calls += 1
+            self.runner_status = "idle"
+            return self.runtime_status()
+
+    persistence = RefilterPersistenceStub()
+    crawler = ToggleCrawler()
+    app = create_backend_app(
+        BackendState(persistence=persistence, crawler=crawler, search=StubSearch(), admin_token="secret-token")
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/admin/url-refilter-runs", headers=admin_headers())
+    assert response.status_code == 200
+    assert response.json()["id"] == 9
+    assert crawler.stop_calls == 1
+
+    for _ in range(20):
+        latest = client.get("/api/admin/url-refilter-runs/latest", headers=admin_headers())
+        assert latest.status_code == 200
+        if latest.json()["status"] == "SUCCEEDED":
+            break
+        sleep(0.05)
+
+    assert latest.json()["backup_path"] == "/tmp/backup.sqlite"
+    events = client.get("/api/admin/url-refilter-runs/9/events", headers=admin_headers())
+    assert events.status_code == 200
+    assert [event["message"] for event in events.json()[:4]] == [
+        "停止爬虫中",
+        "爬虫已停止",
+        "备份中",
+        "备份完成，文件保存在 /tmp/backup.sqlite",
+    ]
+    refilter_logs = _read_json_lines(_single_log_file(tmp_path / "logs" / "app" / "url-refilter"))
+    assert [row["event"] for row in refilter_logs] == [
+        "maintenance.url_refilter.started",
+        "maintenance.url_refilter.crawler_stop.requested",
+        "maintenance.url_refilter.crawler_stop.succeeded",
+        "maintenance.url_refilter.backend.execute_requested",
+        "maintenance.url_refilter.backend.execute_completed",
+        "maintenance.url_refilter.backend.closed",
+    ]
+    assert all(row["service"] == "url-refilter" for row in refilter_logs)
+    assert refilter_logs[-1]["reason"] == "persistence_execution_completed"
+    assert refilter_logs[-1]["message"] == "url refilter backend closed: persistence execution completed"
+
+
+def test_backend_url_refilter_run_waits_for_crawler_idle_before_starting() -> None:
+    """Admin URL refilter should tolerate a short crawler shutdown delay."""
+
+    class RefilterPersistenceStub:
+        def __init__(self) -> None:
+            self.run = {
+                "id": 10,
+                "status": "PENDING",
+                "filter_chain_version": "rule:same_domain",
+                "crawler_was_running": True,
+                "backup_path": None,
+                "total_count": 0,
+                "scanned_count": 0,
+                "unchanged_count": 0,
+                "activated_count": 0,
+                "deactivated_count": 0,
+                "retagged_count": 0,
+                "last_raw_url_id": None,
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "created_at": "2026-04-22T00:00:00Z",
+                "updated_at": "2026-04-22T00:00:00Z",
+            }
+            self.events: list[dict[str, object]] = []
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run["crawler_was_running"] = crawler_was_running
+            return dict(self.run)
+
+        def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, object]:
+            event = {
+                "id": len(self.events) + 1,
+                "run_id": run_id,
+                "message": message,
+                "created_at": "2026-04-22T00:00:00Z",
+            }
+            self.events.append(event)
+            return dict(event)
+
+        def execute_url_refilter_run(self, *, run_id: int) -> dict[str, object]:
+            self.run["status"] = "SUCCEEDED"
+            self.run["backup_path"] = "/tmp/backup.sqlite"
+            return dict(self.run)
+
+        def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, object]:
+            self.run["status"] = "FAILED"
+            self.run["error_message"] = error_message
+            return dict(self.run)
+
+        def latest_url_refilter_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            return [dict(event) for event in self.events]
+
+    class SlowIdleCrawler:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+            self.poll_count = 0
+            self.runner_status = "running"
+
+        def runtime_status(self) -> dict[str, object]:
+            self.poll_count += 1
+            if self.stop_calls > 0 and self.poll_count >= 4:
+                self.runner_status = "idle"
+            return {
+                "runner_status": self.runner_status,
+                "active_run_id": None,
+                "worker_count": 3,
+                "active_workers": 1 if self.runner_status != "idle" else 0,
+                "current_worker_id": None,
+                "current_blog_id": None,
+                "current_url": None,
+                "current_stage": None,
+                "task_started_at": None,
+                "elapsed_seconds": None,
+                "last_started_at": None,
+                "last_stopped_at": None,
+                "last_error": None,
+                "last_result": None,
+                "workers": [],
+            }
+
+        def current(self) -> dict[str, object]:
+            return self.runtime_status()
+
+        def stop(self) -> dict[str, object]:
+            self.stop_calls += 1
+            self.runner_status = "stopping"
+            return self.runtime_status()
+
+    persistence = RefilterPersistenceStub()
+    crawler = SlowIdleCrawler()
+    app = create_backend_app(
+        BackendState(persistence=persistence, crawler=crawler, search=StubSearch(), admin_token="secret-token")
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/admin/url-refilter-runs", headers=admin_headers())
+    assert response.status_code == 200
+    assert response.json()["id"] == 10
+    assert crawler.stop_calls == 1
+
+
+def test_backend_url_refilter_failure_logs_close_reason(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Backend should log a close message with the failure reason when refilter exits."""
+
+    class FailingPersistenceStub:
+        def __init__(self) -> None:
+            self.run = {
+                "id": 11,
+                "status": "PENDING",
+                "filter_chain_version": "rule:same_domain",
+                "crawler_was_running": False,
+                "backup_path": None,
+                "total_count": 0,
+                "scanned_count": 0,
+                "unchanged_count": 0,
+                "activated_count": 0,
+                "deactivated_count": 0,
+                "retagged_count": 0,
+                "last_raw_url_id": None,
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "created_at": "2026-04-22T00:00:00Z",
+                "updated_at": "2026-04-22T00:00:00Z",
+            }
+
+        def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
+            self.run["crawler_was_running"] = crawler_was_running
+            return dict(self.run)
+
+        def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, object]:
+            return {"id": 1, "run_id": run_id, "message": message, "created_at": "2026-04-22T00:00:00Z"}
+
+        def execute_url_refilter_run(self, *, run_id: int) -> dict[str, object]:
+            raise RuntimeError("database disconnected")
+
+        def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, object]:
+            self.run["status"] = "FAILED"
+            self.run["error_message"] = error_message
+            return dict(self.run)
+
+        def latest_url_refilter_run(self) -> dict[str, object]:
+            return dict(self.run)
+
+        def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, object]]:
+            return []
+
+    monkeypatch.setenv("HEYBLOG_LOG_DIR", str(tmp_path / "logs"))
+    app = create_backend_app(
+        BackendState(
+            persistence=FailingPersistenceStub(),
+            crawler=StubCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/admin/url-refilter-runs", headers=admin_headers())
+    assert response.status_code == 200
+    for _ in range(20):
+        latest = client.get("/api/admin/url-refilter-runs/latest", headers=admin_headers())
+        assert latest.status_code == 200
+        if latest.json()["status"] == "FAILED":
+            break
+        sleep(0.05)
+
+    refilter_logs = _read_json_lines(_single_log_file(tmp_path / "logs" / "app" / "url-refilter"))
+    closed = [row for row in refilter_logs if row["event"] == "maintenance.url_refilter.backend.closed"]
+    assert closed[-1]["reason"] == "unexpected_backend_error"
+    assert closed[-1]["message"] == "url refilter backend closed: database disconnected"
+
+
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:
     """Search service should return matches from its rebuildable snapshot."""
 
@@ -1774,10 +2878,13 @@ def test_frontend_service_serves_spa_entry_for_deep_links_but_not_missing_assets
     client = TestClient(app)
 
     deep_link = client.get("/about")
-    missing_asset = client.get("/favicon.ico")
+    favicon = client.get("/favicon.ico")
+    missing_asset = client.get("/missing.png")
 
     assert deep_link.status_code == 200
     assert "Built App" in deep_link.text
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
     assert missing_asset.status_code == 404
 
 
@@ -1828,16 +2935,21 @@ def test_frontend_service_proxies_put_api_requests(tmp_path: Path, monkeypatch) 
     app = create_frontend_app(settings)
     client = TestClient(app)
 
-    response = client.put("/api/admin/blog-labeling/labels/1", json={"tag_ids": [10, 11]}, headers=admin_headers())
+    response = client.put(
+        "/api/admin/blog-labeling/labels/1",
+        json={"tag_ids": [10, 11], "title": "Temporary"},
+        headers=admin_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+    assert captured["headers"].pop("x-request-id")
     assert captured == {
         "timeout": 60.0,
         "method": "PUT",
         "url": "http://backend:8000/api/admin/blog-labeling/labels/1",
         "params": {},
-        "content": b'{"tag_ids":[10,11]}',
+        "content": b'{"tag_ids":[10,11],"title":"Temporary"}',
         "headers": {
             "content-type": "application/json",
             "authorization": "Bearer secret-token",
@@ -1895,4 +3007,5 @@ def test_frontend_service_does_not_forward_empty_authorization_headers(tmp_path:
     response = client.post("/api/ingestion-requests", json={"homepage_url": "https://blog.example.com"})
 
     assert response.status_code == 200
+    assert captured["headers"].pop("x-request-id")
     assert captured["headers"] == {"content-type": "application/json"}

@@ -3,19 +3,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from time import sleep
 from threading import Thread
+from time import sleep
 from typing import Any
+from typing import Callable
+from typing import NoReturn
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from crawler.crawling.metadata import extract_site_metadata
 from shared.config import Settings
 from shared.http_clients.crawler_http import CrawlerHttpClient
 from shared.http_clients.persistence_http import PersistenceHttpClient
 from shared.http_clients.search_http import SearchHttpClient
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_dedicated_event_logger
+from shared.observability import configure_logging
+from shared.observability import get_logger
+from shared.observability import log_event
+
+
+SERVICE_NAME = "backend"
+URL_REFILTER_LOG_SERVICE_NAME = "url-refilter"
+URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
+LOGGER = get_logger(__name__)
+URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
 
 
 @dataclass(slots=True)
@@ -39,17 +54,223 @@ class CreateIngestionRequest(BaseModel):
     email: str
 
 
+class UserAuthRequest(BaseModel):
+    email: str
+    password: str
+
+
 class ReplaceBlogLabelsRequest(BaseModel):
-    tag_ids: list[int]
+    tag_ids: list[int] | None = None
+    label_id: dict[str, int] | None = None
+    title: str | None = None
+
+
+class IncrementBlogUserLabelRequest(BaseModel):
+    label: str
+    previous_label: str | None = None
+
+
+class BlogLabelTitlePreviewRequest(BaseModel):
+    url: str
 
 
 class CreateBlogLabelTagRequest(BaseModel):
     name: str
 
 
+ACTIVE_CRAWLER_RUNNER_STATUSES = frozenset({"starting", "running", "stopping"})
+
+
+def _crawler_runtime_is_active(runtime: dict[str, Any]) -> bool:
+    """Return whether one crawler runtime payload represents an active run."""
+    return runtime.get("runner_status") in ACTIVE_CRAWLER_RUNNER_STATUSES
+
+
 def _raise_for_maintenance(state: BackendState) -> None:
     if state.maintenance_in_progress:
         raise HTTPException(status_code=409, detail="maintenance_in_progress")
+
+
+def _enter_maintenance(state: BackendState) -> bool:
+    """Mark the backend as in maintenance mode and report whether crawler was active."""
+    _raise_for_maintenance(state)
+    runtime_before = state.crawler.runtime_status()
+    crawler_was_running = _crawler_runtime_is_active(runtime_before)
+    state.maintenance_in_progress = True
+    return crawler_was_running
+
+
+def _leave_maintenance(
+    state: BackendState,
+    *,
+    reason: str = "maintenance_completed",
+    message: str = "maintenance mode closed",
+    run_id: int | None = None,
+) -> None:
+    """Clear backend maintenance mode and log URL refilter exits when relevant."""
+    state.maintenance_in_progress = False
+    if run_id is not None:
+        log_event(
+            URL_REFILTER_LOGGER,
+            event="maintenance.url_refilter.backend.closed",
+            message=message,
+            stage="url_refilter",
+            run_id=run_id,
+            reason=reason,
+        )
+
+
+def _stop_active_crawler(
+    state: BackendState,
+    *,
+    crawler_was_running: bool,
+    wait_for_idle: Callable[[], Any],
+) -> None:
+    """Stop the crawler and wait for idle only when it was active."""
+    if not crawler_was_running:
+        return
+    state.crawler.stop()
+    wait_for_idle()
+
+
+def _upstream_error_detail(exc: httpx.HTTPStatusError, default: Any = "upstream_error") -> Any:
+    """Extract a stable detail payload from an upstream HTTP failure."""
+    try:
+        return exc.response.json().get("detail", default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _preview_label_title(url: str) -> dict[str, str | None]:
+    """Fetch one candidate URL and extract a temporary display title.
+
+    Args:
+        url: Candidate URL whose HTML title should be fetched.
+
+    Returns:
+        Mapping containing the original URL and extracted title, if any.
+
+    Raises:
+        HTTPException: If the URL is invalid or cannot be fetched quickly.
+    """
+
+    clean_url = url.strip()
+    if not clean_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="unsupported_url")
+    try:
+        response = httpx.get(
+            clean_url,
+            follow_redirects=True,
+            timeout=5.0,
+            headers={"User-Agent": "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"},
+        )
+        response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="title_fetch_timeout") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="title_fetch_failed") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"title_fetch_http_{exc.response.status_code}") from exc
+    metadata = extract_site_metadata(str(response.url), response.text)
+    return {"url": clean_url, "title": metadata.title}
+
+
+def _raise_upstream_http_error(
+    exc: httpx.HTTPStatusError,
+    *,
+    default: Any = "upstream_error",
+    detail_override: Any | None = None,
+) -> None:
+    """Re-raise an upstream HTTP failure with FastAPI-compatible semantics."""
+    detail = detail_override if detail_override is not None else _upstream_error_detail(exc, default)
+    raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+
+def _mark_url_refilter_run_failed(
+    state: BackendState,
+    *,
+    run_id: int | None,
+    error_message: str,
+) -> None:
+    """Best-effort persistence of a failed URL refilter run."""
+    log_event(
+        URL_REFILTER_LOGGER,
+        event="maintenance.url_refilter.backend.failed",
+        message="url refilter backend marked run failed",
+        level=30,
+        stage="url_refilter",
+        run_id=run_id,
+        error_message=error_message,
+    )
+    if run_id is None:
+        return
+    try:
+        state.persistence.mark_url_refilter_run_failed(run_id=run_id, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _abort_url_refilter_start(
+    state: BackendState,
+    *,
+    run_id: int | None,
+    error_message: str,
+) -> None:
+    """Persist a failed refilter start attempt and clear maintenance mode."""
+    _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
+    _leave_maintenance(
+        state,
+        run_id=run_id,
+        reason="start_failed",
+        message=f"url refilter startup closed: {error_message}",
+    )
+
+
+def _call_upstream_with_http_error_translation(
+    action: Callable[[], Any],
+    *,
+    default: Any = "upstream_error",
+    detail_override: Any | None = None,
+) -> Any:
+    """Execute one upstream call and preserve the shared HTTP error mapping."""
+    try:
+        return action()
+    except httpx.HTTPStatusError as exc:
+        _raise_upstream_http_error(exc, default=default, detail_override=detail_override)
+
+
+def _best_effort_search_reindex(search: Any) -> bool:
+    """Try to rebuild search state and report whether it succeeded."""
+    try:
+        search.reindex()
+        log_event(
+            LOGGER,
+            event="search.reindex.succeeded",
+            message="search reindex succeeded",
+            stage="search_reindex",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            LOGGER,
+            event="search.reindex.failed",
+            message="search reindex failed",
+            level=30,
+            stage="search_reindex",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return False
+
+
+def _run_crawler_action_and_refresh_search(
+    search: Any,
+    action: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Run one crawler action and best-effort refresh search before returning."""
+    result = _call_upstream_with_http_error_translation(action)
+    _best_effort_search_reindex(search)
+    return result
 
 
 def build_backend_state(settings: Settings | None = None) -> BackendState:
@@ -85,16 +306,9 @@ def _execute_blog_dedup_scan_in_background(
     error_message: str | None = None
     try:
         state.persistence.execute_blog_dedup_scan_run(run_id=run_id)
-        try:
-            state.search.reindex()
-            search_reindexed = True
-        except Exception:  # noqa: BLE001
-            search_reindexed = False
+        search_reindexed = _best_effort_search_reindex(state.search)
     except httpx.HTTPStatusError as exc:
-        try:
-            error_message = exc.response.json().get("detail", "upstream_error")
-        except Exception:  # noqa: BLE001
-            error_message = "upstream_error"
+        error_message = str(_upstream_error_detail(exc))
     except Exception as exc:  # noqa: BLE001
         error_message = str(exc)
     finally:
@@ -118,9 +332,123 @@ def _execute_blog_dedup_scan_in_background(
         state.maintenance_in_progress = False
 
 
+def _execute_url_refilter_in_background(
+    state: BackendState,
+    *,
+    run_id: int,
+) -> None:
+    close_reason = "persistence_execution_completed"
+    close_message = "url refilter backend closed: persistence execution completed"
+    log_event(
+        URL_REFILTER_LOGGER,
+        event="maintenance.url_refilter.backend.execute_requested",
+        message="url refilter backend requested persistence execution",
+        stage="url_refilter",
+        run_id=run_id,
+        reason="background_thread_started",
+    )
+    try:
+        state.persistence.execute_url_refilter_run(run_id=run_id)
+        log_event(
+            URL_REFILTER_LOGGER,
+            event="maintenance.url_refilter.backend.execute_completed",
+            message="url refilter backend execution request completed: persistence accepted and returned",
+            stage="url_refilter",
+            run_id=run_id,
+            reason="persistence_execution_returned",
+        )
+    except httpx.HTTPStatusError as exc:
+        error_message = str(_upstream_error_detail(exc))
+        close_reason = "persistence_http_error"
+        close_message = f"url refilter backend closed: {error_message}"
+        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)
+        close_reason = "unexpected_backend_error"
+        close_message = f"url refilter backend closed: {error_message}"
+        _mark_url_refilter_run_failed(state, run_id=run_id, error_message=error_message)
+    finally:
+        _leave_maintenance(state, run_id=run_id, reason=close_reason, message=close_message)
+
+
+def _start_maintenance_background_task(
+    state: BackendState,
+    *,
+    prepare_run: Callable[[bool], tuple[dict[str, Any], dict[str, Any]]],
+    on_http_error: Callable[[httpx.HTTPStatusError], NoReturn],
+    on_http_exception: Callable[[HTTPException], NoReturn],
+    on_unexpected_error: Callable[[Exception], NoReturn],
+    target: Callable[..., None],
+) -> dict[str, Any]:
+    """Start one maintenance-mode background task with shared exception handling."""
+    crawler_was_running = _enter_maintenance(state)
+    try:
+        payload, thread_kwargs = prepare_run(crawler_was_running)
+    except httpx.HTTPStatusError as exc:
+        on_http_error(exc)
+    except HTTPException as exc:
+        on_http_exception(exc)
+    except Exception as exc:  # noqa: BLE001
+        on_unexpected_error(exc)
+    Thread(
+        target=target,
+        kwargs={"state": state, **thread_kwargs},
+        daemon=True,
+    ).start()
+    return payload
+
+
+def _build_maintenance_start_error_handlers(
+    *,
+    cleanup: Callable[[str], None],
+    unexpected_detail: str,
+) -> tuple[
+    Callable[[httpx.HTTPStatusError], NoReturn],
+    Callable[[HTTPException], NoReturn],
+    Callable[[Exception], NoReturn],
+]:
+    """Build the shared error-handler skeleton for maintenance start routes."""
+
+    def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
+        detail = _upstream_error_detail(exc)
+        cleanup(str(detail))
+        _raise_upstream_http_error(exc, detail_override=detail)
+
+    def on_http_exception(exc: HTTPException) -> NoReturn:
+        cleanup(str(exc.detail))
+        raise exc
+
+    def on_unexpected_error(exc: Exception) -> NoReturn:
+        cleanup(str(exc))
+        raise HTTPException(status_code=500, detail=unexpected_detail) from exc
+
+    return on_http_error, on_http_exception, on_unexpected_error
+
+
 def create_app(state: BackendState | None = None) -> FastAPI:
     """Create the public backend app."""
+    settings = Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
+    configure_dedicated_event_logger(
+        logger_name=URL_REFILTER_LOGGER_NAME,
+        service=URL_REFILTER_LOG_SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Backend Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.backend_state = state or build_backend_state()
 
     def get_state() -> BackendState:
@@ -141,7 +469,25 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         if token != state.admin_token:
             raise HTTPException(status_code=403, detail="admin_auth_invalid")
 
-    def ensure_runtime_idle(*, retries: int = 20, delay_seconds: float = 0.1) -> dict[str, Any]:
+    def optional_user(request: Request) -> dict[str, Any] | None:
+        authorization = request.headers.get("authorization", "").strip()
+        if not authorization:
+            return None
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="auth_required")
+        try:
+            return get_state().persistence.get_user_by_session_token(token=token)
+        except httpx.HTTPStatusError as exc:
+            _raise_upstream_http_error(exc, default="auth_required", detail_override="auth_required")
+
+    def require_user(request: Request) -> dict[str, Any]:
+        user = optional_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="auth_required")
+        return user
+
+    def ensure_runtime_idle(*, retries: int = 120, delay_seconds: float = 0.5) -> dict[str, Any]:
         last_runtime = get_state().crawler.runtime_status()
         for _ in range(retries):
             if last_runtime.get("runner_status") == "idle":
@@ -176,7 +522,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         stats = get_state().persistence.stats()
         runtime = get_state().crawler.runtime_status()
         return {
-            "is_running": runtime["runner_status"] in {"starting", "running", "stopping"},
+            "is_running": _crawler_runtime_is_active(runtime),
             "pending_tasks": stats["pending_tasks"],
             "processing_tasks": stats["processing_tasks"],
             "finished_tasks": stats["finished_tasks"],
@@ -199,8 +545,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         has_icon: str | None = None,
         min_connections: str | None = None,
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.list_blogs_catalog(
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blogs_catalog(
                 page=page,
                 page_size=page_size,
                 site=site,
@@ -213,25 +559,52 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 has_icon=has_icon,
                 min_connections=min_connections,
             )
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        )
 
     @app.get("/api/blogs/lookup")
     def lookup_blog_candidates(url: str) -> dict[str, Any]:
-        try:
-            return get_state().persistence.lookup_blog_candidates(url=url)
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.lookup_blog_candidates(url=url)
+        )
+
+    @app.post("/api/auth/register")
+    def register_user(payload: UserAuthRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.register_user(email=payload.email, password=payload.password)
+        )
+
+    @app.post("/api/auth/login")
+    def login_user(payload: UserAuthRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.login_user(email=payload.email, password=payload.password)
+        )
+
+    @app.get("/api/auth/me")
+    def get_current_user(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+        return user
+
+    @app.post("/api/auth/logout")
+    def logout_user(request: Request, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+        del user
+        _, _, token = request.headers.get("authorization", "").strip().partition(" ")
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.revoke_user_session(token=token)
+        )
+
+    @app.get("/api/me/label-selections")
+    def get_my_label_selections(
+        limit: int = 50,
+        user: dict[str, Any] = Depends(require_user),
+    ) -> list[dict[str, Any]]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_user_label_selections(user_id=int(user["id"]), limit=limit)
+        )
+
+    @app.get("/api/me/label-stats")
+    def get_my_label_stats(user: dict[str, Any] = Depends(require_user)) -> dict[str, int]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_user_label_stats(user_id=int(user["id"]))
+        )
 
     @app.get("/api/admin/blog-labeling/candidates")
     def get_blog_labeling_candidates(
@@ -243,8 +616,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         sort: str = "id_desc",
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.list_blog_labeling_candidates(
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blog_labeling_candidates(
                 page=page,
                 page_size=page_size,
                 q=q,
@@ -252,40 +625,35 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 labeled=labeled,
                 sort=sort,
             )
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        )
 
     @app.get("/api/admin/blog-labeling/tags")
     def get_blog_label_tags(_: None = Depends(require_admin_access)) -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_blog_label_tags()
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blog_label_tags()
+        )
 
     @app.post("/api/admin/blog-labeling/tags")
     def post_blog_label_tag(
         payload: CreateBlogLabelTagRequest,
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.create_blog_label_tag(name=payload.name)
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_blog_label_tag(name=payload.name)
+        )
+
+    @app.get("/api/admin/blog-labeling/counts")
+    def get_blog_label_counts(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_blog_label_counts()
+        )
+
+    @app.post("/api/admin/blog-labeling/title-preview")
+    def post_blog_label_title_preview(
+        payload: BlogLabelTitlePreviewRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, str | None]:
+        return _preview_label_title(payload.url)
 
     @app.put("/api/admin/blog-labeling/labels/{blog_id}")
     def put_blog_labels(
@@ -293,32 +661,63 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         payload: ReplaceBlogLabelsRequest,
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        try:
-            return get_state().persistence.replace_blog_link_labels(blog_id=blog_id, tag_ids=payload.tag_ids)
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.replace_blog_link_labels(
+                blog_id=blog_id,
+                tag_ids=payload.tag_ids,
+                label_id=payload.label_id,
+                title=payload.title,
+            )
+        )
 
-    @app.get("/api/admin/blog-labeling/export")
-    def export_blog_label_training_csv(_: None = Depends(require_admin_access)) -> Response:
-        try:
-            csv_payload = get_state().persistence.export_blog_label_training_csv()
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    @app.post("/api/blogs/{blog_id}/user-labels")
+    def post_blog_user_label(
+        blog_id: int,
+        payload: IncrementBlogUserLabelRequest,
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.increment_blog_user_label(
+                blog_id=blog_id,
+                label=payload.label,
+                previous_label=payload.previous_label,
+                user_id=int(user["id"]) if user is not None else None,
+            )
+        )
+
+    @app.get("/api/admin/blog-labeling/parquet-status")
+    def get_blog_label_training_parquet_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_blog_label_training_parquet_status()
+        )
+
+    @app.post("/api/admin/blog-labeling/parquet-sync")
+    def sync_blog_label_training_parquet(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.sync_blog_label_training_parquet()
+        )
+
+    @app.post("/api/admin/blog-labeling/parquet-rebuild")
+    def rebuild_blog_label_training_parquet(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.rebuild_blog_label_training_parquet()
+        )
+
+    @app.get("/api/admin/blog-labeling/parquet-export")
+    def export_blog_label_training_parquet(_: None = Depends(require_admin_access)) -> Response:
+        parquet_payload, headers = _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.export_blog_label_training_parquet()
+        )
         return Response(
-            content=csv_payload,
-            media_type="text/csv",
+            content=parquet_payload,
+            media_type="application/vnd.apache.parquet",
             headers={
-                "content-disposition": 'attachment; filename="blog-label-training-export.csv"',
+                "content-disposition": headers.get(
+                    "content-disposition",
+                    'attachment; filename="blog-label-training.parquet"',
+                ),
+                "x-heyblog-label-saved-count": headers.get("x-heyblog-label-saved-count", "0"),
+                "x-heyblog-label-total-count": headers.get("x-heyblog-label-total-count", "0"),
             },
         )
 
@@ -327,14 +726,8 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         try:
             blog = get_state().persistence.get_blog_detail(blog_id)
         except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            if exc.response.status_code == 404:
-                detail = "Blog not found"
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+            detail_override = "Blog not found" if exc.response.status_code == 404 else None
+            _raise_upstream_http_error(exc, detail_override=detail_override)
         if blog is None:
             raise HTTPException(status_code=404, detail="Blog not found")
         return blog
@@ -357,15 +750,9 @@ def create_app(state: BackendState | None = None) -> FastAPI:
 
     @app.get("/api/graph/nodes/{blog_id}/neighbors")
     def get_graph_neighbors(blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, Any]:
-        try:
-            return get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.graph_neighbors(blog_id, hops=hops, limit=limit)
+        )
 
     @app.get("/api/graph/snapshots/latest")
     def get_latest_graph_snapshot() -> dict[str, Any]:
@@ -379,122 +766,191 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_stats() -> dict[str, Any]:
         return get_state().persistence.stats()
 
+    @app.get("/api/filter-stats")
+    def get_filter_stats() -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_filter_stats_by_chain_order()
+        )
+
     @app.post("/api/admin/crawl/bootstrap")
     def bootstrap(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         return get_state().crawler.bootstrap()
 
     @app.post("/api/admin/crawl/run")
     def run_crawl(max_nodes: int | None = None, _: None = Depends(require_admin_access)) -> dict[str, Any]:
-        result = get_state().crawler.run(max_nodes=max_nodes)
-        try:
-            get_state().search.reindex()
-        except Exception:  # noqa: BLE001
-            pass
-        return result
+        state = get_state()
+        return _run_crawler_action_and_refresh_search(
+            state.search,
+            lambda: state.crawler.run(max_nodes=max_nodes),
+        )
 
     @app.post("/api/ingestion-requests")
     def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
-        try:
-            return get_state().persistence.create_ingestion_request(**payload.model_dump())
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        result = _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_ingestion_request(**payload.model_dump())
+        )
+        log_event(
+            LOGGER,
+            event="ingestion.request.created",
+            message="ingestion request created",
+            stage="ingestion",
+            run_id=result.get("request_id"),
+            url=payload.homepage_url,
+        )
+        return result
 
     @app.get("/api/ingestion-requests")
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_priority_ingestion_requests()
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_priority_ingestion_requests()
+        )
 
     @app.get("/api/ingestion-requests/{request_id}")
     def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        try:
-            return get_state().persistence.get_ingestion_request(
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_ingestion_request(
                 request_id=request_id,
                 request_token=request_token,
             )
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        )
 
     @app.post("/api/admin/blog-dedup-scans")
     def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         state = get_state()
-        if state.maintenance_in_progress:
-            raise HTTPException(status_code=409, detail="maintenance_in_progress")
 
-        runtime_before = state.crawler.runtime_status()
-        crawler_was_running = runtime_before.get("runner_status") in {"starting", "running", "stopping"}
-        state.maintenance_in_progress = True
-        try:
-            if crawler_was_running:
-                state.crawler.stop()
-                ensure_runtime_idle()
+        def prepare_run(crawler_was_running: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+            _stop_active_crawler(
+                state,
+                crawler_was_running=crawler_was_running,
+                wait_for_idle=ensure_runtime_idle,
+            )
             payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-        except httpx.HTTPStatusError as exc:
-            try:
-                detail = exc.response.json().get("detail", "upstream_error")
-            except Exception:  # noqa: BLE001
-                detail = "upstream_error"
-            state.maintenance_in_progress = False
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
-        except HTTPException:
-            state.maintenance_in_progress = False
-            raise
-        except Exception as exc:  # noqa: BLE001
-            state.maintenance_in_progress = False
-            raise HTTPException(status_code=500, detail="blog_dedup_scan_failed") from exc
-        Thread(
-            target=_execute_blog_dedup_scan_in_background,
-            kwargs={
-                "state": state,
+            log_event(
+                LOGGER,
+                event="maintenance.blog_dedup.started",
+                message="blog dedup scan started",
+                stage="blog_dedup",
+                run_id=int(payload["id"]),
+                crawler_was_running=crawler_was_running,
+            )
+            return payload, {
                 "run_id": int(payload["id"]),
                 "crawler_was_running": crawler_was_running,
-            },
-            daemon=True,
-        ).start()
-        return payload
+            }
+
+        def cleanup(_: str) -> None:
+            _leave_maintenance(state)
+
+        on_http_error, on_http_exception, on_unexpected_error = _build_maintenance_start_error_handlers(
+            cleanup=cleanup,
+            unexpected_detail="blog_dedup_scan_failed",
+        )
+
+        return _start_maintenance_background_task(
+            state,
+            prepare_run=prepare_run,
+            on_http_error=on_http_error,
+            on_http_exception=on_http_exception,
+            on_unexpected_error=on_unexpected_error,
+            target=_execute_blog_dedup_scan_in_background,
+        )
+
+    @app.post("/api/admin/url-refilter-runs")
+    def run_url_refilter(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        state = get_state()
+        run_context: dict[str, int | None] = {"run_id": None}
+
+        def prepare_run(crawler_was_running: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+            payload = state.persistence.create_url_refilter_run(crawler_was_running=crawler_was_running)
+            run_id = int(payload["id"])
+            run_context["run_id"] = run_id
+            log_event(
+                URL_REFILTER_LOGGER,
+                event="maintenance.url_refilter.started",
+                message="url refilter run started",
+                stage="url_refilter",
+                run_id=run_id,
+                crawler_was_running=crawler_was_running,
+            )
+            state.persistence.append_url_refilter_run_event(run_id=run_id, message="停止爬虫中")
+            if crawler_was_running:
+                log_event(
+                    URL_REFILTER_LOGGER,
+                    event="maintenance.url_refilter.crawler_stop.requested",
+                    message="url refilter crawler stop requested",
+                    stage="url_refilter",
+                    run_id=run_id,
+                )
+                _stop_active_crawler(
+                    state,
+                    crawler_was_running=True,
+                    wait_for_idle=ensure_runtime_idle,
+                )
+                state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已停止")
+                log_event(
+                    URL_REFILTER_LOGGER,
+                    event="maintenance.url_refilter.crawler_stop.succeeded",
+                    message="url refilter crawler stopped",
+                    stage="url_refilter",
+                    run_id=run_id,
+                )
+            else:
+                state.persistence.append_url_refilter_run_event(run_id=run_id, message="爬虫已处于停止状态")
+                log_event(
+                    URL_REFILTER_LOGGER,
+                    event="maintenance.url_refilter.crawler_stop.skipped",
+                    message="url refilter crawler was already idle",
+                    stage="url_refilter",
+                    run_id=run_id,
+                )
+            return payload, {"run_id": run_id}
+
+        def cleanup(error_message: str) -> None:
+            _abort_url_refilter_start(state, run_id=run_context["run_id"], error_message=error_message)
+
+        on_http_error, on_http_exception, on_unexpected_error = _build_maintenance_start_error_handlers(
+            cleanup=cleanup,
+            unexpected_detail="url_refilter_run_failed",
+        )
+
+        return _start_maintenance_background_task(
+            state,
+            prepare_run=prepare_run,
+            on_http_error=on_http_error,
+            on_http_exception=on_http_exception,
+            on_unexpected_error=on_unexpected_error,
+            target=_execute_url_refilter_in_background,
+        )
+
+    @app.get("/api/admin/url-refilter-runs/latest")
+    def get_latest_url_refilter_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.latest_url_refilter_run()
+        )
+
+    @app.get("/api/admin/url-refilter-runs/{run_id}/events")
+    def get_url_refilter_run_events(
+        run_id: int,
+        _: None = Depends(require_admin_access),
+    ) -> list[dict[str, Any]]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_url_refilter_run_events(run_id)
+        )
 
     @app.get("/api/admin/blog-dedup-scans/latest")
     def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        try:
-            return get_state().persistence.latest_blog_dedup_scan_run()
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.latest_blog_dedup_scan_run()
+        )
 
     @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
     def get_blog_dedup_scan_run_items(
         run_id: int,
         _: None = Depends(require_admin_access),
     ) -> list[dict[str, Any]]:
-        try:
-            return get_state().persistence.list_blog_dedup_scan_run_items(run_id)
-        except httpx.HTTPStatusError as exc:
-            detail: Any = "upstream_error"
-            try:
-                detail = exc.response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_blog_dedup_scan_run_items(run_id)
+        )
 
     @app.get("/api/admin/runtime/status")
     def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:
@@ -520,18 +976,17 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         payload: RunBatchRequest,
         _: None = Depends(require_admin_access),
     ) -> dict[str, Any]:
-        _raise_for_maintenance(get_state())
-        result = get_state().crawler.run_batch(payload.max_nodes)
-        try:
-            get_state().search.reindex()
-        except Exception:  # noqa: BLE001
-            pass
-        return result
+        state = get_state()
+        _raise_for_maintenance(state)
+        return _run_crawler_action_and_refresh_search(
+            state.search,
+            lambda: state.crawler.run_batch(payload.max_nodes),
+        )
 
     @app.post("/api/admin/database/reset")
     def reset_database(_: None = Depends(require_admin_access)) -> dict[str, Any]:
         runtime = get_state().crawler.runtime_status()
-        if runtime.get("runner_status") in {"starting", "running", "stopping"}:
+        if _crawler_runtime_is_active(runtime):
             raise HTTPException(status_code=409, detail="crawler_busy")
 
         result = get_state().persistence.reset()

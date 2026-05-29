@@ -15,12 +15,15 @@ DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
 DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS = 2
 DEFAULT_MAX_FETCHED_PAGE_BYTES = 2_000_000
+DEFAULT_RAW_DISCOVERED_URL_LIMIT = 1_000_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "heyblog.sqlite"
 DEFAULT_SEED_PATH = PROJECT_ROOT / "seed.csv"
 DEFAULT_EXPORT_DIR = PROJECT_ROOT / "data" / "exports"
 DEFAULT_SEARCH_CACHE_DIR = PROJECT_ROOT / "data" / "search-cache"
+DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_DECISION_MODEL_ROOT = PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
+DEFAULT_FILTER_CHAIN_CONFIG_PATH = PROJECT_ROOT / "runtime_resources" / "filter_chain.toml"
 DEFAULT_PERSISTENCE_BASE_URL = "http://127.0.0.1:8030"
 DEFAULT_CRAWLER_BASE_URL = "http://127.0.0.1:8010"
 DEFAULT_SEARCH_BASE_URL = "http://127.0.0.1:8020"
@@ -28,6 +31,8 @@ DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_GRAPH_BACKEND = "legacy"
 DEFAULT_GRAPH_SNAPSHOT_NAMESPACE = "legacy"
 DEFAULT_AGE_GRAPH_NAME = "heyblog_graph"
+DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY = "weighted_average"
+DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD = 0.4
 _ENV_LOADED = False
 
 
@@ -101,6 +106,7 @@ class Settings:
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
     priority_seed_normal_queue_slots: int = DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS
     max_fetched_page_bytes: int = DEFAULT_MAX_FETCHED_PAGE_BYTES
+    raw_discovered_url_limit: int = DEFAULT_RAW_DISCOVERED_URL_LIMIT
     friend_link_domain_blocklist: tuple[str, ...] = ()
     friend_link_tld_blocklist: tuple[str, ...] = ()
     friend_link_exact_url_blocklist: tuple[str, ...] = ()
@@ -108,12 +114,21 @@ class Settings:
     admin_token: str | None = None
     admin_dev_bypass: bool = False
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
+    filter_chain_config_path: Path = DEFAULT_FILTER_CHAIN_CONFIG_PATH
     decision_model_consensus_enabled: bool = True
+    decision_model_consensus_strategy: str = DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY
+    decision_model_consensus_threshold: float = DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD
     graph_backend: str = DEFAULT_GRAPH_BACKEND
     graph_snapshot_namespace: str = DEFAULT_GRAPH_SNAPSHOT_NAMESPACE
     age_enabled: bool = False
     age_graph_name: str = DEFAULT_AGE_GRAPH_NAME
     age_shadow_reads: bool = False
+    log_dir: Path = DEFAULT_LOG_DIR
+    log_level: str = "INFO"
+    log_format: str = "json"
+    log_file_enabled: bool = True
+    log_console_enabled: bool = True
+    log_retention_days: int = 7
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -193,6 +208,12 @@ class Settings:
                     )
                 ),
             ),
+            raw_discovered_url_limit=int(
+                os.getenv(
+                    "HEYBLOG_RAW_DISCOVERED_URL_LIMIT",
+                    str(DEFAULT_RAW_DISCOVERED_URL_LIMIT),
+                )
+            ),
             friend_link_domain_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST"),
             friend_link_tld_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST"),
             friend_link_exact_url_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST"),
@@ -202,9 +223,25 @@ class Settings:
             decision_model_root=Path(
                 os.getenv("HEYBLOG_DECISION_MODEL_ROOT", str(DEFAULT_DECISION_MODEL_ROOT))
             ),
+            filter_chain_config_path=Path(
+                os.getenv("HEYBLOG_FILTER_CHAIN_CONFIG_PATH", str(DEFAULT_FILTER_CHAIN_CONFIG_PATH))
+            ),
             decision_model_consensus_enabled=_parse_bool_env(
                 "HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED",
                 default=True,
+            ),
+            decision_model_consensus_strategy=(
+                os.getenv(
+                    "HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY",
+                    DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY,
+                ).strip().lower()
+                or DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY
+            ),
+            decision_model_consensus_threshold=float(
+                os.getenv(
+                    "HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD",
+                    str(DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD),
+                )
             ),
             graph_backend=os.getenv("HEYBLOG_GRAPH_BACKEND", DEFAULT_GRAPH_BACKEND).strip().lower() or DEFAULT_GRAPH_BACKEND,
             graph_snapshot_namespace=(
@@ -214,4 +251,10 @@ class Settings:
             age_enabled=_parse_bool_env("HEYBLOG_AGE_ENABLED"),
             age_graph_name=os.getenv("HEYBLOG_AGE_GRAPH_NAME", DEFAULT_AGE_GRAPH_NAME).strip() or DEFAULT_AGE_GRAPH_NAME,
             age_shadow_reads=_parse_bool_env("HEYBLOG_AGE_SHADOW_READS"),
+            log_dir=Path(os.getenv("HEYBLOG_LOG_DIR", str(DEFAULT_LOG_DIR))),
+            log_level=os.getenv("HEYBLOG_LOG_LEVEL", "INFO").strip().upper() or "INFO",
+            log_format=os.getenv("HEYBLOG_LOG_FORMAT", "json").strip().lower() or "json",
+            log_file_enabled=_parse_bool_env("HEYBLOG_LOG_FILE_ENABLED", default=True),
+            log_console_enabled=_parse_bool_env("HEYBLOG_LOG_CONSOLE_ENABLED", default=True),
+            log_retention_days=max(1, int(os.getenv("HEYBLOG_LOG_RETENTION_DAYS", "7"))),
         )

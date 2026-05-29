@@ -3,10 +3,17 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { BlogCard } from "../components/BlogCard";
 import { Navigation } from "../components/Navigation";
-import { fetchBlogsCatalog } from "../lib/api";
+import { readStoredAuthSession } from "../lib/auth";
+import { fetchBlogsCatalog, postBlogUserLabel } from "../lib/api";
 import type { BlogCatalogItem } from "../types/graph";
 
 const RANDOM_BLOG_COUNT = 9;
+const RANDOM_LABELS = [
+  { slug: "blog", label: "博客" },
+  { slug: "company", label: "公司" },
+  { slug: "other", label: "其他" },
+  { slug: "unknown", label: "未知" },
+] as const;
 
 /**
  * Render one standalone page that spotlights a random sample of finished blogs.
@@ -17,6 +24,8 @@ export function RandomBlogPage() {
   const [blogs, setBlogs] = useState<BlogCatalogItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [savingLabelKey, setSavingLabelKey] = useState<string | null>(null);
+  const [selectedLabelsByUrl, setSelectedLabelsByUrl] = useState<Record<string, string>>({});
 
   useEffect(() => {
     void loadRandomBlogs({ showInitialLoading: true, showErrorToast: true });
@@ -55,6 +64,35 @@ export function RandomBlogPage() {
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+    }
+  }
+
+  /**
+   * Save one public feedback label selection for a random blog card.
+   *
+   * @param blog Blog card receiving the label vote.
+   * @param label Label slug selected for this URL.
+   * @returns Promise resolved after the vote is saved.
+   */
+  async function handleUserLabel(blog: BlogCatalogItem, label: string) {
+    const selectedLabel = selectedLabelsByUrl[blog.normalizedUrl];
+    if (selectedLabel === label) {
+      return;
+    }
+    const key = `${blog.id}:${label}`;
+    const session = readStoredAuthSession();
+    try {
+      setSavingLabelKey(key);
+      await postBlogUserLabel(blog.id, label, selectedLabel, session?.token);
+      setSelectedLabelsByUrl((current) => ({
+        ...current,
+        [blog.normalizedUrl]: label,
+      }));
+      toast.success("已记录，谢谢标注。");
+    } catch {
+      toast.error("标注保存失败，请稍后再试。");
+    } finally {
+      setSavingLabelKey(null);
     }
   }
 
@@ -97,7 +135,32 @@ export function RandomBlogPage() {
 
         <section className="mx-auto grid max-w-6xl grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
           {blogs.map((blog) => (
-            <BlogCard key={blog.id} blog={blog} />
+            <BlogCard key={blog.id} blog={blog}>
+              <div className="grid grid-cols-4 gap-2">
+                {RANDOM_LABELS.map((label) => {
+                  const isSaving = savingLabelKey === `${blog.id}:${label.slug}`;
+                  const isSelected = selectedLabelsByUrl[blog.normalizedUrl] === label.slug;
+                  return (
+                    <button
+                      key={label.slug}
+                      type="button"
+                      onClick={() => void handleUserLabel(blog, label.slug)}
+                      disabled={savingLabelKey !== null || isSelected}
+                      className={[
+                        "inline-flex h-10 items-center justify-center rounded-md border px-2 text-sm transition-colors",
+                        isSelected
+                          ? "border-sky-400 bg-sky-600 text-white shadow-sm shadow-sky-100"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700",
+                        "disabled:cursor-not-allowed",
+                        !isSelected ? "disabled:bg-slate-100 disabled:text-slate-400" : "",
+                      ].join(" ")}
+                    >
+                      {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : label.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </BlogCard>
           ))}
         </section>
       </main>

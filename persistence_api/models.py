@@ -9,6 +9,8 @@ from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
+from sqlalchemy import JSON
+from sqlalchemy import Index
 from sqlalchemy import Text
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.sql import func
@@ -24,11 +26,20 @@ class Base(DeclarativeBase):
 
 
 class BlogModel(Base):
-    """Blog node persisted in the crawl graph."""
+    """Blog node persisted in the crawl graph.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Blog database row whose public/business identifier is ``blog_id``.
+    """
 
     __tablename__ = "blogs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    blog_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     identity_key: Mapped[str] = mapped_column(Text, nullable=False, index=True, default="")
@@ -64,8 +75,8 @@ class IngestionRequestModel(Base):
     requester_email: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    seed_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.id", ondelete="SET NULL"), nullable=True)
-    matched_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.id", ondelete="SET NULL"), nullable=True)
+    seed_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
+    matched_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
     request_token: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -73,34 +84,132 @@ class IngestionRequestModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class UserModel(Base):
+    """Registered user account for public personalization features.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One email/password account row. Passwords are stored as salted hashes,
+        never as plaintext.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UserSessionModel(Base):
+    """Bearer-token session owned by a registered user.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Login session row whose token hash can authenticate a frontend request.
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BlogLabelModel(Base):
+    """Stable URL-keyed label vote counters.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One row per normalized URL. ``title`` stores the labeling-time display
+        title, and ``label_id`` stores a JSON object whose string keys are
+        label IDs and integer values are vote/count totals.
+    """
+
+    __tablename__ = "blog_labels"
+
+    normalized_url: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    label_id: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BlogUserLabelModel(Base):
+    """Public random-page URL-keyed label vote counters.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One row per normalized URL. The table mirrors ``blog_labels`` but
+        stores public random-page feedback so training labels remain unchanged.
+    """
+
+    __tablename__ = "blog_labels_userlabel"
+
+    normalized_url: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    label_id: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BlogUserLabelSelectionModel(Base):
+    """Single registered user's current label selection for one URL.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Per-user selection row used to deduplicate random-page label changes
+        while preserving aggregate vote counters.
+    """
+
+    __tablename__ = "blog_user_label_selections"
+    __table_args__ = (UniqueConstraint("user_id", "normalized_url", name="uq_user_label_selection_user_url"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    label_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class BlogLabelTagModel(Base):
-    """User-defined label type."""
+    """Label definition row used to resolve stored label IDs.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        A stable label definition whose ``id`` is used as the JSON key inside
+        ``BlogLabelModel.label_id``.
+    """
 
     __tablename__ = "blog_label_tags"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class BlogLabelAssignmentModel(Base):
-    """One label assignment from one blog to one label type."""
-
-    __tablename__ = "blog_label_assignments"
-    __table_args__ = (UniqueConstraint("blog_id", "tag_id", name="uq_blog_label_assignments_blog_tag"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    tag_id: Mapped[int] = mapped_column(
-        ForeignKey("blog_label_tags.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    labeled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -112,11 +221,29 @@ class EdgeModel(Base):
     __table_args__ = (UniqueConstraint("from_blog_id", "to_blog_id", name="uq_edges_from_to"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    from_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
-    to_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
+    from_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False)
+    to_blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False)
     link_url_raw: Mapped[str] = mapped_column(Text, nullable=False)
     link_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RawDiscoveredUrlModel(Base):
+    """One normalized URL observed by crawler candidate extraction."""
+
+    __tablename__ = "raw_discovered_urls"
+    __table_args__ = (
+        Index("ix_raw_discovered_urls_status_id", "status", "id"),
+        Index("ix_raw_discovered_urls_status_normalized_url_id", "status", "normalized_url", "id"),
+        Index("ix_raw_discovered_urls_normalized_url_id", "normalized_url", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_blog_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class BlogDedupScanRunModel(Base):
@@ -154,7 +281,7 @@ class BlogDedupScanRunItemModel(Base):
         nullable=False,
     )
     survivor_blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.id", ondelete="SET NULL"),
+        ForeignKey("blogs.blog_id", ondelete="SET NULL"),
         nullable=True,
     )
     removed_blog_id: Mapped[int | None] = mapped_column(nullable=True)
@@ -165,4 +292,43 @@ class BlogDedupScanRunItemModel(Base):
     reason_code: Mapped[str] = mapped_column(Text, nullable=False)
     reason_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     survivor_selection_basis: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UrlRefilterRunModel(Base):
+    """Administrative URL refilter run summary."""
+
+    __tablename__ = "url_refilter_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    filter_chain_version: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    crawler_was_running: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backup_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    activated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deactivated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retagged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_raw_url_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UrlRefilterRunEventModel(Base):
+    """Timestamped event log for one URL refilter run."""
+
+    __tablename__ = "url_refilter_run_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("url_refilter_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

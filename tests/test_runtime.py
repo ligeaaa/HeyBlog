@@ -7,13 +7,15 @@ from threading import Lock
 from threading import Thread
 
 from crawler.runtime import CrawlerRuntimeService
+from crawler.runtime.capacity import CrawlerCapacityGate
 
 
 class QueueRepository:
     """Claim one queued blog row at a time."""
 
-    def __init__(self, blog_ids: list[int]) -> None:
+    def __init__(self, blog_ids: list[int], *, raw_discovered_urls: int = 0) -> None:
         self.blog_ids = list(blog_ids)
+        self.raw_discovered_urls = raw_discovered_urls
         self.lock = Lock()
 
     def get_next_waiting_blog(self) -> dict[str, object] | None:
@@ -22,6 +24,10 @@ class QueueRepository:
                 return None
             blog_id = self.blog_ids.pop(0)
             return {"id": blog_id, "url": f"https://blog{blog_id}.example.com/"}
+
+    def stats(self) -> dict[str, int]:
+        """Return raw URL count used by crawler capacity tests."""
+        return {"raw_discovered_urls": self.raw_discovered_urls}
 
 
 class PriorityQueueRepository:
@@ -57,8 +63,19 @@ class PriorityQueueRepository:
 class BlockingQueuePipeline:
     """Pipeline stub that blocks one claimed blog until the test releases it."""
 
-    def __init__(self, blog_ids: list[int], *, target_active_runs: int = 1) -> None:
-        self.repository = QueueRepository(blog_ids)
+    def __init__(
+        self,
+        blog_ids: list[int],
+        *,
+        target_active_runs: int = 1,
+        raw_discovered_urls: int = 0,
+        raw_discovered_url_limit: int = 1_000_000,
+    ) -> None:
+        self.repository = QueueRepository(blog_ids, raw_discovered_urls=raw_discovered_urls)
+        self.capacity_gate = CrawlerCapacityGate(
+            self.repository,
+            raw_discovered_url_limit=raw_discovered_url_limit,
+        )
         self.target_active_runs = target_active_runs
         self.started = Event()
         self.target_active = Event()
@@ -67,6 +84,7 @@ class BlockingQueuePipeline:
         self.run_calls = 0
         self.active_runs = 0
         self.max_active_runs = 0
+        self.on_start_hook = None
 
     def process_blog_row(
         self,
@@ -85,6 +103,8 @@ class BlockingQueuePipeline:
 
         if on_blog_start is not None:
             on_blog_start(row)
+        if self.on_start_hook is not None:
+            self.on_start_hook(row)
         self.started.set()
         self.release.wait(timeout=2)
         if on_blog_finish is not None:
@@ -326,3 +346,57 @@ def test_runtime_continues_to_next_waiting_blog_after_one_timeout_failure() -> N
     assert result["result"]["failed"] == 1
     assert pipeline.failed_ids == [1]
     assert pipeline.processed_ids == [1, 2]
+
+
+def test_runtime_rejects_start_when_raw_discovered_url_limit_is_reached() -> None:
+    """Runtime start should not open crawler work once raw URLs hit the configured limit."""
+    pipeline = BlockingQueuePipeline(
+        [1],
+        raw_discovered_urls=1_000_000,
+        raw_discovered_url_limit=1_000_000,
+    )
+    runtime = CrawlerRuntimeService(pipeline, worker_count=1)
+
+    result = runtime.start()
+
+    assert result["accepted"] is False
+    assert result["reason"] == "raw_discovered_url_limit_reached"
+    assert result["capacity"]["raw_count"] == 1_000_000
+    assert pipeline.run_calls == 0
+    assert runtime.status()["runner_status"] == "idle"
+
+
+def test_runtime_allows_start_when_raw_discovered_url_limit_is_disabled() -> None:
+    """A -1 raw URL limit should disable crawler capacity gating."""
+    pipeline = BlockingQueuePipeline(
+        [1],
+        raw_discovered_urls=2_000_000,
+        raw_discovered_url_limit=-1,
+    )
+    runtime = CrawlerRuntimeService(pipeline, worker_count=1)
+
+    runtime.start()
+    assert pipeline.started.wait(timeout=1)
+    pipeline.release.set()
+    runtime._thread.join(timeout=2)  # noqa: SLF001 - test waits for the background loop.
+
+    assert pipeline.run_calls == 1
+    assert runtime.status()["runner_status"] == "idle"
+
+
+def test_runtime_stops_before_next_claim_when_raw_discovered_url_limit_is_reached() -> None:
+    """A running runtime should finish current work and stop before claiming more blogs."""
+    pipeline = BlockingQueuePipeline(
+        [1, 2],
+        raw_discovered_urls=999_999,
+        raw_discovered_url_limit=1_000_000,
+    )
+    runtime = CrawlerRuntimeService(pipeline, worker_count=1)
+    pipeline.on_start_hook = lambda _row: setattr(pipeline.repository, "raw_discovered_urls", 1_000_000)
+    pipeline.release.set()
+
+    result = runtime.run_batch(2)
+
+    assert result["accepted"] is True
+    assert result["result"]["processed"] == 1
+    assert result["result"]["stop_reason"] == "raw_discovered_url_limit_reached"

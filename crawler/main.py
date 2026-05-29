@@ -6,12 +6,21 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 from crawler.crawling.pipeline import CrawlPipeline
 from shared.config import Settings
 from shared.http_clients.persistence_http import PersistenceHttpClient
 from crawler.runtime import CrawlerRuntimeService
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_logging
+from shared.observability import get_logger
+from shared.observability import log_event
+
+
+SERVICE_NAME = "crawler"
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -77,7 +86,18 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
     Returns:
         A configured ``FastAPI`` application exposing crawler control routes.
     """
+    settings = Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=settings.log_dir,
+        level=settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        console_enabled=settings.log_console_enabled,
+        log_format=settings.log_format,
+        retention_days=settings.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Crawler Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.crawler_state = state or build_crawler_state()
 
     def get_state() -> CrawlerState:
@@ -105,7 +125,16 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
             Bootstrap result payload describing the imported seed file and
             created row count.
         """
-        return get_state().pipeline.bootstrap_seeds()
+        result = get_state().pipeline.bootstrap_seeds()
+        log_event(
+            LOGGER,
+            event="crawl.bootstrap.request_completed",
+            message="crawl bootstrap request completed",
+            stage="bootstrap",
+            imported=result.get("imported"),
+            seed_path=result.get("seed_path"),
+        )
+        return result
 
     @app.post("/internal/crawl/run")
     def run_crawl(max_nodes: int | None = None) -> dict[str, Any]:
@@ -118,7 +147,28 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
             Batch crawl result payload from ``CrawlPipeline.run_once``.
         """
         # This is the direct one-shot entrypoint for CrawlPipeline.run_once().
-        return get_state().pipeline.run_once(max_nodes=max_nodes)
+        capacity = get_state().pipeline.capacity_gate.check()
+        if not capacity.allowed:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": capacity.reason,
+                    "raw_count": capacity.raw_count,
+                    "limit": capacity.limit,
+                },
+            )
+        result = get_state().pipeline.run_once(max_nodes=max_nodes)
+        log_event(
+            LOGGER,
+            event="crawl.batch.completed",
+            message="crawl batch completed",
+            stage="crawl",
+            processed=result.get("processed"),
+            discovered=result.get("discovered"),
+            failed=result.get("failed"),
+            max_nodes=max_nodes,
+        )
+        return result
 
     @app.get("/internal/runtime/status")
     def runtime_status() -> dict[str, Any]:
@@ -145,7 +195,25 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
         Returns:
             Updated runtime snapshot after the start request is processed.
         """
-        return get_state().runtime.start()
+        result = get_state().runtime.start()
+        if result.get("accepted") is False and result.get("reason") == "raw_discovered_url_limit_reached":
+            capacity = result.get("capacity", {})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": result.get("reason"),
+                    "raw_count": capacity.get("raw_count"),
+                    "limit": capacity.get("limit"),
+                },
+            )
+        log_event(
+            LOGGER,
+            event="crawler.runtime.started",
+            message="crawler runtime start requested",
+            stage="runtime",
+            runner_status=result.get("runner_status"),
+        )
+        return result
 
     @app.post("/internal/runtime/stop")
     def runtime_stop() -> dict[str, Any]:
@@ -154,7 +222,15 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
         Returns:
             Updated runtime snapshot after the stop request is processed.
         """
-        return get_state().runtime.stop()
+        result = get_state().runtime.stop()
+        log_event(
+            LOGGER,
+            event="crawler.runtime.stopped",
+            message="crawler runtime stop requested",
+            stage="runtime",
+            runner_status=result.get("runner_status"),
+        )
+        return result
 
     @app.post("/internal/runtime/run-batch")
     def runtime_run_batch(payload: RunBatchRequest) -> dict[str, Any]:
@@ -169,7 +245,27 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
         """
         # Runtime batching uses the same pipeline, but with worker-pool state
         # tracking layered on top for long-lived service execution.
-        return get_state().runtime.run_batch(payload.max_nodes)
+        result = get_state().runtime.run_batch(payload.max_nodes)
+        if result.get("accepted") is False and result.get("reason") == "raw_discovered_url_limit_reached":
+            capacity = result.get("capacity", {})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": result.get("reason"),
+                    "raw_count": capacity.get("raw_count"),
+                    "limit": capacity.get("limit"),
+                },
+            )
+        log_event(
+            LOGGER,
+            event="crawler.runtime.batch_completed",
+            message="crawler runtime batch completed",
+            stage="runtime",
+            max_nodes=payload.max_nodes,
+            accepted=result.get("accepted"),
+            mode=result.get("mode"),
+        )
+        return result
 
     return app
 

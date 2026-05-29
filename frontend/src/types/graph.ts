@@ -113,6 +113,31 @@ export interface BlogCatalogPage {
   sort: string;
 }
 
+export interface UserProfile {
+  id: number;
+  email: string;
+  displayName: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface AuthSession {
+  token: string;
+  expiresAt: string | null;
+  user: UserProfile;
+}
+
+export interface UserLabelSelection {
+  id: number;
+  normalizedUrl: string;
+  labelId: number;
+  label: string;
+  labelName: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  blog: BlogCatalogItem | null;
+}
+
 export interface AdminRuntimeStatus {
   runnerStatus: string;
   activeRunId: string | null;
@@ -145,4 +170,84 @@ export interface AdminDedupSummary {
   keptCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AdminUrlRefilterRun {
+  id: number;
+  status: string;
+  filterChainVersion: string;
+  crawlerWasRunning: boolean;
+  backupPath: string | null;
+  totalCount: number;
+  scannedCount: number;
+  unchangedCount: number;
+  activatedCount: number;
+  deactivatedCount: number;
+  retaggedCount: number;
+  lastRawUrlId: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminUrlRefilterRunEvent {
+  id: number;
+  runId: number;
+  message: string;
+  createdAt: string | null;
+}
+
+export interface AdminBlogLabelTag {
+  id: number;
+  name: string;
+  slug: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminBlogLabelAssignment extends AdminBlogLabelTag {
+  labeledAt: string;
+}
+
+export interface AdminBlogLabelingCandidate extends BlogCatalogItem {
+  labels: AdminBlogLabelAssignment[];
+  labelSlugs: string[];
+  lastLabeledAt: string | null;
+  isLabeled: boolean;
+}
+
+export interface AdminBlogLabelingPage {
+  items: AdminBlogLabelingCandidate[];
+  availableTags: AdminBlogLabelTag[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+  sort: string;
+}
+
+export interface AdminBlogLabelCounts {
+  totalLabeled: number;
+  byLabel: Record<string, number>;
+}
+
+export interface AdminBlogLabelParquetStatus {
+  path: string;
+  filename: string;
+  exists: boolean;
+  savedCount: number;
+  totalLabeled: number;
+  missingCount: number;
+  batchSize: number;
+  rewritten: boolean;
+  message: string;
+  updatedAt: string | null;
+}
+
+export interface FilterStatsData {
+  byFilterReason: Record<string, number>;
 }

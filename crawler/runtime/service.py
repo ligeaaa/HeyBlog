@@ -14,6 +14,7 @@ from uuid import uuid4
 from crawler.contracts.runtime import RuntimeAggregate
 from crawler.contracts.runtime import RuntimeSnapshot
 from crawler.contracts.runtime import RuntimeWorkerSnapshot
+from crawler.runtime.capacity import CrawlerCapacityGate
 from crawler.runtime.executor import SerialRuntimeExecutor
 
 
@@ -62,6 +63,12 @@ class CrawlerRuntimeService:
         self.executor = executor or SerialRuntimeExecutor()
         self.worker_count = max(1, worker_count)
         self.priority_seed_normal_queue_slots = max(1, priority_seed_normal_queue_slots)
+        self.capacity_gate = getattr(pipeline, "capacity_gate", None)
+        if self.capacity_gate is None:
+            self.capacity_gate = CrawlerCapacityGate(
+                pipeline.repository,
+                raw_discovered_url_limit=-1,
+            )
         self._normal_slots_remaining_after_priority = 0
         self._snapshot = RuntimeSnapshot(
             worker_count=self.worker_count,
@@ -120,6 +127,14 @@ class CrawlerRuntimeService:
             if self._snapshot.runner_status in {"starting", "running", "stopping"}:
                 return self._snapshot.as_dict()
 
+            capacity = self.capacity_gate.check()
+            if not capacity.allowed:
+                snapshot = self._snapshot.as_dict()
+                snapshot["accepted"] = False
+                snapshot["reason"] = capacity.reason
+                snapshot["capacity"] = capacity.as_dict()
+                return snapshot
+
             self._stop_event.clear()
             self._begin_run_locked("starting")
             self._thread = self.executor.start(self._run_background_loop)
@@ -157,6 +172,14 @@ class CrawlerRuntimeService:
                 return {
                     "accepted": False,
                     "reason": "runtime_busy",
+                    "runtime": self._snapshot.as_dict(),
+                }
+            capacity = self.capacity_gate.check()
+            if not capacity.allowed:
+                return {
+                    "accepted": False,
+                    "reason": capacity.reason,
+                    "capacity": capacity.as_dict(),
                     "runtime": self._snapshot.as_dict(),
                 }
             self._stop_event.clear()
@@ -264,6 +287,11 @@ class CrawlerRuntimeService:
             ``None``. Worker progress is recorded via shared runtime state.
         """
         while not self._stop_event.is_set() and not pool_exhausted.is_set():
+            capacity = self.capacity_gate.check()
+            if not capacity.allowed:
+                aggregate.stop_reason = capacity.reason
+                pool_exhausted.set()
+                return
             if not self._claim_budget_slot(budget):
                 return
 

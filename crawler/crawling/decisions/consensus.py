@@ -1,20 +1,29 @@
-"""Model-consensus URL decision step for crawler candidate filtering."""
+"""Model-consensus URL filter implementation and compatibility wrapper."""
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from dataclasses import field
 import logging
 from pathlib import Path
 import pickle
+import sys
 from typing import Any
 
+from crawler.crawling.decisions.base import FilterDecision
+from crawler.crawling.decisions.base import StaticStatusUrlFilter
+from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
+from shared.observability import get_logger
+from shared.observability import log_event
 
 DEFAULT_MODEL_THRESHOLD = 0.5
-LOGGER = logging.getLogger(__name__)
+DEFAULT_MODEL_WEIGHT = 1.0
+SUPPORTED_CONSENSUS_STRATEGIES = frozenset({"any_blog", "majority_blog", "weighted_average"})
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -57,25 +66,48 @@ def load_model(path: Path) -> Any:
     Returns:
         The deserialized model object.
     """
+    _add_legacy_model_package_path()
     with path.open("rb") as handle:
         return pickle.load(handle)
 
 
+def _add_legacy_model_package_path() -> None:
+    """Expose migrated training modules for legacy pickle artifacts.
+
+    Existing ``model.joblib`` files were serialized before the model code moved
+    to ``HeyBlog_model/`` and still reference modules such as
+    ``trainer.models.baseline_tfidf_svm``. Adding the model repository root to
+    ``sys.path`` lets those legacy artifacts load while keeping the package out
+    of the business runtime's install metadata.
+    """
+    project_root = Path(__file__).resolve().parents[3]
+    candidate_roots = (
+        project_root / "HeyBlog_model",
+        project_root.parent / "HeyBlog_model",
+    )
+    for model_repo_root in candidate_roots:
+        if model_repo_root.exists() and str(model_repo_root) not in sys.path:
+            sys.path.append(str(model_repo_root))
+            return
+
+
 @dataclass(slots=True, frozen=True)
 class LoadedConsensusModel:
-    """Bundle one loaded trainer model with the threshold used for voting.
+    """Bundle one loaded trainer model with threshold and quality weight.
 
     Attributes:
         model_name: Name of the model directory under the trainer model root.
         run_dir: Concrete run directory containing the serialized model.
         predictor: Loaded model object exposing ``predict_proba``.
         threshold: Probability threshold above which the model votes ``blog``.
+        weight: Runtime consensus weight derived from validation metrics.
     """
 
     model_name: str
     run_dir: Path
     predictor: Any
     threshold: float
+    weight: float = DEFAULT_MODEL_WEIGHT
 
 
 def _latest_child(path: Path) -> Path | None:
@@ -139,17 +171,59 @@ def _read_threshold(run_dir: Path, predictor: Any) -> float:
     return float(DEFAULT_MODEL_THRESHOLD)
 
 
+def _read_model_weight(run_dir: Path) -> float:
+    """Resolve one model's consensus weight from validation metrics.
+
+    Args:
+        run_dir: Run directory that may contain a ``metrics.json`` file.
+
+    Returns:
+        A positive consensus weight. F1 is preferred because the runtime
+        decision is thresholded classification; PR-AUC is used as the fallback
+        ranking metric, then ``1.0`` when no usable metric exists.
+    """
+    metrics_path = run_dir / "metrics.json"
+    if not metrics_path.exists():
+        return DEFAULT_MODEL_WEIGHT
+
+    try:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return DEFAULT_MODEL_WEIGHT
+
+    for key in ("f1", "pr_auc", "accuracy"):
+        value = payload.get(key)
+        if isinstance(value, int | float) and math.isfinite(float(value)) and float(value) > 0:
+            return float(value)
+    return DEFAULT_MODEL_WEIGHT
+
+
 @dataclass(slots=True)
-class ModelConsensusDecider:
+class ModelConsensusFilter(StaticStatusUrlFilter):
     """Vote across the latest trainer models before keeping crawler candidates.
 
     Attributes:
         model_root: Root directory containing serialized trainer model runs.
+        strategy: Consensus strategy used to combine individual model scores.
+        consensus_threshold: Threshold used by the weighted-average strategy.
         loaded_models: Cached loaded models discovered lazily on first use.
     """
 
     model_root: Path
+    strategy: str = "weighted_average"
+    consensus_threshold: float = DEFAULT_MODEL_THRESHOLD
+    kind: str = field(init=False, default="model_consensus")
+    filter_kind: str = field(init=False, default="model")
+    filter_reason: str = field(init=False, default="model_consensus_all_non_blog")
     loaded_models: tuple[LoadedConsensusModel, ...] | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Normalize and validate the configured model-consensus strategy."""
+        normalized_strategy = self.strategy.strip().lower()
+        if normalized_strategy not in SUPPORTED_CONSENSUS_STRATEGIES:
+            raise ValueError(f"unknown_model_consensus_strategy:{self.strategy}")
+        self.strategy = normalized_strategy
+        self.consensus_threshold = float(self.consensus_threshold)
 
     def _ensure_models_loaded(self) -> tuple[LoadedConsensusModel, ...]:
         """Load and cache the latest available trainer models on demand.
@@ -174,23 +248,35 @@ class ModelConsensusDecider:
                         run_dir=run_dir,
                         predictor=predictor,
                         threshold=_read_threshold(run_dir, predictor),
+                        weight=_read_model_weight(run_dir),
                     )
                 )
             except Exception as exc:  # noqa: BLE001
                 # One corrupt or incompatible model artifact should not block
                 # the crawler from evaluating the rest of the available runs.
-                LOGGER.warning(
-                    "Skipping consensus model load for %s from %s: %s: %s",
-                    model_name,
-                    model_path,
-                    type(exc).__name__,
-                    exc,
+                log_event(
+                    LOGGER,
+                    event="model.consensus.load_failed",
+                    message="skipping consensus model load",
+                    level=logging.WARNING,
+                    stage="model_consensus",
+                    model_name=model_name,
+                    model_path=str(model_path),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                 )
                 continue
 
         self.loaded_models = tuple(models)
         if not self.loaded_models:
-            LOGGER.warning("No consensus models were loaded from %s", self.model_root)
+            log_event(
+                LOGGER,
+                event="model.consensus.no_models_loaded",
+                message="no consensus models were loaded",
+                level=logging.WARNING,
+                stage="model_consensus",
+                model_root=str(self.model_root),
+            )
         return self.loaded_models
 
     def _build_sample(
@@ -234,6 +320,71 @@ class ModelConsensusDecider:
             split="crawler",
         )
 
+    def _should_reject(self, probabilities: list[tuple[float, LoadedConsensusModel]]) -> bool:
+        """Return whether combined model evidence rejects the candidate URL.
+
+        Args:
+            probabilities: Usable ``(probability, loaded_model)`` pairs.
+
+        Returns:
+            ``True`` when the configured consensus strategy classifies the
+            candidate as non-blog strongly enough to reject it.
+        """
+        if self.strategy == "any_blog":
+            return all(probability < loaded.threshold for probability, loaded in probabilities)
+
+        if self.strategy == "majority_blog":
+            blog_votes = sum(1 for probability, loaded in probabilities if probability >= loaded.threshold)
+            required_votes = math.ceil(len(probabilities) / 2)
+            return blog_votes < required_votes
+
+        total_weight = sum(loaded.weight for _, loaded in probabilities)
+        if total_weight <= 0:
+            return False
+        weighted_probability = sum(probability * loaded.weight for probability, loaded in probabilities) / total_weight
+        return weighted_probability < self.consensus_threshold
+
+    def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
+        """Keep or reject a URL using the configured model consensus strategy."""
+        models = self._ensure_models_loaded()
+        if not models:
+            return self.accept()
+
+        sample = self._build_sample(
+            candidate.normalized_url,
+            link_text=candidate.link_text,
+            context_text=candidate.context_text,
+        )
+        probabilities: list[tuple[float, LoadedConsensusModel]] = []
+        for loaded in models:
+            try:
+                probability = float(loaded.predictor.predict_proba([sample])[0])
+            except Exception:  # noqa: BLE001
+                continue
+            probabilities.append((probability, loaded))
+
+        if not probabilities:
+            return self.accept()
+
+        return self.decision_for(rejected=self._should_reject(probabilities))
+
+
+@dataclass(slots=True)
+class ModelConsensusDecider:
+    """Expose the legacy decision-step interface on top of the new filter."""
+
+    model_root: Path
+    strategy: str = "weighted_average"
+    consensus_threshold: float = DEFAULT_MODEL_THRESHOLD
+    _filter: ModelConsensusFilter = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._filter = ModelConsensusFilter(
+            model_root=self.model_root,
+            strategy=self.strategy,
+            consensus_threshold=self.consensus_threshold,
+        )
+
     def decide(
         self,
         url: str,
@@ -242,60 +393,18 @@ class ModelConsensusDecider:
         link_text: str = "",
         context_text: str = "",
     ) -> DecisionOutcome:
-        """Keep a URL unless every available model votes ``non_blog``.
-
-        Args:
-            url: Absolute extracted URL being evaluated.
-            source_domain: Domain of the page from which the URL was extracted.
-                The current consensus models do not use this field directly,
-                but it remains part of the decision interface.
-            link_text: Visible anchor text associated with the URL.
-            context_text: Nearby context text associated with the URL.
-
-        Returns:
-            A ``DecisionOutcome`` that rejects only when every loaded model
-            predicts ``non_blog``. When no models are available, the URL is
-            allowed through unchanged.
-        """
-        del source_domain
-        models = self._ensure_models_loaded()
-        if not models:
-            return DecisionOutcome(
-                accepted=True,
-                score=0.0,
-                reasons=("model_consensus_skipped_no_models",),
+        """Return a compatibility decision payload for older call sites."""
+        decision = self._filter.apply(
+            UrlCandidateContext(
+                source_blog_id=0,
+                source_domain=source_domain,
+                normalized_url=normalize_url(url).normalized_url,
+                link_text=link_text,
+                context_text=context_text,
             )
-
-        sample = self._build_sample(url, link_text=link_text, context_text=context_text)
-        blog_votes = 0
-        max_probability = 0.0
-        usable_models = 0
-        for loaded in models:
-            try:
-                probability = float(loaded.predictor.predict_proba([sample])[0])
-            except Exception:  # noqa: BLE001
-                continue
-            usable_models += 1
-            max_probability = max(max_probability, probability)
-            if probability >= loaded.threshold:
-                blog_votes += 1
-
-        if usable_models == 0:
-            return DecisionOutcome(
-                accepted=True,
-                score=0.0,
-                reasons=("model_consensus_skipped_no_models",),
-            )
-
-        if blog_votes == 0:
-            return DecisionOutcome(
-                accepted=False,
-                score=max_probability,
-                reasons=("model_consensus_all_non_blog",),
-            )
-
-        return DecisionOutcome(
-            accepted=True,
-            score=max_probability,
-            reasons=("model_consensus_kept",),
         )
+        if not decision.accepted:
+            return DecisionOutcome(accepted=False, score=0.0, reasons=(self._filter.filter_reason,))
+        if not self._filter._ensure_models_loaded():
+            return DecisionOutcome(accepted=True, score=0.0, reasons=("model_consensus_skipped_no_models",))
+        return DecisionOutcome(accepted=True, score=0.0, reasons=("model_consensus_kept",))

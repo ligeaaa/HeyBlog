@@ -37,6 +37,12 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_SEED_PATH` | `./seed.csv` | `crawler` | 种子文件路径 |
 | `HEYBLOG_EXPORT_DIR` | `./data/exports` | `crawler`、`persistence-api` | 导出图文件目录，也是 graph snapshot 的落盘目录 |
 | `HEYBLOG_SEARCH_CACHE_DIR` | `./data/search-cache` | `search` | 搜索缓存目录，默认会写 `search-index.json` |
+| `HEYBLOG_LOG_DIR` | `./logs` | 全部 Python 服务 | 统一日志根目录；服务会按类型写入 `<log_dir>/app/`、`error/`、`access/` |
+| `HEYBLOG_LOG_LEVEL` | `INFO` | 全部 Python 服务 | 应用日志级别，例如 `DEBUG`、`INFO`、`WARNING` |
+| `HEYBLOG_LOG_FORMAT` | `json` | 全部 Python 服务 | 日志格式；生产建议 `json`，也可设为其他值使用可读文本格式 |
+| `HEYBLOG_LOG_FILE_ENABLED` | `true` | 全部 Python 服务 | 是否写入分目录日志文件 |
+| `HEYBLOG_LOG_CONSOLE_ENABLED` | `true` | 全部 Python 服务 | 是否同时输出到控制台，方便 Docker logs 查看 |
+| `HEYBLOG_LOG_RETENTION_DAYS` | `7` | 全部 Python 服务 | 自动清理超过该天数的小时切片日志 |
 | `HEYBLOG_BACKEND_BASE_URL` | `http://127.0.0.1:8000` | `frontend` | 浏览器代理层转发到公共 API 的目标地址 |
 | `HEYBLOG_CRAWLER_BASE_URL` | `http://127.0.0.1:8010` | `backend` | `backend` 调用 `crawler` 的内部地址 |
 | `HEYBLOG_SEARCH_BASE_URL` | `http://127.0.0.1:8020` | `backend` | `backend` 调用 `search` 的内部地址 |
@@ -47,13 +53,16 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_MAX_PATH_PROBES_PER_BLOG` | `50` | `crawler` | 单站点路径探测上限 |
 | `HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY` | `4` | `crawler` | 友链候选页抓取并发度，最小为 `1` |
 | `HEYBLOG_RUNTIME_WORKER_COUNT` | `3` | `crawler` | runtime 持续抓取的 worker 数 |
+| `HEYBLOG_RAW_DISCOVERED_URL_LIMIT` | `1000000` | `crawler` | `raw_discovered_urls` 行数达到该值后拒绝启动 crawler，并让正在运行的 runtime 在下一次 claim 前自动停止；设为 `-1` 表示不限制 |
 | `HEYBLOG_MAX_FETCHED_PAGE_BYTES` | `2000000` | `crawler` | 单个页面允许读取的最大字节数；超限后当前 blog 直接记为 `FAILED`，超大页不会继续进入解析阶段 |
 | `HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST` | 空 | `crawler` | 逗号分隔的域名黑名单 |
 | `HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST` | 空 | `crawler` | 逗号分隔的顶级域黑名单 |
 | `HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST` | 空 | `crawler` | 逗号分隔的精确 URL 黑名单 |
 | `HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST` | 空 | `crawler` | 逗号分隔的 URL 前缀黑名单 |
-| `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `data/model/` |
+| `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `HeyBlog_model/data/model/` |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED` | `true` | `crawler`、`persistence-api` | 是否启用多模型负向共识决策层 |
+| `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` | `weighted_average` | `crawler`、`persistence-api` | 多模型共识策略。可选 `weighted_average`、`majority_blog`、`any_blog`；默认按模型评估指标加权平均概率 |
+| `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | `0.4` | `crawler`、`persistence-api` | `weighted_average` 策略下的全局保留阈值，加权平均 blog 概率低于该值时拒绝；当前值来自 `blog-classification-redesign-20260523` validation split 调优 |
 
 ## 3. Docker Compose 里的默认覆盖
 
@@ -62,6 +71,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | 服务 | Compose 中设置的变量 | 作用 |
 | --- | --- | --- |
 | `frontend` | `HEYBLOG_DOCKER_BACKEND_BASE_URL` | 浏览器代理到 `backend` |
+| 全部 Python 服务 | `HEYBLOG_DOCKER_LOG_DIR` / `HEYBLOG_LOG_LEVEL` / `HEYBLOG_LOG_FORMAT` | 容器内日志默认写到 `/data/logs`，并挂载到 `volumes/logs` |
 | `backend` | `HEYBLOG_DOCKER_PERSISTENCE_BASE_URL` | 读取持久化边界 |
 | `backend` | `HEYBLOG_DOCKER_CRAWLER_BASE_URL` | 控制 `crawler` |
 | `backend` | `HEYBLOG_DOCKER_SEARCH_BASE_URL` | 调用 `search` |
@@ -69,16 +79,50 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `crawler` | `HEYBLOG_DOCKER_SEED_PATH` | 使用挂载后的种子文件 |
 | `crawler` | `HEYBLOG_DOCKER_EXPORT_DIR` | 导出目录映射到 `volumes/exports` |
 | `crawler` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 容器内运行时模型根目录，默认指向挂载后的 `/app/runtime_resources/models/url_decision/current` |
+| `crawler` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 容器内模型共识策略与 weighted 阈值 |
 | `search` | `HEYBLOG_DOCKER_PERSISTENCE_BASE_URL` | 获取搜索快照 |
 | `search` | `HEYBLOG_DOCKER_SEARCH_CACHE_DIR` | 搜索缓存映射到 `volumes/search-cache` |
 | `persistence-api` | `HEYBLOG_DB_DSN` | 启用 PostgreSQL 后端 |
 | `persistence-api` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 全库规则重扫读取的容器内运行时模型根目录 |
+| `persistence-api` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 全库规则重扫使用的模型共识策略与 weighted 阈值 |
 
 ## 3.1 运行时资源目录约定
 
+## 3.1 日志目录约定
+
+所有 Python 服务都通过 `shared.observability` 配置标准库 logging。日志先按类型分目录，
+再按服务分目录，每个服务目录内保存该服务所有小时切片。默认本地写入：
+
+```text
+logs/
+  app/
+    backend/
+      backend-20260524-18.log
+      backend-20260524-19.log
+    crawler/
+      crawler-20260524-18.log
+  error/
+    crawler/
+      crawler-20260524-18.log
+  access/
+    backend/
+      backend-20260524-18.log
+    frontend/
+      frontend-20260524-18.log
+```
+
+Docker Compose 默认把容器内 `/data/logs` 映射到 `volumes/logs`。`app/`
+记录正常应用事件，`error/` 记录 warning/error/exception，`access/`
+记录 HTTP 请求事实。每个类型目录下按服务单独分目录；每个文件以小时为单位切片，超过
+`HEYBLOG_LOG_RETENTION_DAYS` 的旧切片会在写日志时自动清理。跨服务 HTTP
+client 会转发 `x-request-id`，用于串联一次 `frontend -> backend -> internal service`
+调用。
+
+## 3.2 运行时资源目录约定
+
 推荐把模型和类似资源拆成两层：
 
-- `data/`：训练输出、实验报表、人工观察数据
+- `HeyBlog_model/data/`：训练输出、实验报表、人工观察数据
 - `runtime_resources/`：已经被选中、准备给服务真正加载的运行时资源
 
 当前推荐的 URL 决策模型发布目录是：
@@ -86,7 +130,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 - `runtime_resources/models/url_decision/current/`
 
 这样本地 debug、pytest 和 Docker 只需要统一设置
-`HEYBLOG_DECISION_MODEL_ROOT`，不需要直接依赖 `data/model/` 的实验输出结构。
+`HEYBLOG_DECISION_MODEL_ROOT`，不需要直接依赖 `HeyBlog_model/data/model/` 的实验输出结构。
 
 ## 4. Postgres 容器级变量
 
@@ -106,6 +150,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 3. `frontend` 不是直接访问 `crawler` 或 `persistence-api`，它只认 `HEYBLOG_BACKEND_BASE_URL`。
 4. 只改 `HEYBLOG_DB_PATH` 不会启用 PostgreSQL；真正切换数据库后端要设置 `HEYBLOG_DB_DSN`。
 5. 如果 Docker 内启用了模型共识，而宿主机的 `runtime_resources/` 没有挂进去，服务会退化成 `model_consensus_skipped_no_models`，看起来像“规则开了”，实际不会过滤任何 URL。
+6. 默认模型共识策略是 `weighted_average`，会读取每个模型 run 的 `metrics.json` 并优先用 F1 作为权重；旧的“任意模型投 blog 即保留”行为需要显式设置 `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY=any_blog`。
 
 ## 6. 相关文档
 

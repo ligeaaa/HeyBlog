@@ -9,6 +9,8 @@ import pytest
 from crawler.crawling.fetching.base import FetchAttempt
 from crawler.crawling.fetching.base import FetchResult
 from crawler.crawling.pipeline import CrawlPipeline
+from persistence_api.db import session_scope
+from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.repository import Repository
 from shared.config import Settings
 
@@ -82,6 +84,7 @@ def build_pipeline(tmp_path: Path) -> tuple[CrawlPipeline, Repository]:
         export_dir=tmp_path / "exports",
         max_path_probes_per_blog=2,
         candidate_page_fetch_concurrency=4,
+        decision_model_consensus_enabled=False,
     )
     repository = Repository(settings.db_path)
     pipeline = CrawlPipeline(settings, repository)
@@ -147,11 +150,57 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     edges = repository.list_edges()
     assert len(edges) == 1
     assert edges[0]["link_url_raw"] == "https://friend.example/"
+
+    with session_scope(repository.session_factory) as session:
+        raw_rows = [
+            (row.source_blog_id, row.normalized_url, row.status)
+            for row in session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
+        ]
+
+    assert [source_blog_id for source_blog_id, _, _ in raw_rows] == [blog["blog_id"], blog["blog_id"], blog["blog_id"]]
+    assert [normalized_url for _, normalized_url, _ in raw_rows] == [
+        "https://friend.example/",
+        "https://github.com/example",
+        "https://agency.gov/",
+    ]
+    assert [status for _, _, status in raw_rows] == [
+        "success",
+        "rule:platform_blocked",
+        "rule:blocked_tld",
+    ]
     blogs = repository.list_blogs()
     assert len(blogs) == 2
     child_blog = next(blog_row for blog_row in blogs if blog_row["id"] != blog["id"])
     assert child_blog["domain"] == "friend.example"
     assert "depth" not in child_blog
+
+
+def test_pipeline_stops_before_claim_when_raw_discovered_url_limit_is_reached(tmp_path: Path) -> None:
+    """One-shot crawl batches should refuse new claims once raw URL volume reaches the limit."""
+    pipeline, repository = build_pipeline(tmp_path)
+    pipeline.settings.raw_discovered_url_limit = 1
+    pipeline.capacity_gate.raw_discovered_url_limit = 1
+    blog = seed_blog(repository)
+    repository.create_raw_discovered_url(
+        source_blog_id=blog["blog_id"],
+        normalized_url="https://existing.example/",
+        status="success",
+    )
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text="<html><body></body></html>",
+            ),
+        }
+    )
+
+    result = pipeline.run_once(max_nodes=1)
+
+    assert result["processed"] == 0
+    assert result["stop_reason"] == "raw_discovered_url_limit_reached"
+    assert pipeline.fetcher.calls == []
 
 
 def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:

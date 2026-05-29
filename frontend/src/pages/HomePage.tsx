@@ -31,7 +31,7 @@ async function fetchAllStatusCatalogPage(
   searchQuery: string,
 ): Promise<BlogCatalogPage> {
   const takeCount = page * pageSize;
-  const responses = await Promise.all(
+  const responses = await Promise.allSettled(
     HOME_STATUS_ORDER.map((status) =>
       fetchBlogsCatalog({
         page: 1,
@@ -42,10 +42,16 @@ async function fetchAllStatusCatalogPage(
       }),
     ),
   );
+  const fulfilledResponses = responses
+    .filter((response): response is PromiseFulfilledResult<BlogCatalogPage> => response.status === "fulfilled")
+    .map((response) => response.value);
+  if (fulfilledResponses.length === 0) {
+    throw new Error("all_catalog_buckets_failed");
+  }
 
-  const mergedItems = responses.flatMap((response) => response.items);
+  const mergedItems = fulfilledResponses.flatMap((response) => response.items);
   const offset = (page - 1) * pageSize;
-  const totalItems = responses.reduce((sum, response) => sum + response.totalItems, 0);
+  const totalItems = fulfilledResponses.reduce((sum, response) => sum + response.totalItems, 0);
   const totalPages = totalItems > 0 ? Math.ceil(totalItems / pageSize) : 0;
 
   return {

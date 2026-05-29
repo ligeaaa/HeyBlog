@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 *.pyc
 data/
+logs/
 dist/
 build/
 heyblog.egg-info/
@@ -16,8 +17,10 @@ frontend/dist/
 .codex/
 ai_doc/
 .env
-todo.md
-tracker/
 runtime_resources/*
 archive/*
 frontend_example/*
+slim_refactor/*
+tracker/*
+!tracker/log-system.md
+todo.md

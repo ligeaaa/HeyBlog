@@ -17,6 +17,20 @@ from services.crawler.main import create_app as shim_create_app
 class StubPipeline:
     """Exercise crawler HTTP handlers without touching real persistence."""
 
+    class CapacityGate:
+        """Return a fixed allowed capacity state for route tests."""
+
+        def check(self) -> object:
+            class State:
+                allowed = True
+                reason = None
+                raw_count = 0
+                limit = 1_000_000
+
+            return State()
+
+    capacity_gate = CapacityGate()
+
     def bootstrap_seeds(self) -> dict[str, object]:
         return {"seed_path": "seed.csv", "imported": 2}
 

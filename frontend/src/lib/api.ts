@@ -1,10 +1,18 @@
 import type {
   AdminDedupSummary,
+  AdminBlogLabelCounts,
+  AdminBlogLabelingCandidate,
+  AdminBlogLabelingPage,
+  AdminBlogLabelParquetStatus,
+  AdminBlogLabelTag,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
+  AdminUrlRefilterRun,
+  AdminUrlRefilterRunEvent,
   BlogCatalogItem,
   BlogCatalogPage,
   BlogDetail,
+  FilterStatsData,
   GraphData,
   GraphEdge,
   GraphMeta,
@@ -13,10 +21,14 @@ import type {
   RecommendedBlog,
   StatsData,
   StatusData,
+  AuthSession,
+  UserLabelSelection,
+  UserProfile,
 } from "../types/graph";
 
 interface BackendGraphNode {
   id: number;
+  blog_id?: number;
   url: string;
   normalized_url?: string;
   identity_key?: string;
@@ -84,6 +96,7 @@ interface BackendBlogLookupPayload {
 
 interface BackendNeighborSummary {
   id: number;
+  blog_id?: number;
   domain: string;
   title: string | null;
   icon_url: string | null;
@@ -123,6 +136,10 @@ interface BackendStatusPayload {
   total_edges: number;
 }
 
+interface BackendFilterStatsPayload {
+  by_filter_reason: Record<string, number>;
+}
+
 interface BackendCatalogPayload {
   items: BackendGraphNode[];
   page: number;
@@ -138,6 +155,35 @@ interface CreateIngestionRequestPayload {
   request_id: number;
   request_token: string;
   status: string;
+}
+
+interface BackendUserProfile {
+  id: number;
+  email: string;
+  display_name: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+interface BackendAuthSession {
+  token: string;
+  expires_at: string | null;
+  user: BackendUserProfile;
+}
+
+interface BackendUserLabelSelection {
+  id: number;
+  normalized_url: string;
+  label_id: number;
+  label: string;
+  label_name: string;
+  created_at: string | null;
+  updated_at: string | null;
+  blog: BackendGraphNode | null;
+}
+
+interface BackendUserLabelStats {
+  label_count: number;
 }
 
 interface BackendRuntimePayload {
@@ -163,6 +209,86 @@ interface BackendDedupSummary {
   updated_at: string;
 }
 
+interface BackendUrlRefilterRun {
+  id: number;
+  status: string;
+  filter_chain_version: string;
+  crawler_was_running: boolean;
+  backup_path: string | null;
+  total_count: number;
+  scanned_count: number;
+  unchanged_count: number;
+  activated_count: number;
+  deactivated_count: number;
+  retagged_count: number;
+  last_raw_url_id: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BackendUrlRefilterRunEvent {
+  id: number;
+  run_id: number;
+  message: string;
+  created_at: string | null;
+}
+
+interface BackendBlogLabelTag {
+  id: number;
+  name: string;
+  slug: string;
+  count?: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+interface BackendBlogLabelAssignment extends BackendBlogLabelTag {
+  labeled_at: string | null;
+}
+
+interface BackendBlogLabelingCandidate extends BackendGraphNode {
+  labels: BackendBlogLabelAssignment[];
+  label_slugs: string[];
+  last_labeled_at: string | null;
+  is_labeled: boolean;
+}
+
+interface BackendBlogLabelState {
+  label_id: Record<string, number>;
+  labels: BackendBlogLabelAssignment[];
+  label_slugs: string[];
+  last_labeled_at: string | null;
+  is_labeled: boolean;
+}
+
+interface BackendBlogLabelingPage {
+  items: BackendBlogLabelingCandidate[];
+  available_tags: BackendBlogLabelTag[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+  sort: string;
+}
+
+interface BackendBlogLabelParquetStatus {
+  path: string;
+  filename: string;
+  exists: boolean;
+  saved_count: number;
+  total_labeled: number;
+  missing_count: number;
+  batch_size: number;
+  rewritten: boolean;
+  message: string;
+  updated_at: string | null;
+}
+
 interface BlogCatalogQuery {
   page?: number;
   pageSize?: number;
@@ -177,6 +303,15 @@ interface BlogCatalogQuery {
   minConnections?: number;
 }
 
+interface BlogLabelingQuery {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  label?: string;
+  labeled?: boolean;
+  sort?: string;
+}
+
 /**
  * Convert one backend graph node or neighbor summary to the normalized frontend node shape.
  *
@@ -184,8 +319,9 @@ interface BlogCatalogQuery {
  * @returns Normalized graph node.
  */
 function toGraphNode(node: BackendGraphNode | BackendNeighborSummary): GraphNode {
+  const resolvedId = "blog_id" in node && typeof node.blog_id === "number" ? node.blog_id : node.id;
   return {
-    id: Number(node.id),
+    id: Number(resolvedId),
     url: "url" in node ? node.url : "",
     domain: node.domain,
     title: node.title ?? null,
@@ -225,6 +361,64 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
     connectionCount: node.connection_count ?? (node.incoming_count ?? 0) + (node.outgoing_count ?? 0),
     activityAt: node.activity_at ?? null,
     identityComplete: node.identity_complete ?? false,
+  };
+}
+
+/**
+ * Convert one backend blog label tag into the frontend admin tag shape.
+ *
+ * @param tag Raw backend label tag payload.
+ * @returns Normalized admin label tag.
+ */
+function toAdminBlogLabelTag(tag: BackendBlogLabelTag): AdminBlogLabelTag {
+  return {
+    id: tag.id,
+    name: tag.name,
+    slug: tag.slug,
+    createdAt: tag.created_at ?? "",
+    updatedAt: tag.updated_at ?? "",
+  };
+}
+
+/**
+ * Convert one backend labeling candidate into the frontend admin candidate shape.
+ *
+ * @param candidate Raw backend labeling candidate payload.
+ * @returns Normalized admin labeling candidate.
+ */
+function toAdminBlogLabelingCandidate(
+  candidate: BackendBlogLabelingCandidate,
+): AdminBlogLabelingCandidate {
+  return {
+    ...toBlogCatalogItem(candidate),
+    labels: candidate.labels.map((label) => ({
+      ...toAdminBlogLabelTag(label),
+      labeledAt: label.labeled_at ?? "",
+    })),
+    labelSlugs: candidate.label_slugs,
+    lastLabeledAt: candidate.last_labeled_at,
+    isLabeled: candidate.is_labeled,
+  };
+}
+
+/**
+ * Convert one backend parquet status payload into frontend field casing.
+ *
+ * @param status Raw backend parquet status payload.
+ * @returns Normalized parquet status used by the admin workbench.
+ */
+function toAdminBlogLabelParquetStatus(status: BackendBlogLabelParquetStatus): AdminBlogLabelParquetStatus {
+  return {
+    path: status.path,
+    filename: status.filename,
+    exists: status.exists,
+    savedCount: status.saved_count,
+    totalLabeled: status.total_labeled,
+    missingCount: status.missing_count,
+    batchSize: status.batch_size,
+    rewritten: status.rewritten,
+    message: status.message,
+    updatedAt: status.updated_at,
   };
 }
 
@@ -341,17 +535,50 @@ function adminHeaders(adminToken: string): HeadersInit {
   };
 }
 
+function authHeaders(token: string): HeadersInit {
+  return {
+    authorization: `Bearer ${token.trim()}`,
+  };
+}
+
+function toUserProfile(user: BackendUserProfile): UserProfile {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.display_name,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+  };
+}
+
+function toAuthSession(session: BackendAuthSession): AuthSession {
+  return {
+    token: session.token,
+    expiresAt: session.expires_at,
+    user: toUserProfile(session.user),
+  };
+}
+
 /**
  * Fetch the default core graph view.
  *
  * @param limit Maximum node count requested for the core graph.
+ * @param options Optional deterministic sampling settings for graph selection.
  * @returns Normalized graph data.
  */
-export async function fetchGraphData(limit = 200): Promise<GraphData> {
+export async function fetchGraphData(
+  limit = 200,
+  options: { sampleMode?: "off" | "count" | "percent"; sampleSeed?: number } = {},
+): Promise<GraphData> {
   const params = new URLSearchParams({
     strategy: "degree",
     limit: String(limit),
   });
+  if (options.sampleMode && options.sampleMode !== "off") {
+    params.set("sample_mode", options.sampleMode);
+    params.set("sample_value", String(limit));
+    params.set("sample_seed", String(options.sampleSeed ?? 42));
+  }
   const payload = await apiJson<BackendGraphPayload>(`/api/graph/views/core?${params.toString()}`);
   return toGraphData(payload);
 }
@@ -458,6 +685,18 @@ export async function fetchStatus(): Promise<StatusData> {
 }
 
 /**
+ * Fetch the ordered filter-chain stats payload.
+ *
+ * @returns Normalized filter stats data.
+ */
+export async function fetchFilterStats(): Promise<FilterStatsData> {
+  const payload = await apiJson<BackendFilterStatsPayload>("/api/filter-stats");
+  return {
+    byFilterReason: payload.by_filter_reason,
+  };
+}
+
+/**
  * Fetch one page of blog catalog records for the homepage/admin listings.
  *
  * @param query Optional catalog query parameters.
@@ -536,6 +775,66 @@ export async function submitBlogInfo(data: {
   });
 }
 
+export async function registerUser(data: { email: string; password: string }): Promise<AuthSession> {
+  const payload = await apiJson<BackendAuthSession>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      email: data.email.trim(),
+      password: data.password,
+    }),
+  });
+  return toAuthSession(payload);
+}
+
+export async function loginUser(data: { email: string; password: string }): Promise<AuthSession> {
+  const payload = await apiJson<BackendAuthSession>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({
+      email: data.email.trim(),
+      password: data.password,
+    }),
+  });
+  return toAuthSession(payload);
+}
+
+export async function fetchCurrentUser(token: string): Promise<UserProfile> {
+  const payload = await apiJson<BackendUserProfile>("/api/auth/me", {
+    headers: authHeaders(token),
+  });
+  return toUserProfile(payload);
+}
+
+export async function logoutUser(token: string): Promise<void> {
+  await apiJson<{ ok: boolean }>("/api/auth/logout", {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function fetchMyLabelSelections(token: string, limit = 50): Promise<UserLabelSelection[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const payload = await apiJson<BackendUserLabelSelection[]>(`/api/me/label-selections?${params.toString()}`, {
+    headers: authHeaders(token),
+  });
+  return payload.map((selection) => ({
+    id: selection.id,
+    normalizedUrl: selection.normalized_url,
+    labelId: selection.label_id,
+    label: selection.label,
+    labelName: selection.label_name,
+    createdAt: selection.created_at,
+    updatedAt: selection.updated_at,
+    blog: selection.blog ? toBlogCatalogItem(selection.blog) : null,
+  }));
+}
+
+export async function fetchMyLabelStats(token: string): Promise<{ labelCount: number }> {
+  const payload = await apiJson<BackendUserLabelStats>("/api/me/label-stats", {
+    headers: authHeaders(token),
+  });
+  return { labelCount: payload.label_count };
+}
+
 /**
  * Fetch the protected runtime status summary.
  *
@@ -596,6 +895,282 @@ export async function fetchAdminDedupLatest(adminToken: string): Promise<AdminDe
   } catch {
     return null;
   }
+}
+
+export async function fetchAdminUrlRefilterLatest(adminToken: string): Promise<AdminUrlRefilterRun | null> {
+  try {
+    const payload = await apiJson<BackendUrlRefilterRun>("/api/admin/url-refilter-runs/latest", {
+      headers: adminHeaders(adminToken),
+    });
+    return {
+      id: payload.id,
+      status: payload.status,
+      filterChainVersion: payload.filter_chain_version,
+      crawlerWasRunning: payload.crawler_was_running,
+      backupPath: payload.backup_path,
+      totalCount: payload.total_count,
+      scannedCount: payload.scanned_count,
+      unchangedCount: payload.unchanged_count,
+      activatedCount: payload.activated_count,
+      deactivatedCount: payload.deactivated_count,
+      retaggedCount: payload.retagged_count,
+      lastRawUrlId: payload.last_raw_url_id,
+      startedAt: payload.started_at,
+      completedAt: payload.completed_at,
+      errorMessage: payload.error_message,
+      createdAt: payload.created_at,
+      updatedAt: payload.updated_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAdminUrlRefilterEvents(
+  adminToken: string,
+  runId: number,
+): Promise<AdminUrlRefilterRunEvent[]> {
+  const payload = await apiJson<BackendUrlRefilterRunEvent[]>(`/api/admin/url-refilter-runs/${runId}/events`, {
+    headers: adminHeaders(adminToken),
+  });
+  return payload.map((event) => ({
+    id: event.id,
+    runId: event.run_id,
+    message: event.message,
+    createdAt: event.created_at,
+  }));
+}
+
+/**
+ * Fetch one page of protected blog labeling candidates.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param query Optional labeling query parameters.
+ * @returns Normalized labeling page payload.
+ */
+export async function fetchAdminBlogLabelingCandidates(
+  adminToken: string,
+  query: BlogLabelingQuery = {},
+): Promise<AdminBlogLabelingPage> {
+  const params = new URLSearchParams();
+  if (query.page) {
+    params.set("page", String(query.page));
+  }
+  if (query.pageSize) {
+    params.set("page_size", String(query.pageSize));
+  }
+  if (query.q) {
+    params.set("q", query.q);
+  }
+  if (query.label) {
+    params.set("label", query.label);
+  }
+  if (query.labeled !== undefined) {
+    params.set("labeled", String(query.labeled));
+  }
+  if (query.sort) {
+    params.set("sort", query.sort);
+  }
+  const payload = await apiJson<BackendBlogLabelingPage>(
+    `/api/admin/blog-labeling/candidates?${params.toString()}`,
+    {
+      headers: adminHeaders(adminToken),
+    },
+  );
+  return {
+    items: payload.items.map(toAdminBlogLabelingCandidate),
+    availableTags: payload.available_tags.map(toAdminBlogLabelTag),
+    page: payload.page,
+    pageSize: payload.page_size,
+    totalItems: payload.total_items,
+    totalPages: payload.total_pages,
+    hasNext: payload.has_next,
+    hasPrev: payload.has_prev,
+    sort: payload.sort,
+  };
+}
+
+/**
+ * Create or return an existing protected blog label tag.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param name Label name to create.
+ * @returns Normalized admin label tag.
+ */
+export async function postAdminBlogLabelTag(adminToken: string, name: string): Promise<AdminBlogLabelTag> {
+  const payload = await apiJson<BackendBlogLabelTag>("/api/admin/blog-labeling/tags", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+    body: JSON.stringify({ name }),
+  });
+  return toAdminBlogLabelTag(payload);
+}
+
+/**
+ * Replace one protected blog candidate's labels.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param blogId Target blog business id.
+ * @param tagIds Complete replacement tag id list.
+ * @returns Updated label state for the target blog.
+ */
+export async function putAdminBlogLabels(
+  adminToken: string,
+  blogId: number,
+  tagIds: number[],
+  labelId?: Record<string, number>,
+  title?: string | null,
+): Promise<{ labelSlugs: string[]; isLabeled: boolean; lastLabeledAt: string | null }> {
+  const body =
+    labelId === undefined
+      ? { tag_ids: tagIds, title: title?.trim() || undefined }
+      : { label_id: labelId, title: title?.trim() || undefined };
+  const payload = await apiJson<{
+    label_slugs: string[];
+    is_labeled: boolean;
+    last_labeled_at: string | null;
+  }>(`/api/admin/blog-labeling/labels/${blogId}`, {
+    method: "PUT",
+    headers: adminHeaders(adminToken),
+    body: JSON.stringify(body),
+  });
+  return {
+    labelSlugs: payload.label_slugs,
+    isLabeled: payload.is_labeled,
+    lastLabeledAt: payload.last_labeled_at,
+  };
+}
+
+/**
+ * Increment one public random-blog label counter for a catalog card.
+ *
+ * @param blogId Public/business blog ID.
+ * @param label Label slug to select.
+ * @param previousLabel Optional previous page-local label selection to decrement.
+ * @returns Updated label state after persistence saves the vote.
+ */
+export async function postBlogUserLabel(
+  blogId: number,
+  label: string,
+  previousLabel?: string,
+  token?: string | null,
+): Promise<{ labelId: Record<string, number>; labelSlugs: string[]; lastLabeledAt: string | null }> {
+  const payload = await apiJson<BackendBlogLabelState>(`/api/blogs/${blogId}/user-labels`, {
+    method: "POST",
+    headers: token ? authHeaders(token) : undefined,
+    body: JSON.stringify({ label, previous_label: previousLabel }),
+  });
+  return {
+    labelId: payload.label_id,
+    labelSlugs: payload.label_slugs,
+    lastLabeledAt: payload.last_labeled_at,
+  };
+}
+
+/**
+ * Fetch one candidate URL title for temporary labeling display.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param url Candidate URL to inspect.
+ * @returns Extracted title, or null when no title is present.
+ */
+export async function fetchAdminBlogLabelTitlePreview(
+  adminToken: string,
+  url: string,
+): Promise<string | null> {
+  const payload = await apiJson<{ title: string | null }>("/api/admin/blog-labeling/title-preview", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+    body: JSON.stringify({ url }),
+  });
+  return payload.title?.trim() || null;
+}
+
+/**
+ * Fetch label counts for every current label slug.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Count summary grouped by label slug.
+ */
+export async function fetchAdminBlogLabelCounts(adminToken: string): Promise<AdminBlogLabelCounts> {
+  const payload = await apiJson<{ total_labeled: number; by_label: Record<string, number> }>(
+    "/api/admin/blog-labeling/counts",
+    {
+      headers: adminHeaders(adminToken),
+    },
+  );
+  return {
+    totalLabeled: payload.total_labeled,
+    byLabel: payload.by_label,
+  };
+}
+
+/**
+ * Fetch the current parquet export status.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Normalized parquet status payload.
+ */
+export async function fetchAdminBlogLabelParquetStatus(adminToken: string): Promise<AdminBlogLabelParquetStatus> {
+  const payload = await apiJson<BackendBlogLabelParquetStatus>("/api/admin/blog-labeling/parquet-status", {
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminBlogLabelParquetStatus(payload);
+}
+
+/**
+ * Check and fill missing labeled rows in the parquet export.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Normalized parquet status after the sync.
+ */
+export async function postAdminBlogLabelParquetSync(adminToken: string): Promise<AdminBlogLabelParquetStatus> {
+  const payload = await apiJson<BackendBlogLabelParquetStatus>("/api/admin/blog-labeling/parquet-sync", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminBlogLabelParquetStatus(payload);
+}
+
+/**
+ * Rebuild the parquet export from all current labeled rows.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Normalized parquet status after the rebuild.
+ */
+export async function postAdminBlogLabelParquetRebuild(adminToken: string): Promise<AdminBlogLabelParquetStatus> {
+  const payload = await apiJson<BackendBlogLabelParquetStatus>("/api/admin/blog-labeling/parquet-rebuild", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminBlogLabelParquetStatus(payload);
+}
+
+/**
+ * Download the current parquet export through the browser.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Promise resolved after the browser download has been started.
+ */
+export async function downloadAdminBlogLabelParquet(adminToken: string): Promise<void> {
+  const response = await fetch("/api/admin/blog-labeling/parquet-export", {
+    headers: adminHeaders(adminToken),
+  });
+  if (!response.ok) {
+    throw new Error(`api_error_${response.status}`);
+  }
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get("content-disposition") ?? "";
+  const filenameMatch = /filename="?(?<filename>[^";]+)"?/i.exec(contentDisposition);
+  const filename = filenameMatch?.groups?.filename ?? "blog-label-training.parquet";
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
 }
 
 /**
@@ -662,6 +1237,13 @@ export async function postAdminRunBatch(adminToken: string, maxNodes: number): P
  */
 export async function postAdminResetDatabase(adminToken: string): Promise<unknown> {
   return apiJson("/api/admin/database/reset", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+}
+
+export async function postAdminRunUrlRefilter(adminToken: string): Promise<unknown> {
+  return apiJson("/api/admin/url-refilter-runs", {
     method: "POST",
     headers: adminHeaders(adminToken),
   });

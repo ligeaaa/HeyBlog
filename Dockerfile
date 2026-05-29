@@ -24,9 +24,10 @@ COPY backend ./backend
 COPY crawler ./crawler
 COPY persistence_api ./persistence_api
 COPY search ./search
+COPY trainer ./trainer
 COPY frontend ./frontend
 COPY services ./services
-COPY trainer ./trainer
+COPY scripts ./scripts
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 COPY seed.csv ./seed.csv
 

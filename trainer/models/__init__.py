@@ -1,1 +1,2 @@
-"""Baseline model implementations for trainer workflows."""
+"""Legacy trainer model modules required by runtime model artifacts."""
+

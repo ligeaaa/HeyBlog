@@ -357,17 +357,19 @@ crawler 的两种主要运行方式：
 
 也就是说，运行时配置可以扩展拦截面，但不会改变决策链顺序。
 
-## 10. 多模型负向共识逻辑
+## 10. 多模型共识逻辑
 
 [crawler/crawling/decisions/consensus.py](../crawler/crawling/decisions/consensus.py) 提供第二层过滤：模型共识。
 
-注意：它不是“模型决定是否保留”，而是“只有所有模型都认为不是博客时才拒绝”。
+它会在硬规则已经放行候选 URL 后，把 URL、anchor text 和友链局部上下文交给运行时模型。默认策略不再是简单“一票保留”，而是按模型验证指标加权平均 blog 概率，让表现更好的新模型拥有更高权重。
 
 ### 10.1 模型加载方式
 
 模型根目录来自：
 
 - `HEYBLOG_DECISION_MODEL_ROOT`
+- `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY`
+- `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD`
 
 默认值是：
 
@@ -381,9 +383,9 @@ Docker 默认会把它映射为容器内：
 
 - `<model_root>/<model_name>/<run>/model.joblib`
 
-系统会扫描每个模型目录下名称最大的最新 run，并加载其中的 `model.joblib`。
+系统会扫描每个模型目录下名称最大的最新 run，并加载其中的 `model.joblib`。如果 run 目录里有 `metrics.json`，默认会优先读取 `f1` 作为该模型的共识权重；如果没有可用指标，则回退到权重 `1.0`。
 
-### 10.2 模型投票规则
+### 10.2 模型共识策略
 
 每个候选 URL 会先被转换成一个 `ConsensusSample`，其中包含：
 
@@ -400,22 +402,25 @@ Docker 默认会把它映射为容器内：
 
 之后每个模型都会输出一个 `predict_proba([sample])` 概率。
 
-最终规则：
+最终规则由 `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` 控制：
+
+- `weighted_average`：默认策略。按每个模型的权重加权平均 blog 概率，低于 `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` 时拒绝。当前默认阈值是 `0.4`，来自 prepared validation split 调优。
+- `majority_blog`：多数模型概率达到各自阈值时保留，否则拒绝。
+- `any_blog`：旧兼容策略。任意一个模型概率达到自己的阈值就保留，只有所有模型都投 `non_blog` 时拒绝。
+
+通用结果：
 
 - 如果没有可用模型：放行，reason=`model_consensus_skipped_no_models`
-- 如果所有可用模型都投 `non_blog`：拒绝，reason=`model_consensus_all_non_blog`
-- 只要有任意一个模型投 `blog`：保留，reason=`model_consensus_kept`
-
-也就是说，这是一个严格负向共识，而不是多数投票接受。
+- 如果策略判定为 `non_blog`：拒绝，reason=`model_consensus_all_non_blog`
+- 如果策略判定为 `blog`：保留，reason=`model_consensus_kept`
 
 ### 10.3 为什么这样设计
 
-当前设计偏保守，目标是：
+旧设计偏保守，只有所有模型都明确不认同时才拒绝，这能降低误杀，但也会让旧弱模型长期稀释新模型的收益。当前默认策略改为指标加权，是为了：
 
-- 不要因为某一个模型过于激进就过滤掉潜在博客
-- 只在“所有模型都明确不认同”时才拒绝
-
-因此模型层更像一个“补充拦截器”，不是主导分类器。
+- 让真实评估更好的模型在 runtime 中拥有更大话语权
+- 保留 `any_blog` 作为兼容开关，方便回退旧行为
+- 仍然把模型层放在硬规则之后，避免模型覆盖确定性的 URL 安全和去重规则
 
 ## 11. URL 标准化与 identity 归一
 

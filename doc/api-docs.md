@@ -68,7 +68,13 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `GET /`
 - `GET /internal/health`
 - `GET /api/status`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+- `GET /api/me/label-selections`
 - `GET /api/blogs/catalog`
+- `POST /api/blogs/{blog_id}/user-labels`
 - `GET /api/blogs/lookup`
 - `GET /api/blogs/{blog_id}`
 - `GET /api/graph/views/core`
@@ -76,6 +82,7 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `GET /api/graph/snapshots/latest`
 - `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
+- `GET /api/filter-stats`
 - `GET /api/ingestion-requests`
 - `POST /api/ingestion-requests`
 - `GET /api/ingestion-requests/{request_id}`
@@ -101,14 +108,28 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `POST /api/admin/crawl/bootstrap`
 - `POST /api/admin/crawl/run`
 - `POST /api/admin/database/reset`
+- `POST /api/admin/url-refilter-runs`
+- `GET /api/admin/url-refilter-runs/latest`
+- `GET /api/admin/url-refilter-runs/{run_id}/events`
 - `GET /api/admin/blog-labeling/candidates`
+- `GET /api/admin/blog-labeling/counts`
 - `GET /api/admin/blog-labeling/tags`
 - `POST /api/admin/blog-labeling/tags`
-- `GET /api/admin/blog-labeling/export`
+- `GET /api/admin/blog-labeling/parquet-status`
+- `POST /api/admin/blog-labeling/parquet-sync`
+- `POST /api/admin/blog-labeling/parquet-rebuild`
+- `GET /api/admin/blog-labeling/parquet-export`
+- `POST /api/admin/blog-labeling/title-preview`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
 - `POST /api/admin/blog-dedup-scans`
 - `GET /api/admin/blog-dedup-scans/latest`
 - `GET /api/admin/blog-dedup-scans/{run_id}/items`
+
+补充脚本：
+
+- `scripts/migrate_blog_label_assignment_ids.py`：兼容性迁移脚本，把历史 `blog_label_assignments.blog_id` 对齐到稳定的 URL subject id。默认 dry-run，`--apply` 才会写库。
+  - 容器内运行前需要重新构建 `persistence-api` 镜像，因为脚本目录是随镜像一起复制进去的。
+- `scripts/import_legacy_label_counts.py`：把早期 `url,title,label` CSV 直接导入当前 URL-keyed `blog_labels`。默认 dry-run；传 `--apply --clear-existing` 会先清空 `blog_labels`，再按 normalized URL 聚合写入 `label_id` 计数字典。传 `--titles-only --apply` 时只按 CSV 快速回填已存在 `blog_labels.title`，不创建新行，也不改变 `label_id` 计数。旧标签 `others` 会映射为当前 `other`。
 
 认证语义：
 
@@ -202,8 +223,140 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - `average_friend_links`: blog 的平均友链发现数
 - `status_counts`: 按 `crawl_status` 分组后的原始计数
+- `raw_discovered_urls`: `raw_discovered_urls` 表中的原始发现 URL 总数；crawler 会用它执行 `HEYBLOG_RAW_DISCOVERED_URL_LIMIT` 启动保护，配置为 `-1` 时不限制
 
-### 3.3 Blog 与图结构查询
+#### `GET /api/filter-stats`
+
+用途：返回基于配置化 URL 过滤链的顺序统计结果。
+
+返回结构：
+
+- `by_filter_reason`: 按过滤链顺序排列的对象
+- `raw`: 进入过滤链的标准化 URL 总数
+- 后续每个 key 都是 `{filter_kind}:{filter_reason}`
+- 每个 value 表示执行完该过滤器后，仍然剩余多少 URL
+
+统计语义：
+
+- 顺序由 `runtime_resources/filter_chain.toml` 中启用的过滤器顺序决定
+- 统计基础来自持久化表 `raw_discovered_urls`
+- `rule:duplicate_url` 是过滤链前置状态：同一个 `normalized_url` 已经存在更小 `id` 的 raw 行时，当前 raw URL 会提前标记为重复，不再进入后续过滤链；更大 `id` 的未来/后续行不会反向影响当前行
+- URL 通过整条过滤链时会被写为 `success`
+- 接口不会返回 `success`，只返回 `raw` 和各过滤器步骤后的剩余数量
+
+响应示例：
+
+```json
+{
+  "by_filter_reason": {
+    "raw": 1000,
+    "rule:same_domain": 920,
+    "rule:platform_blocked": 860,
+    "rule:blocked_tld": 820,
+    "model:model_consensus_all_non_blog": 800
+  }
+}
+```
+
+### 3.3 用户认证接口
+
+#### `POST /api/auth/register`
+
+用途：使用邮箱和密码注册普通用户，并立即创建登录会话。当前版本不做邮箱验证。
+
+请求体：
+
+```json
+{
+  "email": "user@example.com",
+  "password": "long enough"
+}
+```
+
+成功响应：
+
+```json
+{
+  "token": "session-token",
+  "expires_at": "2026-06-25T00:00:00+00:00",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "display_name": "user",
+    "created_at": "2026-05-26T22:04:50+00:00",
+    "updated_at": "2026-05-26T22:04:50+00:00"
+  }
+}
+```
+
+错误语义：
+
+- `409 email_already_registered`
+- `422 invalid_email`
+- `422 password_too_short`
+
+#### `POST /api/auth/login`
+
+用途：使用邮箱和密码登录，创建新的 bearer session。请求体同注册接口，成功响应也同注册接口。
+
+错误语义：
+
+- `401 invalid_credentials`
+- `422 invalid_email`
+
+#### `GET /api/auth/me`
+
+用途：读取当前登录用户资料。
+
+请求头：
+
+- `Authorization: Bearer <session-token>`
+
+错误语义：
+
+- `401 auth_required`
+
+#### `POST /api/auth/logout`
+
+用途：注销当前 session token。请求头同 `/api/auth/me`。
+
+#### `GET /api/me/label-selections`
+
+用途：返回当前登录用户最近的随机博客标注选择。
+
+查询参数：
+
+- `limit`: 可选，默认 `50`，最大 `100`
+
+返回字段：
+
+- `id`
+- `normalized_url`
+- `label_id`
+- `label`
+- `label_name`
+- `created_at`
+- `updated_at`
+- `blog`: 若当前 URL 仍在 `blogs` 中，则返回博客摘要；否则为 `null`
+
+#### `GET /api/me/label-stats`
+
+用途：返回当前登录用户的随机博客标注汇总。
+
+请求头：
+
+- `Authorization: Bearer <session-token>`
+
+返回字段：
+
+- `label_count`: 当前用户总共保存的标注选择次数
+
+### 3.4 Blog 与图结构查询
+
+统一标识约定：
+
+- 本节所有路由中的 `blog_id` 都表示业务主键 `blogs.blog_id`，不再表示数据库行主键 `blogs.id`
+- blog 节点、详情、邻居摘要等响应会显式返回 `blog_id`
 
 #### `GET /api/blogs/catalog`
 
@@ -231,17 +384,74 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 非法 `sort` 返回 `422`
 - 当 `statuses` 存在时优先于 `status`，用于同时查询多个 `crawl_status`
 - `has_title` / `has_icon` 仅在传入真值时启用过滤；传入假值会保留参数值但不额外筛掉空字段记录
-- `id_asc` 按 `id ASC`
-- `recent_activity` 按 `activity_at DESC, connection_count DESC, id DESC`
-- `connections` 按 `connection_count DESC, activity_at DESC, id DESC`
-- `recently_discovered` 按 `created_at DESC, id DESC`
-- `random` 按数据库随机顺序返回，适合“随机博客”类入口
-- `id_desc` 按 `id DESC`
+- `id_asc` 按业务 `blog_id ASC`
+- `recent_activity` 按 `activity_at DESC, connection_count DESC, blog_id DESC`
+- `connections` 按 `connection_count DESC, activity_at DESC, blog_id DESC`
+- `recently_discovered` 按 `created_at DESC, blog_id DESC`
+- `random` 按用户反馈权重随机返回，适合“随机博客”类入口；该模式会过滤掉 `blog_labels` 中已有非 `blog` 管理员标签计数的 URL
+- `id_desc` 按业务 `blog_id DESC`
 - 若请求页码超出最后一页且结果集非空，服务端会回退到最后一页，并在响应中返回实际生效页码
 
 响应结构见“数据模型”章节中的 `BlogCatalogPageRecord`。
 
 当前前端使用方式：
+
+#### `POST /api/blogs/{blog_id}/user-labels`
+
+用途：随机博客页为单个博客 URL 增加一次公共用户标注。该接口写入 `blog_labels_userlabel`，表结构和 `blog_labels` 一致，均按 `normalized_url` 存储 `title` 与 `label_id` 计数字典；不会修改训练用的 `blog_labels`。
+
+请求体：
+
+```json
+{
+  "label": "other",
+  "previous_label": "blog"
+}
+```
+
+认证说明：
+
+- 未登录也可提交；服务端只更新公开聚合计数。
+- 登录后提交时可带 `Authorization: Bearer <session-token>`；服务端会同时记录该用户对当前 URL 的最新选择，并用已有选择推导旧 label，因此跨刷新切换也不会重复累加同一用户的旧选择。
+
+行为说明：
+
+- `label` 只接受随机博客页使用的四类标签：`blog`、`company`、`other`、`unknown`
+- `previous_label` 可选；用于随机博客页内的单 URL 单选择切换。若传入且与 `label` 不同，服务端会先把旧 label 计数减 `1`，再把新 label 计数加 `1`
+- 前端同一张 URL 卡片重复点击已选中的 label 不会再次请求接口，也不会重复累加计数
+- 随机博客加权时，所有 URL 默认权重为 `10`；设用户表中 `blog` 计数为 `x`、非 `blog` 计数为 `y`，权重为 `(10 + x) / (1 + y)`，最高不超过 `10`
+- 权重只影响 `sort=random` 的随机排序；管理员训练标签只负责过滤非 blog，不会被用户标注改变
+
+错误语义：
+
+- `404`: 目标 blog id 不存在
+- `409`: 目标不是已完成博客
+- `422`: label 非法
+- `401`: bearer token 非法或过期
+
+成功响应示例：
+
+```json
+{
+  "blog_id": 12,
+  "label_id": {
+    "1": 3,
+    "3": 1
+  },
+  "labels": [
+    {
+      "id": 1,
+      "name": "blog",
+      "slug": "blog",
+      "count": 3,
+      "labeled_at": "2026-05-26T00:20:00+00:00"
+    }
+  ],
+  "label_slugs": ["blog", "other"],
+  "last_labeled_at": "2026-05-26T00:20:00+00:00",
+  "is_labeled": true
+}
+```
 
 - 统一 discovery 主入口固定以 `statuses=WAITING,PROCESSING&sort=id_asc` 渲染“当前博客状态”板块
 - 发现页只请求当前页，不再拉全量 blog 列表
@@ -299,36 +509,110 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 其中 `neighbor_blog` 是详情页使用的邻居摘要，字段为：
 
 - `id`
+- `blog_id`
 - `domain`
 - `title`
 - `icon_url`
 
-### 3.4 管理员博客人工标注台
+### 3.4 管理员重新过滤任务
+
+#### `POST /api/admin/url-refilter-runs`
+
+用途：在过滤链配置变化后，从 `raw_discovered_urls` 重新应用当前过滤链，并同步修正 `blogs` / `edges`。
+
+固定执行顺序：
+
+1. 记录任务并写入事件日志
+2. 若 crawler 正在运行，则先停止 crawler
+3. 备份当前数据库
+4. 按 `raw_discovered_urls.id ASC` 重新扫描
+5. 对重复 `normalized_url` 先标记 `rule:duplicate_url`
+6. 按状态差异更新原始 URL、blog 与 edge
+
+状态迁移规则：
+
+- 重复 URL：同一个 `normalized_url` 只保留最早 raw 行继续跑过滤链；每条 raw 行只检查 `id` 更小的历史行，后续 raw 行直接标记 `rule:duplicate_url`
+- 非 `success` -> `success`：补建目标 blog，并补建从 `source_blog_id` 指向该 blog 的 edge；新补建的 raw-derived blog 默认使用对应 `raw_discovered_urls.id` 作为 `blogs.blog_id`，若该 ID 已被旧 blog 占用则自动回退到新的安全 ID
+- `success` -> 非 `success`：删除对应 edge；若该 URL 已无任何成功原始记录，则删除对应 blog 及其相关 edges
+- 非 `success` -> 非 `success`：仅更新 `raw_discovered_urls.status`
+
+`raw_discovered_urls.source_blog_id` 是发现来源的业务 ID 快照，不再作为 `blogs.blog_id` 的外键；删除或重建派生 blog 不会级联删除原始 raw URL 记录。
+
+返回字段：
+
+- `id`
+- `status`
+- `backup_path`
+- `total_count`
+- `scanned_count`
+- `unchanged_count`
+- `activated_count`
+- `deactivated_count`
+- `retagged_count`
+- `last_raw_url_id`
+- `started_at`
+- `completed_at`
+- `error_message`
+
+#### `GET /api/admin/url-refilter-runs/latest`
+
+用途：返回最近一次重新过滤任务摘要，供 Admin 页面轮询显示当前状态和汇总结果。
+
+#### `GET /api/admin/url-refilter-runs/{run_id}/events`
+
+用途：返回某次重新过滤任务的完整事件时间线。
+
+响应示例：
+
+```json
+[
+  {
+    "id": 1,
+    "run_id": 12,
+    "message": "停止爬虫中",
+    "created_at": "2026-04-22T17:30:00+00:00"
+  },
+  {
+    "id": 2,
+    "run_id": 12,
+    "message": "备份完成，文件保存在 /app/data/exports/db-backups/heyblog-refilter-backup-20260422T173001Z.sqlite",
+    "created_at": "2026-04-22T17:30:01+00:00"
+  }
+]
+```
+
+### 3.5 管理员博客人工标注台
 
 #### `GET /api/admin/blog-labeling/candidates`
 
-用途：返回博客人工标注台使用的候选列表。该接口固定只返回 `crawl_status == FINISHED` 的 blog，并把当前人工标签、多标签筛选元数据一起合并到响应里。
+用途：返回博客人工标注台使用的候选列表。标注台展示队列请求 `labeled=false`，只显示模型过滤前已经处理过、适合人工标注的 raw URL：`raw_discovered_urls.status = success` 或 `raw_discovered_urls.status LIKE 'model:%'`，且该 URL 在 `blog_labels` 中不存在。候选 ID 始终使用当前 `raw_discovered_urls.id`，便于前端继续按候选行保存；若该 raw URL 已有对应 blog，则只借用 blog 上的 title/icon 等展示字段，不把 `blogs.blog_id` 作为标注 ID，也不会为了标注补建轻量 blog 行。已标注候选展示 title 时优先使用 `blog_labels.title`；若旧 label 行没有 title 但当前 `blogs` 有对应 title，候选加载会临时回填 `blog_labels.title` 并返回该 title。实际 label 会按 `blog_labels.normalized_url` 长期保存，避免清库重爬后 raw/blog id 改变导致标注丢失。
 
 查询参数：
 
 - `page`: 页码，默认 `1`
 - `page_size`: 每页条数，默认 `50`，最终会被限制在 `1..200`
-- `q`: 模糊搜索，匹配 `title` / `domain` / `url` / `normalized_url`
+- `q`: 模糊搜索，匹配 `blogs.title` / `blog_labels.title` / `domain` / `url` / `normalized_url`
 - `label`: 标签 `slug` 精确筛选，例如 `blog`、`official`、`government`
-- `labeled`: 标注状态筛选；支持 `1/0`、`true/false`、`yes/no`
+- `labeled`: 标注状态筛选；支持 `1/0`、`true/false`、`yes/no`。标注台候选队列固定传 `false`，统计查询可传 `true`
 - `sort`: 排序方式，允许 `id_desc`、`recent_activity`、`recently_labeled`
 
 响应结构：
 
 - 复用 `BlogRecord` 的主体字段
-- 追加 `labels`、`label_slugs`、`last_labeled_at`、`is_labeled`
+- 追加 `label_id`、`labels`、`label_slugs`、`last_labeled_at`、`is_labeled`
 - 顶层追加 `available_tags`，用于前端渲染可选标签与新建标签后的刷新
 - 分页包装结构与 `GET /api/blogs/catalog` 一致
 
 语义说明：
 
 - 未标注状态通过 `labels = []` 与 `is_labeled = false` 表达，不把“未标注”落成特殊标签
-- 一个 blog 可以同时拥有多个标签；`label` 查询参数表达“包含该标签”的筛选语义，而不是单值相等比较
+- `label_id` 是 label id 到计数的 JSON object，例如 `{"1": 10, "2": 1}`
+- 一个 URL 可以同时拥有多个标签计数；`label` 查询参数表达“包含该标签”的筛选语义，而不是单值相等比较
+- 候选范围不再等同于 `crawl_status == FINISHED`；模型过滤掉的 `model:*` raw URL 也会进入标注台，避免训练数据只覆盖模型已放行样本
+- 标注保存不要求目标一定存在于 `blogs`；保存时会先用候选 raw row id 解析出 `normalized_url`，再把 `normalized_url`、当前展示 `title`、`label_id` 写入单表 `blog_labels`
+- 对只存在于 `raw_discovered_urls`、没有 `blogs.title` 的候选，前端加载页面时可调用 `POST /api/admin/blog-labeling/title-preview` 临时读取页面 `<title>`；该预览不写数据库，只有用户提交标注并在请求体传入 `title` 后才持久化到 `blog_labels.title`
+- `rule:*`、平台/TLD/路径等非模型过滤结果不会进入该标注池
+- 查询实现会按每个 `normalized_url` 的最早 labelable raw row 作为代表候选，并依赖 `raw_discovered_urls` 的 status / normalized URL 索引分页；打开 admin 页面或轮询刷新不应堆积全表 raw URL 聚合查询
 - 该接口只服务于标注工作台，不改变现有发现页 `GET /api/blogs/catalog` 的协议
 
 成功响应示例：
@@ -343,21 +627,23 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
       "domain": "alpha.example",
       "title": "Alpha Blog",
       "crawl_status": "FINISHED",
+      "label_id": {
+        "1": 10,
+        "5": 1
+      },
       "labels": [
         {
-          "id": 3,
+          "id": 1,
           "name": "blog",
           "slug": "blog",
-          "created_at": "2026-04-05T19:55:00+00:00",
-          "updated_at": "2026-04-05T19:55:00+00:00",
+          "count": 10,
           "labeled_at": "2026-04-05T20:01:00+00:00"
         },
         {
-          "id": 4,
+          "id": 5,
           "name": "official",
           "slug": "official",
-          "created_at": "2026-04-05T19:56:00+00:00",
-          "updated_at": "2026-04-05T19:56:00+00:00",
+          "count": 1,
           "labeled_at": "2026-04-05T20:01:00+00:00"
         }
       ],
@@ -368,18 +654,18 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
   ],
   "available_tags": [
     {
-      "id": 3,
+      "id": 1,
       "name": "blog",
       "slug": "blog",
-      "created_at": "2026-04-05T19:55:00+00:00",
-      "updated_at": "2026-04-05T19:55:00+00:00"
+      "created_at": null,
+      "updated_at": null
     },
     {
-      "id": 4,
+      "id": 5,
       "name": "official",
       "slug": "official",
-      "created_at": "2026-04-05T19:56:00+00:00",
-      "updated_at": "2026-04-05T19:56:00+00:00"
+      "created_at": null,
+      "updated_at": null
     }
   ],
   "page": 1,
@@ -398,18 +684,43 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 }
 ```
 
+#### `GET /api/admin/blog-labeling/counts`
+
+用途：返回标注台实时统计。该接口直接按 `blog_labels` 全表聚合，不依赖当前 raw URL 候选池；清空 crawler 数据或 raw id 变化不会影响已持久化 label 的统计。
+
+响应结构：
+
+```json
+{
+  "total_labeled": 2373,
+  "by_label": {
+    "blog": 651,
+    "company": 226,
+    "other": 1496,
+    "unknown": 0
+  }
+}
+```
+
+语义说明：
+
+- `total_labeled` 表示 `blog_labels.label_id` 非空的 URL 数
+- `by_label` 表示包含该 label 的 URL 数；即使某个 URL 对同一 label 的计数大于 1，也只计为 1 个 URL
+- label slug 来自 `blog_label_tags`，未知 id 会以数字字符串返回
+
 #### `GET /api/admin/blog-labeling/tags`
 
-用途：返回当前所有可用标签类型定义，供前端渲染和复用。
+用途：返回当前所有可用标签类型定义，供前端渲染和复用。标签定义保存在 `blog_label_tags`，用于解释 `blog_labels.label_id` 中的数字 key。
 
 响应结构：
 
 - 返回数组，每项包含 `id`、`name`、`slug`、`created_at`、`updated_at`
-- 标签按 `name` 升序返回
+- 默认映射为：`blog=1`、`company=2`、`other=3`、`unknown=4`、`official=5`、`government=6`
+- 标签按 id 升序返回
 
 #### `POST /api/admin/blog-labeling/tags`
 
-用途：创建一个新的标签类型；前端可以直接创建 `blog`、`unknown`、`official`、`government` 等业务标签。
+用途：创建或复用一个标签定义。该接口写入 `blog_label_tags`，使后续保存的 `label_id` 能稳定解析为 label 名称。
 
 请求体：
 
@@ -421,86 +732,159 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 行为说明：
 
-- 服务端会对 `name` 进行 trim，并生成稳定的 `slug`
-- 若同 `slug` 已存在，返回已有标签记录，不重复创建
+- 服务端会对 `name` 进行 trim，并生成稳定 slug
+- 同一 slug 会返回相同的稳定 id；默认标签会使用固定 id
 - 空白或非法名称返回 `422`
 
 成功响应示例：
 
 ```json
 {
-  "id": 7,
+  "id": 6,
   "name": "government",
   "slug": "government",
-  "created_at": "2026-04-05T20:10:00+00:00",
-  "updated_at": "2026-04-05T20:10:00+00:00"
+  "created_at": null,
+  "updated_at": null
 }
 ```
 
-#### `GET /api/admin/blog-labeling/export`
+#### `GET /api/admin/blog-labeling/parquet-status`
 
-用途：导出训练模型所需的人工标注 CSV。
+用途：检查当前人工标注 parquet 快照状态，不修改文件。
+
+响应结构：
+
+```json
+{
+  "path": "/app/data/exports/blog-label-training.parquet",
+  "filename": "blog-label-training.parquet",
+  "exists": true,
+  "saved_count": 200,
+  "total_labeled": 237,
+  "missing_count": 37,
+  "batch_size": 100,
+  "rewritten": false,
+  "message": "已保存 200 条数据，总计有 label 的有 237 条数据。",
+  "updated_at": "2026-05-24T18:50:18+00:00"
+}
+```
+
+#### `POST /api/admin/blog-labeling/parquet-sync`
+
+用途：检查保存的 parquet 文件是否已经包含所有有 label 的 URL 数据；若发现缺失、文件不存在、已保存数据多于当前数据库事实，或当前总量到达 100 条边界，则重写 parquet 快照。
+
+行为说明：
+
+- parquet 文件固定写入 `HEYBLOG_EXPORT_DIR/blog-label-training.parquet`
+- 只保留三列：`url`、`title`、`label`；`title` 来自保存标注时写入的 `blog_labels.title`
+- 语义与 CSV 导出一致，一个 `blog x label` 组合对应一行
+- 补齐/重建以 `blog_labels` 为事实来源，导出所有已持久化 label；不要求 URL 仍存在于当前 raw URL 候选池
+- 响应结构与 `parquet-status` 一致，`rewritten` 表示本次是否实际写入文件
+
+#### `POST /api/admin/blog-labeling/parquet-rebuild`
+
+用途：重置 parquet 文件，并按当前保存流程从数据库中所有有 label 的数据重新生成一遍。该接口用于未来新增字段或保存流程变化时避免在旧文件上原地迁移。
+
+响应结构与 `parquet-status` 一致；成功时 `rewritten` 为 `true`。
+
+#### `GET /api/admin/blog-labeling/parquet-export`
+
+用途：下载当前人工标注 parquet 文件。
 
 响应类型：
 
-- `text/csv`
+- `application/vnd.apache.parquet`
 
-返回约束：
+行为说明：
 
-- 第一行为表头：`url,title,label`
-- 只导出已有至少一个人工标签的 blog；未标注数据会直接跳过
-- `label` 列直接写入标签文本，例如 `blog`、`official`，而不是内部 `id` 或 `slug`
-- 一个 blog 绑定多个标签时，会按 `blog x label` 展平成多行
-- `title` 允许为空；若当前 blog 没有标题，则该列输出空字符串
+- 下载前会先执行一次 `parquet-sync` 语义，确保缺失数据被补齐
+- 响应头包含 `content-disposition: attachment; filename="blog-label-training.parquet"`
+- 响应头包含 `x-heyblog-label-saved-count` 与 `x-heyblog-label-total-count`，便于调用方核对下载时的保存数量
 
-#### `PUT /api/admin/blog-labeling/labels/{blog_id}`
+#### `POST /api/admin/blog-labeling/title-preview`
 
-用途：替换单个已完成抓取 blog 的整组人工标签。
+用途：为标注台 raw-only 候选实时读取页面标题。该接口只返回临时展示 title，不写入 `blogs` 或 `blog_labels`。
 
 请求体：
 
 ```json
 {
-  "tag_ids": [3, 4]
+  "url": "https://raw-only.example/"
+}
+```
+
+成功响应：
+
+```json
+{
+  "url": "https://raw-only.example/",
+  "title": "Raw Only Blog"
 }
 ```
 
 行为说明：
 
-- 请求体中的 `tag_ids` 是完整替换语义，而不是增量 patch
-- 同一个 blog 可以同时拥有多个标签
-- 传空数组表示“清空该 blog 当前所有标签”
+- 仅接受 `http://` / `https://` URL
+- 使用短超时抓取目标 HTML 并提取 `<title>`；失败时前端应继续允许按 URL/domain 标注
+- 返回的 `title` 只有随 `PUT /api/admin/blog-labeling/labels/{blog_id}` 的 `title` 字段提交后，才会写入 `blog_labels.title`
+
+#### `PUT /api/admin/blog-labeling/labels/{blog_id}`
+
+用途：替换单个标注候选 URL 的整组人工标签。路径中的 `blog_id` 为兼容旧前端字段名，实际应传当前候选的 raw URL id。
+
+请求体：
+
+```json
+{
+  "title": "Raw Only Blog",
+  "label_id": {
+    "1": 10,
+    "2": 1
+  }
+}
+```
+
+行为说明：
+
+- 请求体中的 `label_id` 是完整替换语义，而不是增量 patch；key 为 label id 字符串，value 为该 label 的累计标注次数
+- 兼容旧请求体 `{"tag_ids": [1, 5]}`，服务端会转换为 `{"1": 1, "5": 1}`
+- 请求体中的 `title` 可选；传入非空值时优先作为 `blog_labels.title` 保存，适用于 raw-only 候选的临时 title
+- 同一个 URL 可以同时拥有多个标签计数
+- 传 `{}` 或空 `tag_ids` 表示“清空该 URL 当前所有标签”
+- label 以 `blog_labels.normalized_url` 为长期键保存，并同步保存标注时的 `title`；清空 crawler 数据再重新爬取后，只要 URL 再次进入 labelable raw URL 池，就可用于导出原有标签
 
 错误语义：
 
-- `404`: `blog_id` 不存在
-- `409`: 目标 blog 不是 `FINISHED`，拒绝写入训练样本标签
-- `422`: `tag_ids` 中存在不存在的标签，或请求体非法
+- `404`: 候选 raw URL id 不存在
+- `409`: 目标不是 labelable raw URL，拒绝写入训练样本标签
+- `422`: `label_id` / `tag_ids` 非法
 
 成功响应示例：
 
 ```json
 {
   "blog_id": 12,
+  "label_id": {
+    "1": 10,
+    "2": 1
+  },
   "labels": [
     {
-      "id": 3,
+      "id": 1,
       "name": "blog",
       "slug": "blog",
-      "created_at": "2026-04-05T19:55:00+00:00",
-      "updated_at": "2026-04-05T19:55:00+00:00",
+      "count": 10,
       "labeled_at": "2026-04-05T20:12:00+00:00"
     },
     {
-      "id": 4,
-      "name": "official",
-      "slug": "official",
-      "created_at": "2026-04-05T19:56:00+00:00",
-      "updated_at": "2026-04-05T19:56:00+00:00",
+      "id": 2,
+      "name": "company",
+      "slug": "company",
+      "count": 1,
       "labeled_at": "2026-04-05T20:12:00+00:00"
     }
   ],
-  "label_slugs": ["blog", "official"],
+  "label_slugs": ["blog", "company"],
   "last_labeled_at": "2026-04-05T20:12:00+00:00",
   "is_labeled": true
 }
@@ -533,10 +917,10 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 常用查询参数：
 
 - `strategy`: `degree` 或 `seed`
-- `limit`: 默认子图规模上限
+- `limit`: 默认子图规模上限，当前最大允许 `10000`
 - `sample_mode`: `off` / `count` / `percent`
-- `sample_value`: 当采样开启时的数量或百分比
-- `sample_seed`: 固定随机种子，便于复现
+- `sample_value`: 当采样开启时的数量或百分比；`count` 会先用固定随机种子选择一个起点，再按 BFS 扩展到目标节点数，避免返回大量互不相连的随机点
+- `sample_seed`: 固定随机种子，便于复现随机起点与补充分量顺序
 
 响应结构：
 
@@ -572,7 +956,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - `nodes` 元素沿用 `BlogRecord`，并额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
 - 当 `has_stable_positions` 为 `true` 时，前端会优先使用这些坐标直接渲染，而不是首次实时跑力导布局
-- 当 `sample_mode != off` 时，会返回可复现的随机子图视图，但该模式只是辅助开关，不是默认主路径
+- 当 `sample_mode != off` 时，会返回可复现的随机起点 BFS 子图；若起点所在连通分量不足目标规模，会按同一随机序列继续从其他分量 BFS 补足
 - 服务在返回前会检查底层 graph 是否已变化；若当前仓库数据与最新 snapshot 不一致，会先重建 snapshot，再返回最新视图
 - `snapshot_namespace` 用于区分当前 view 依赖的 snapshot 来源；当前默认值为 `legacy`
 
@@ -631,7 +1015,10 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 ### 3.4 搜索与日志现状
 
 - 当前 public API 已不再暴露 legacy 的 `/api/logs` 与 `/api/search`。
-- 日志写入仍由 crawler 通过 persistence 内部接口完成；但 public 浏览面不再提供日志列表读取端点。
+- 运行日志统一由 `shared.observability` 输出到类型目录，默认是 `logs/app/`、`logs/error/`、`logs/access/`；每个类型目录下再按服务分目录，保存 `<service>-YYYYMMDD-HH.log` 小时切片，Docker Compose 中对应 `volumes/logs`。
+- legacy `/internal/logs` 仍保留兼容入口，但当前不会把 crawl log 写入业务数据库。
+- URL refilter 是高风险结构性维护操作：进度仍通过 run/event 接口持久化，同时 backend 发起/停爬虫阶段和 persistence 执行阶段都会写入独立日志服务 `url-refilter`，文件与 `backend`、`crawler`、`persistence-api` 并列，例如 `logs/app/url-refilter/url-refilter-YYYYMMDD-HH.log` 和 `logs/error/url-refilter/url-refilter-YYYYMMDD-HH.log`；Docker Compose 默认落在宿主机 `volumes/logs/app/url-refilter/` 和 `volumes/logs/error/url-refilter/`。
+- blog dedup scan 这类维护任务的进度属于 domain event，仍通过各自 run/event 接口持久化，不混入通用 application log。
 - `search` 服务仍保留为内部可重建索引组件，供 health 检查与 reindex 维护链路使用，并在缓存为空时回退到 `persistence-api /internal/search-snapshot`。
 - 浏览器当前没有直接依赖的 public 搜索页；public 发现主路径已经收敛到 `catalog / lookup / detail / graph views`。
 
@@ -692,7 +1079,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 后端会先做 URL normalize 与 email 基础校验
 - 当前去重主键已经扩展为 `identity_key`；它会忽略 `http/https`、主页默认首页路径、`www.`，以及白名单博客别名子域（如 `blog.`）
 - 活跃请求会按 `identity_key + ACTIVE_INGESTION_REQUEST_STATUSES` 复用，而不是重复创建 crawl
-- `request_token` 是无账号体系下查询请求状态所需的轻量凭证
+- `request_token` 仍作为自助提交状态查询的轻量凭证；当前账号系统暂未接管 ingestion request 的所有权
 
 #### `GET /api/ingestion-requests/{request_id}?request_token=...`
 
@@ -708,7 +1095,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 补充说明：
 
-- 当前首版未引入账号系统，因此状态查询依赖 `request_id + request_token`
+- 当前 ingestion request 状态查询仍依赖 `request_id + request_token`
 - 若 `request_token` 不匹配，返回 `404`
 - 统一 discovery 页的公开优先队列列表不会暴露该 `request_token`；只有创建者通过该单条接口查询时才会使用它
 
@@ -828,7 +1215,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 仅允许在 crawler 运行器不处于 `starting/running/stopping` 时调用
 - 若运行器忙碌，返回 `409`，错误详情为 `crawler_busy`
-- 会清空 `blogs`、`edges`
+- 会清空 `blogs`、`edges`、`raw_discovered_urls`、`ingestion_requests` 和维护任务记录
+- 不会删除人工 label 相关数据：`blog_labels(normalized_url, title, label_id, created_time, updated_time)` 和 `blog_label_tags` 会被保留
 - backend 在数据库重置后会尝试调用 `search /internal/search/reindex`
 - 即使 search 重建失败，数据库重置结果仍会返回，并附带 `search_reindexed=false`
 
@@ -840,6 +1228,12 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
   "blogs_deleted": 12,
   "edges_deleted": 34,
   "logs_deleted": 0,
+  "blog_link_labels_deleted": 0,
+  "blog_label_tags_deleted": 0,
+  "blog_labels_preserved": 8,
+  "blog_label_subjects_preserved": 0,
+  "blog_link_labels_preserved": 13,
+  "blog_label_tags_preserved": 6,
   "search_reindexed": true,
   "search": {
     "blogs": 0,
@@ -1216,7 +1610,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 ### `POST /internal/logs`
 
-用途：写入一条日志。
+用途：legacy 兼容入口。当前实现会接收该请求并返回成功，但不会再把 crawl log
+写入业务数据库；运行日志请查看统一日志目录。
 
 请求体：
 
@@ -1230,6 +1625,12 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 ```
 
 响应：
+
+```json
+{
+  "ok": true
+}
+```
 
 ```json
 {
@@ -1328,7 +1729,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 行为说明：
 
-- 清空 `blogs`、`edges`
+- 清空 `blogs`、`edges`、`raw_discovered_urls`、`ingestion_requests` 和维护任务记录
+- 保留 URL-keyed 人工 label 数据与 tag 定义
 - `logs_deleted` 固定返回 `0`
 - 重置主键计数器
 
@@ -1339,7 +1741,13 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
   "ok": true,
   "blogs_deleted": 12,
   "edges_deleted": 34,
-  "logs_deleted": 0
+  "logs_deleted": 0,
+  "blog_link_labels_deleted": 0,
+  "blog_label_tags_deleted": 0,
+  "blog_labels_preserved": 8,
+  "blog_label_subjects_preserved": 0,
+  "blog_link_labels_preserved": 13,
+  "blog_label_tags_preserved": 6
 }
 ```
 

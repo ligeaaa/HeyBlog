@@ -15,6 +15,7 @@ from crawler.domain.blog_node import BlogNode
 from crawler.domain.crawl_state import CrawlState
 from crawler.export_service import ExportService
 from crawler.observability.logger import CrawlerLogger
+from crawler.runtime.capacity import CrawlerCapacityGate
 from persistence_api.repository import RepositoryProtocol
 from shared.config import Settings
 
@@ -55,6 +56,10 @@ class CrawlPipeline:
         self.settings = settings
         self.repository = repository
         self.logger = CrawlerLogger()
+        self.capacity_gate = CrawlerCapacityGate(
+            repository,
+            raw_discovered_url_limit=settings.raw_discovered_url_limit,
+        )
         self.fetcher = Fetcher(
             user_agent=settings.user_agent,
             timeout_seconds=settings.request_timeout_seconds,
@@ -106,9 +111,15 @@ class CrawlPipeline:
         stats = CrawlRunStats()
         limit = max_nodes or self.settings.max_nodes_per_run
         normal_slots_remaining = 0
+        stop_reason: str | None = None
 
         while stats.processed < limit:
             if should_stop and should_stop():
+                stop_reason = "stop_requested"
+                break
+            capacity = self.capacity_gate.check()
+            if not capacity.allowed:
+                stop_reason = capacity.reason
                 break
             # Claiming and processing stay in one loop so the batch result
             # always reflects the same queue-fairness rules as runtime mode.
@@ -128,12 +139,15 @@ class CrawlPipeline:
             stats.failed += int(result["failed"])
 
         exports = self.write_exports()
-        return {
+        payload = {
             "processed": stats.processed,
             "discovered": stats.discovered,
             "failed": stats.failed,
             "exports": exports,
         }
+        if stop_reason is not None:
+            payload["stop_reason"] = stop_reason
+        return payload
 
     def process_blog_row(
         self,

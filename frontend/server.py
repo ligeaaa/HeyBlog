@@ -12,6 +12,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from shared.config import Settings
+from shared.observability import RequestIdMiddleware
+from shared.observability import configure_logging
+from shared.observability import get_request_id
+
+
+SERVICE_NAME = "frontend"
 
 
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent / "dist"
@@ -31,6 +37,12 @@ FALLBACK_HTML = """<!DOCTYPE html>
     </main>
   </body>
 </html>
+"""
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <path d="M18 18h18a12 12 0 0 1 0 24H18z" fill="#38bdf8"/>
+  <path d="M24 26h12a4 4 0 0 1 0 8H24z" fill="#ffffff"/>
+</svg>
 """
 
 
@@ -61,7 +73,17 @@ def _should_serve_spa_entry(path: str) -> bool:
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the frontend app."""
     resolved = settings or Settings.from_env()
+    configure_logging(
+        service=SERVICE_NAME,
+        log_dir=resolved.log_dir,
+        level=resolved.log_level,
+        file_enabled=resolved.log_file_enabled,
+        console_enabled=resolved.log_console_enabled,
+        log_format=resolved.log_format,
+        retention_days=resolved.log_retention_days,
+    )
     app = FastAPI(title="HeyBlog Frontend Service", version="0.1.0")
+    app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.backend_base_url = resolved.backend_base_url.rstrip("/")
     if FRONTEND_ASSETS_DIR.exists():
         app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS_DIR), name="assets")
@@ -80,6 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="backend_unavailable") from exc
         return {"status": "ok"}
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(content=FAVICON_SVG, media_type="image/svg+xml")
+
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy_api(path: str, request: Request) -> Response:
         target = f"{app.state.backend_base_url}/api/{path}"
@@ -89,6 +115,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         authorization = request.headers.get("authorization")
         if authorization:
             headers["authorization"] = authorization
+        request_id = get_request_id()
+        if request_id:
+            headers["x-request-id"] = request_id
         async with httpx.AsyncClient(timeout=60.0) as client:
             forwarded = await client.request(
                 request.method,
