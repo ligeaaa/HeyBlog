@@ -297,8 +297,47 @@ def test_repository_filter_stats_follow_configured_chain_order(tmp_path: Path) -
     stats = repository.get_filter_stats_by_chain_order()
 
     assert stats["by_filter_reason"]["raw"] == 3
+    # ``rule:duplicate_url`` now leads the chain ordering; no duplicates here so
+    # the remaining count is unchanged after that step.
+    assert stats["by_filter_reason"]["rule:duplicate_url"] == 3
     assert stats["by_filter_reason"]["rule:same_domain"] == 2
     assert stats["by_filter_reason"]["rule:platform_blocked"] == 1
+    # Terminal nodes close the funnel on the real accepted-URL and blog counts.
+    assert stats["by_filter_reason"]["success"] == 1
+    assert stats["by_filter_reason"]["blogs"] == repository.stats()["total_blogs"]
+    assert "other" not in stats["by_filter_reason"]
+
+
+def test_repository_filter_stats_account_for_duplicate_and_terminal_nodes(tmp_path: Path) -> None:
+    """Filter stats should subtract duplicates and end on success/blog counts."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+
+    # Two records share a normalized URL, so the second is tagged as a duplicate
+    # at ingestion time before the configurable rule chain runs.
+    repository.create_raw_discovered_url_record(
+        source_blog_id=source_id,
+        normalized_url="https://friend-a.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url_record(
+        source_blog_id=source_id,
+        normalized_url="https://friend-a.example/",
+        status="success",
+    )
+
+    stats = repository.get_filter_stats_by_chain_order()["by_filter_reason"]
+
+    assert stats["raw"] == 2
+    # The duplicate is dropped at the first chain step, leaving one candidate.
+    assert stats["rule:duplicate_url"] == 1
+    assert stats["success"] == 1
+    assert stats["blogs"] == repository.stats()["total_blogs"]
+    assert "other" not in stats
 
 
 def test_repository_stats_include_raw_discovered_url_count(tmp_path: Path) -> None:

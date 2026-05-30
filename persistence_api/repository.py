@@ -93,6 +93,9 @@ BLOG_LABEL_ID_TO_NAME = {label_id: name for label_id, name in DEFAULT_BLOG_LABEL
 RANDOM_BLOG_LABEL_SLUGS = frozenset({"blog", "company", "other", "unknown"})
 BLOG_LABEL_BLOG_ID = BLOG_LABEL_NAME_TO_ID["blog"]
 RAW_DISCOVERED_URL_DUPLICATE_STATUS = "rule:duplicate_url"
+RAW_DISCOVERED_URL_SUCCESS_STATUS = "success"
+REPOSITORY_LOGGER_NAME = "heyblog.repository"
+LOGGER = get_logger(REPOSITORY_LOGGER_NAME)
 URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
 URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
 URL_REFILTER_PROGRESS_LOG_INTERVAL = 10_000
@@ -4320,15 +4323,42 @@ class SQLAlchemyRepository:
         decision_chain = build_url_decision_chain(settings)
         with session_scope(self.session_factory) as session:
             total_raw = _count_selectable_rows(session, RawDiscoveredUrlModel)
+            total_blogs = _count_selectable_rows(session, BlogModel)
             grouped_rows = session.execute(
                 select(RawDiscoveredUrlModel.status, func.count()).group_by(RawDiscoveredUrlModel.status)
             ).all()
         counts_by_status = {str(status): int(count) for status, count in grouped_rows}
+        success_count = counts_by_status.get(RAW_DISCOVERED_URL_SUCCESS_STATUS, 0)
+
         remaining = total_raw
         by_filter_reason: dict[str, int] = {"raw": total_raw}
         for status in decision_chain.ordered_statuses():
             remaining -= counts_by_status.get(status, 0)
             by_filter_reason[status] = max(remaining, 0)
+
+        # Terminal nodes: the chain loop above only subtracts the rejecting
+        # statuses, so close the funnel with the real accepted-URL count and the
+        # blog count it produces. ``success`` -> ``blogs`` differ by the URLs
+        # that ``upsert_blog`` merges into an existing site via identity_key.
+        by_filter_reason[RAW_DISCOVERED_URL_SUCCESS_STATUS] = success_count
+        by_filter_reason["blogs"] = total_blogs
+
+        # Reconcile: every raw URL is either accepted (success) or carries a
+        # rejecting status. Any leftover means an unaccounted status slipped
+        # past the chain ordering, so surface it instead of hiding the gap.
+        rejected_total = sum(
+            count for status, count in counts_by_status.items() if status != RAW_DISCOVERED_URL_SUCCESS_STATUS
+        )
+        unaccounted = total_raw - success_count - rejected_total
+        if unaccounted:
+            LOGGER.warning(
+                "filter_stats unaccounted raw URLs: total=%s success=%s rejected=%s unaccounted=%s",
+                total_raw,
+                success_count,
+                rejected_total,
+                unaccounted,
+            )
+            by_filter_reason["other"] = unaccounted
         return {"by_filter_reason": by_filter_reason}
 
     def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:

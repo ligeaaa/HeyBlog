@@ -16,6 +16,7 @@ from crawler.crawling.decisions.filters import AssetSuffixFilter
 from crawler.crawling.decisions.filters import BlockedPathFilter
 from crawler.crawling.decisions.filters import BlockedTldFilter
 from crawler.crawling.decisions.filters import CustomDomainBlocklistFilter
+from crawler.crawling.decisions.filters import DuplicateUrlFilter
 from crawler.crawling.decisions.filters import ExactUrlBlocklistFilter
 from crawler.crawling.decisions.filters import LocationFragmentFilter
 from crawler.crawling.decisions.filters import NonHttpSchemeFilter
@@ -86,6 +87,7 @@ def _build_model_consensus_filter(settings: Settings) -> BaseUrlFilter:
 
 
 FILTER_REGISTRY: dict[str, FilterFactory] = {
+    "duplicate_url": _static_filter_factory(DuplicateUrlFilter),
     "non_http_scheme": _static_filter_factory(NonHttpSchemeFilter),
     "same_domain": _static_filter_factory(SameDomainFilter),
     "exact_url_blocklist": _settings_value_filter_factory(
@@ -113,6 +115,7 @@ FILTER_REGISTRY: dict[str, FilterFactory] = {
 }
 
 DEFAULT_FILTER_KINDS = (
+    "duplicate_url",
     "non_http_scheme",
     "same_domain",
     "exact_url_blocklist",
