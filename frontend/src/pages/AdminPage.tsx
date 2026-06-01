@@ -195,7 +195,6 @@ export function AdminPage() {
         runtimeStatusResponse,
         runtimeCurrentResponse,
         latestDedupResponse,
-        labelingPageResponse,
         labelCountResponse,
         labelParquetResponse,
       ] =
@@ -203,21 +202,33 @@ export function AdminPage() {
           fetchAdminRuntimeStatus(adminToken),
           fetchAdminRuntimeCurrent(adminToken),
           fetchAdminDedupLatest(adminToken),
-          loadLabelingCandidates(adminToken),
           fetchAdminBlogLabelCounts(adminToken),
           fetchAdminBlogLabelParquetStatus(adminToken),
         ]);
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
       setLatestDedup(latestDedupResponse);
-      setLabelingCandidates(labelingPageResponse.items);
-      void hydrateTemporaryCandidateTitles(adminToken, labelingPageResponse.items);
-      setLabelTags(labelingPageResponse.availableTags);
       setLabelCounts(labelCountResponse);
       setLabelParquetStatus(labelParquetResponse);
-      setLabelingTotalItems(labelingPageResponse.totalItems);
-      setLabelingTotalPages(labelingPageResponse.totalPages);
       setAdminError(null);
+
+      try {
+        const labelingPageResponse = await loadLabelingCandidates(adminToken);
+        setLabelingCandidates(labelingPageResponse.items);
+        void hydrateTemporaryCandidateTitles(adminToken, labelingPageResponse.items);
+        setLabelTags(labelingPageResponse.availableTags);
+        setLabelingTotalItems(labelingPageResponse.totalItems);
+        setLabelingTotalPages(labelingPageResponse.totalPages);
+      } catch (labelingError) {
+        console.error(labelingError);
+        setLabelingCandidates([]);
+        setLabelTags([]);
+        setLabelingTotalItems(0);
+        setLabelingTotalPages(1);
+        if (!options?.silent) {
+          toast.error("标注台加载失败，其他管理员接口仍可使用。");
+        }
+      }
     } catch (error) {
       console.error(error);
       setRuntimeStatus(null);
