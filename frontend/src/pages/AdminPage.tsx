@@ -27,16 +27,14 @@ import {
   fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
-  fetchAdminUrlRefilterEvents,
-  fetchAdminUrlRefilterLatest,
   fetchStats,
   postAdminBlogLabelTag,
   postAdminBlogLabelParquetRebuild,
   postAdminBlogLabelParquetSync,
   postAdminBootstrap,
+  postAdminRequeueFailedBlogs,
   postAdminResetDatabase,
   postAdminRunBatch,
-  postAdminRunUrlRefilter,
   postAdminRuntimeStart,
   postAdminRuntimeStop,
   putAdminBlogLabels,
@@ -47,8 +45,6 @@ import type {
   AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
-  AdminUrlRefilterRun,
-  AdminUrlRefilterRunEvent,
   StatsData,
   AdminBlogLabelCounts,
   AdminBlogLabelParquetStatus,
@@ -128,8 +124,6 @@ export function AdminPage() {
   const [runtimeStatus, setRuntimeStatus] = useState<AdminRuntimeStatus | null>(null);
   const [runtimeCurrent, setRuntimeCurrent] = useState<AdminRuntimeCurrent | null>(null);
   const [latestDedup, setLatestDedup] = useState<AdminDedupSummary | null>(null);
-  const [latestRefilterRun, setLatestRefilterRun] = useState<AdminUrlRefilterRun | null>(null);
-  const [refilterEvents, setRefilterEvents] = useState<AdminUrlRefilterRunEvent[]>([]);
   const [labelingCandidates, setLabelingCandidates] = useState<AdminBlogLabelingCandidate[]>([]);
   const [labelTags, setLabelTags] = useState<AdminBlogLabelTag[]>([]);
   const [labelCounts, setLabelCounts] = useState<AdminBlogLabelCounts>({ totalLabeled: 0, byLabel: {} });
@@ -187,8 +181,6 @@ export function AdminPage() {
         setRuntimeStatus(null);
         setRuntimeCurrent(null);
         setLatestDedup(null);
-        setLatestRefilterRun(null);
-        setRefilterEvents([]);
         setLabelingCandidates([]);
         setLabelTags([]);
         setLabelCounts({ totalLabeled: 0, byLabel: {} });
@@ -203,7 +195,6 @@ export function AdminPage() {
         runtimeStatusResponse,
         runtimeCurrentResponse,
         latestDedupResponse,
-        latestRefilterResponse,
         labelingPageResponse,
         labelCountResponse,
         labelParquetResponse,
@@ -212,7 +203,6 @@ export function AdminPage() {
           fetchAdminRuntimeStatus(adminToken),
           fetchAdminRuntimeCurrent(adminToken),
           fetchAdminDedupLatest(adminToken),
-          fetchAdminUrlRefilterLatest(adminToken),
           loadLabelingCandidates(adminToken),
           fetchAdminBlogLabelCounts(adminToken),
           fetchAdminBlogLabelParquetStatus(adminToken),
@@ -220,7 +210,6 @@ export function AdminPage() {
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
       setLatestDedup(latestDedupResponse);
-      setLatestRefilterRun(latestRefilterResponse);
       setLabelingCandidates(labelingPageResponse.items);
       void hydrateTemporaryCandidateTitles(adminToken, labelingPageResponse.items);
       setLabelTags(labelingPageResponse.availableTags);
@@ -228,19 +217,12 @@ export function AdminPage() {
       setLabelParquetStatus(labelParquetResponse);
       setLabelingTotalItems(labelingPageResponse.totalItems);
       setLabelingTotalPages(labelingPageResponse.totalPages);
-      if (latestRefilterResponse !== null) {
-        setRefilterEvents(await fetchAdminUrlRefilterEvents(adminToken, latestRefilterResponse.id));
-      } else {
-        setRefilterEvents([]);
-      }
       setAdminError(null);
     } catch (error) {
       console.error(error);
       setRuntimeStatus(null);
       setRuntimeCurrent(null);
       setLatestDedup(null);
-      setLatestRefilterRun(null);
-      setRefilterEvents([]);
       setLabelingCandidates([]);
       setLabelTags([]);
       setLabelCounts({ totalLabeled: 0, byLabel: {} });
@@ -461,15 +443,18 @@ export function AdminPage() {
    * @param successMessage Toast message shown after success.
    * @returns Promise resolved after the action and refresh finish.
    */
-  async function runAdminAction(action: () => Promise<unknown>, successMessage: string) {
+  async function runAdminAction(
+    action: () => Promise<unknown>,
+    successMessage: string | ((result: unknown) => string),
+  ) {
     if (!activeAdminToken.trim()) {
       toast.error("请先输入管理员 Token。");
       return;
     }
     try {
       setIsRunningAction(true);
-      await action();
-      toast.success(successMessage);
+      const result = await action();
+      toast.success(typeof successMessage === "function" ? successMessage(result) : successMessage);
       await loadAdminPage(activeAdminToken);
     } catch (error) {
       console.error(error);
@@ -820,6 +805,25 @@ export function AdminPage() {
                   <div className="text-xs text-slate-500">POST /api/admin/runtime/stop</div>
                 </div>
               </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void runAdminAction(
+                    () => postAdminRequeueFailedBlogs(activeAdminToken),
+                    (result) => {
+                      const requeued = Number((result as { requeued?: number }).requeued ?? 0);
+                      return `已重新入队 ${requeued} 个 FAILED 博客。`;
+                    },
+                  )
+                }
+                className="flex items-center gap-3 rounded-3xl border border-indigo-200 px-5 py-4 text-left transition-colors hover:border-indigo-300 hover:bg-indigo-50"
+              >
+                <RotateCcw className="h-5 w-5 text-indigo-600" />
+                <div>
+                  <div className="text-slate-900">重试失败博客</div>
+                  <div className="text-xs text-slate-500">POST /api/admin/blogs/requeue-failed</div>
+                </div>
+              </button>
               <div className="rounded-3xl border border-slate-200 px-5 py-4">
                 <div className="mb-3 flex items-center justify-between">
                   <div>
@@ -858,22 +862,6 @@ export function AdminPage() {
                 <div>
                   <div className="text-slate-900">重置数据库</div>
                   <div className="text-xs text-slate-500">POST /api/admin/database/reset</div>
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void runAdminAction(
-                    () => postAdminRunUrlRefilter(activeAdminToken),
-                    "重新过滤任务已启动。",
-                  )
-                }
-                className="flex items-center gap-3 rounded-3xl border border-indigo-200 px-5 py-4 text-left transition-colors hover:bg-indigo-50"
-              >
-                <RotateCcw className="h-5 w-5 text-indigo-600" />
-                <div>
-                  <div className="text-slate-900">从 raw 重新过滤</div>
-                  <div className="text-xs text-slate-500">POST /api/admin/url-refilter-runs</div>
                 </div>
               </button>
             </div>
@@ -925,43 +913,6 @@ export function AdminPage() {
                     scanned / total: {latestDedup ? `${latestDedup.scannedCount} / ${latestDedup.totalCount}` : "-"}
                     <br />
                     removed: {latestDedup?.removedCount ?? "-"}
-                  </div>
-                </div>
-                <div className="rounded-3xl bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">latest refilter run</div>
-                  <div className="mt-1 text-xl text-slate-950">{latestRefilterRun?.status ?? "暂无记录"}</div>
-                  <div className="mt-3 text-sm leading-7 text-slate-600">
-                    run id: {latestRefilterRun?.id ?? "-"}
-                    <br />
-                    scanned / total:{" "}
-                    {latestRefilterRun ? `${latestRefilterRun.scannedCount} / ${latestRefilterRun.totalCount}` : "-"}
-                    <br />
-                    activated / deactivated / retagged:{" "}
-                    {latestRefilterRun
-                      ? `${latestRefilterRun.activatedCount} / ${latestRefilterRun.deactivatedCount} / ${latestRefilterRun.retaggedCount}`
-                      : "-"}
-                    <br />
-                    backup: {latestRefilterRun?.backupPath ?? "-"}
-                  </div>
-                </div>
-                <div className="rounded-3xl bg-slate-50 p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-slate-500">重新过滤日志</div>
-                    <div className="text-xs text-slate-400">{refilterEvents.length} 条</div>
-                  </div>
-                  <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1 text-sm text-slate-600">
-                    {refilterEvents.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-3 text-slate-400">
-                        暂无日志
-                      </div>
-                    ) : (
-                      refilterEvents.map((event) => (
-                        <div key={event.id} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-                          <div className="text-xs text-slate-400">{event.createdAt ?? "-"}</div>
-                          <div className="mt-1 leading-6 text-slate-700">{event.message}</div>
-                        </div>
-                      ))
-                    )}
                   </div>
                 </div>
               </div>

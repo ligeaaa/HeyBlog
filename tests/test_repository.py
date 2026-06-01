@@ -297,8 +297,92 @@ def test_repository_filter_stats_follow_configured_chain_order(tmp_path: Path) -
     stats = repository.get_filter_stats_by_chain_order()
 
     assert stats["by_filter_reason"]["raw"] == 3
+    # ``rule:duplicate_url`` now leads the chain ordering; no duplicates here so
+    # the remaining count is unchanged after that step.
+    assert stats["by_filter_reason"]["rule:duplicate_url"] == 3
     assert stats["by_filter_reason"]["rule:same_domain"] == 2
     assert stats["by_filter_reason"]["rule:platform_blocked"] == 1
+    # Terminal nodes close the funnel on the real accepted-URL and blog counts.
+    assert stats["by_filter_reason"]["success"] == 1
+    assert stats["by_filter_reason"]["blogs"] == repository.stats()["total_blogs"]
+    assert stats["rule_drops"]["rule:same_domain"] == 1
+    assert stats["rule_drops"]["rule:platform_blocked"] == 1
+    assert stats["success_sources"] == {"rss": 0, "model": 0, "unknown": 1}
+    assert stats["funnel"]["raw"] == 3
+    assert stats["funnel"]["success"] == 1
+    assert "other" not in stats["by_filter_reason"]
+
+
+def test_repository_filter_stats_account_for_duplicate_and_terminal_nodes(tmp_path: Path) -> None:
+    """Filter stats should subtract duplicates and end on success/blog counts."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+
+    # Two records share a normalized URL, so the second is tagged as a duplicate
+    # at ingestion time before the configurable rule chain runs.
+    repository.create_raw_discovered_url_record(
+        source_blog_id=source_id,
+        normalized_url="https://friend-a.example/",
+        status="success",
+    )
+    repository.create_raw_discovered_url_record(
+        source_blog_id=source_id,
+        normalized_url="https://friend-a.example/",
+        status="success",
+    )
+
+    stats = repository.get_filter_stats_by_chain_order()["by_filter_reason"]
+
+    assert stats["raw"] == 2
+    # The duplicate is dropped at the first chain step, leaving one candidate.
+    assert stats["rule:duplicate_url"] == 1
+    assert stats["success"] == 1
+    assert stats["blogs"] == repository.stats()["total_blogs"]
+    assert "other" not in stats
+
+
+def test_repository_filter_stats_split_success_sources(tmp_path: Path) -> None:
+    """Filter stats should distinguish RSS and model success exits."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    source_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+    rss_raw = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://rss.example/",
+        status="pending",
+    )
+    model_raw = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://model.example/",
+        status="pending",
+    )
+    rejected_raw = repository.create_raw_discovered_url(
+        source_blog_id=source_id,
+        normalized_url="https://reject.example/",
+        status="pending",
+    )
+
+    repository.update_raw_discovered_url_status(record_id=rss_raw, status="success", accepted_by="rss")
+    repository.update_raw_discovered_url_status(record_id=model_raw, status="success", accepted_by="model")
+    repository.update_raw_discovered_url_status(
+        record_id=rejected_raw,
+        status="model:model_consensus_all_non_blog",
+        accepted_by="model",
+    )
+
+    stats = repository.get_filter_stats_by_chain_order()
+
+    assert stats["success_sources"] == {"rss": 1, "model": 1, "unknown": 0}
+    assert stats["funnel"]["after_rules"] == 3
+    assert stats["funnel"]["model_rejected"] == 1
+    assert stats["funnel"]["success"] == 2
 
 
 def test_repository_stats_include_raw_discovered_url_count(tmp_path: Path) -> None:
@@ -699,337 +783,6 @@ def test_repository_dedup_scan_uses_model_consensus_when_enabled(tmp_path: Path,
     assert items[0]["reason_code"] == "model_consensus_all_non_blog"
 
 
-def test_repository_url_refilter_run_reapplies_chain_and_updates_rows(tmp_path: Path) -> None:
-    """URL refilter should backup the database, rewrite statuses, and sync blog/edge rows."""
-    config_path = tmp_path / "filter_chain.toml"
-    config_path.write_text(
-        """
-[[filters]]
-kind = "same_domain"
-enabled = true
-""".strip(),
-        encoding="utf-8",
-    )
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        filter_chain_config_path=config_path,
-        friend_link_exact_url_blocklist=("https://blocked.example/",),
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, _ = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    blocked_id, _ = repository.upsert_blog(
-        url="https://blocked.example/",
-        normalized_url="https://blocked.example/",
-        domain="blocked.example",
-    )
-    repository.add_edge(
-        from_blog_id=source_id,
-        to_blog_id=blocked_id,
-        link_url_raw="https://blocked.example/",
-        link_text=None,
-    )
-    repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://blocked.example/",
-        status="success",
-    )
-    repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://agency.gov/",
-        status="rule:platform_blocked",
-    )
-    activated_raw_id = repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://friend.example/",
-        status="rule:domain_blocked",
-    )
-
-    config_path.write_text(
-        """
-[[filters]]
-kind = "same_domain"
-enabled = true
-
-[[filters]]
-kind = "exact_url_blocklist"
-enabled = true
-
-[[filters]]
-kind = "blocked_tld"
-enabled = true
-""".strip(),
-        encoding="utf-8",
-    )
-
-    run = repository.create_url_refilter_run(crawler_was_running=False)
-    summary = repository.execute_url_refilter_run(run_id=run["id"])
-    events = repository.list_url_refilter_run_events(run["id"])
-
-    assert summary["status"] == "SUCCEEDED"
-    assert summary["total_count"] == 3
-    assert summary["scanned_count"] == 3
-    assert summary["unchanged_count"] == 0
-    assert summary["activated_count"] == 1
-    assert summary["deactivated_count"] == 1
-    assert summary["retagged_count"] == 1
-    assert summary["backup_path"] is not None
-    assert Path(summary["backup_path"]).exists()
-    assert [event["message"] for event in events[:3]] == [
-        "备份中",
-        f"备份完成，文件保存在 {summary['backup_path']}",
-        "开始按过滤链重新扫描原始URL表",
-    ]
-
-    with session_scope(repository.session_factory) as session:
-        raw_rows = session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
-        assert [row.status for row in raw_rows] == [
-            "rule:exact_url_blocked",
-            "rule:blocked_tld",
-            "success",
-        ]
-
-    blogs = repository.list_blogs()
-    assert {row["normalized_url"] for row in blogs} == {
-        "https://source.example/",
-        "https://friend.example/",
-    }
-    assert next(row["id"] for row in blogs if row["normalized_url"] == "https://friend.example/") == activated_raw_id
-    edges = repository.list_edges()
-    assert edges == [
-        {
-            "id": edges[0]["id"],
-            "from_blog_id": source_id,
-            "to_blog_id": next(row["id"] for row in blogs if row["normalized_url"] == "https://friend.example/"),
-            "link_url_raw": "https://friend.example/",
-            "link_text": None,
-            "discovered_at": edges[0]["discovered_at"],
-        }
-    ]
-
-
-def test_repository_url_refilter_deactivation_deletes_blog_graph_idempotently(tmp_path: Path) -> None:
-    """Deactivated URLs should remove their target blog graph and tolerate missing rows."""
-    config_path = tmp_path / "filter_chain.toml"
-    config_path.write_text(
-        """
-[[filters]]
-kind = "same_domain"
-enabled = true
-""".strip(),
-        encoding="utf-8",
-    )
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        filter_chain_config_path=config_path,
-        friend_link_exact_url_blocklist=("https://target.example/",),
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, _ = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    target_id, _ = repository.upsert_blog(
-        url="https://target.example/",
-        normalized_url="https://target.example/",
-        domain="target.example",
-    )
-    other_id, _ = repository.upsert_blog(
-        url="https://other.example/",
-        normalized_url="https://other.example/",
-        domain="other.example",
-    )
-    repository.add_edge(
-        from_blog_id=source_id,
-        to_blog_id=target_id,
-        link_url_raw="https://target.example/",
-        link_text=None,
-    )
-    repository.add_edge(
-        from_blog_id=target_id,
-        to_blog_id=other_id,
-        link_url_raw="https://other.example/",
-        link_text=None,
-    )
-    raw_id = repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://target.example/",
-        status="success",
-    )
-
-    config_path.write_text(
-        """
-[[filters]]
-kind = "same_domain"
-enabled = true
-
-[[filters]]
-kind = "exact_url_blocklist"
-enabled = true
-""".strip(),
-        encoding="utf-8",
-    )
-
-    run = repository.create_url_refilter_run(crawler_was_running=False)
-    summary = repository.execute_url_refilter_run(run_id=run["id"])
-
-    assert summary["status"] == "SUCCEEDED"
-    assert summary["deactivated_count"] == 1
-    assert repository.get_blog(target_id) is None
-    assert repository.list_edges() == []
-
-    with session_scope(repository.session_factory) as session:
-        raw = session.scalar(select(RawDiscoveredUrlModel).where(RawDiscoveredUrlModel.id == raw_id))
-        assert raw is not None
-        repository._handle_refilter_deactivated_success(session, raw=raw)  # type: ignore[attr-defined]
-
-    assert repository.get_blog(target_id) is None
-    assert repository.list_edges() == []
-
-
-def test_repository_url_refilter_activation_skips_edge_when_source_blog_is_missing(tmp_path: Path) -> None:
-    """Activated raw URLs should still create targets but not orphaned source edges."""
-    config_path = tmp_path / "filter_chain.toml"
-    config_path.write_text("", encoding="utf-8")
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        filter_chain_config_path=config_path,
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, _ = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    raw_id = repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://target.example/",
-        status="rule:domain_blocked",
-    )
-    with session_scope(repository.session_factory) as session:
-        source = session.scalar(select(BlogModel).where(BlogModel.blog_id == source_id))
-        assert source is not None
-        session.delete(source)
-
-    run = repository.create_url_refilter_run(crawler_was_running=False)
-    summary = repository.execute_url_refilter_run(run_id=run["id"])
-
-    assert summary["status"] == "SUCCEEDED"
-    assert summary["activated_count"] == 1
-    assert repository.get_blog(raw_id) is not None
-    assert repository.list_edges() == []
-
-
-def test_repository_url_refilter_run_marks_old_duplicate_raw_urls(tmp_path: Path) -> None:
-    """URL refilter should apply duplicate URL filtering before other filters."""
-    config_path = tmp_path / "filter_chain.toml"
-    config_path.write_text(
-        """
-[[filters]]
-kind = "same_domain"
-enabled = true
-""".strip(),
-        encoding="utf-8",
-    )
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        filter_chain_config_path=config_path,
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, _ = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    first_raw_id = repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://friend.example/",
-        status="success",
-    )
-    duplicate_raw_id = repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://friend.example/",
-        status="success",
-    )
-    assert duplicate_raw_id != first_raw_id
-    repository.update_raw_discovered_url_status(record_id=duplicate_raw_id, status="success")
-
-    run = repository.create_url_refilter_run(crawler_was_running=False)
-    summary = repository.execute_url_refilter_run(run_id=run["id"])
-
-    assert summary["status"] == "SUCCEEDED"
-    assert summary["unchanged_count"] == 1
-    assert summary["deactivated_count"] == 1
-    with session_scope(repository.session_factory) as session:
-        raw_rows = session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
-        assert [row.status for row in raw_rows] == ["success", "rule:duplicate_url"]
-
-
-def test_repository_url_refilter_logs_lifecycle_without_small_final_progress(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Small refilter runs should log start and finish, while progress waits for each 10k batch."""
-    config_path = tmp_path / "filter_chain.toml"
-    config_path.write_text(
-        """
-[[filters]]
-kind = "same_domain"
-enabled = true
-""".strip(),
-        encoding="utf-8",
-    )
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        filter_chain_config_path=config_path,
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, _ = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    repository.create_raw_discovered_url(
-        source_blog_id=source_id,
-        normalized_url="https://friend.example/",
-        status="success",
-    )
-
-    logger = repository_module.logging.getLogger(repository_module.URL_REFILTER_LOGGER_NAME)
-    monkeypatch.setattr(logger, "propagate", True)
-    caplog.set_level(0, logger=repository_module.URL_REFILTER_LOGGER_NAME)
-    run = repository.create_url_refilter_run(crawler_was_running=False)
-    repository.execute_url_refilter_run(run_id=run["id"])
-
-    refilter_records = [
-        record for record in caplog.records if record.name == repository_module.URL_REFILTER_LOGGER_NAME
-    ]
-    assert [getattr(record, "event", None) for record in refilter_records] == [
-        "maintenance.url_refilter.execute.started",
-        "maintenance.url_refilter.execute.finished",
-    ]
-    assert getattr(refilter_records[-1], "reason") == "all_raw_urls_scanned"
-    assert getattr(refilter_records[-1], "message") == (
-        "url refilter execution finished: all raw URLs scanned successfully"
-    )
-    assert getattr(refilter_records[-1], "total_count") == 1
-
-
 def test_repository_ensure_edge_in_session_dedupes_pending_edges(tmp_path: Path) -> None:
     """Refilter edge creation should ignore already-pending same-direction edges."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -1186,6 +939,42 @@ def test_repository_requeues_processing_blogs_on_restart(tmp_path: Path) -> None
     reclaimed = recovered.get_next_waiting_blog()
     assert reclaimed is not None
     assert reclaimed["id"] == blog_id
+
+
+def test_repository_requeues_failed_blogs_for_retry(tmp_path: Path) -> None:
+    """Explicit admin retry should move failed blogs back to the waiting queue."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    failed_id, _ = repository.upsert_blog(
+        url="https://failed.example/",
+        normalized_url="https://failed.example/",
+        domain="failed.example",
+    )
+    finished_id, _ = repository.upsert_blog(
+        url="https://finished.example/",
+        normalized_url="https://finished.example/",
+        domain="finished.example",
+    )
+    repository.mark_blog_result(
+        blog_id=failed_id,
+        crawl_status="FAILED",
+        status_code=None,
+        friend_links_count=0,
+    )
+    repository.mark_blog_result(
+        blog_id=finished_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+    )
+
+    result = repository.requeue_failed_blogs()
+
+    assert result == {"requeued": 1}
+    assert repository.get_blog(failed_id)["crawl_status"] == "WAITING"
+    assert repository.get_blog(finished_id)["crawl_status"] == "FINISHED"
+    stats = repository.stats()
+    assert stats["pending_tasks"] == 1
+    assert stats["failed_tasks"] == 0
 
 
 def test_repository_claims_waiting_blogs_in_id_order(tmp_path: Path) -> None:
@@ -2542,6 +2331,7 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         "identity_ruleset_version": "2026-04-07-v5",
         "domain": "delta.example",
         "email": None,
+        "feed_url": None,
         "title": "delta.example title",
         "icon_url": "https://delta.example/favicon.ico",
         "status_code": 200,

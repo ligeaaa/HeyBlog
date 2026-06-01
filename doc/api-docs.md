@@ -107,10 +107,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `POST /api/admin/runtime/run-batch`
 - `POST /api/admin/crawl/bootstrap`
 - `POST /api/admin/crawl/run`
+- `POST /api/admin/blogs/requeue-failed`
 - `POST /api/admin/database/reset`
-- `POST /api/admin/url-refilter-runs`
-- `GET /api/admin/url-refilter-runs/latest`
-- `GET /api/admin/url-refilter-runs/{run_id}/events`
 - `GET /api/admin/blog-labeling/candidates`
 - `GET /api/admin/blog-labeling/counts`
 - `GET /api/admin/blog-labeling/tags`
@@ -227,22 +225,30 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 #### `GET /api/filter-stats`
 
-用途：返回基于配置化 URL 过滤链的顺序统计结果。
+用途：返回基于配置化 URL 过滤链的统计结果，用于展示规则过滤漏斗、RSS/模型成功判定分流，以及最终入库博客数量。
 
 返回结构：
 
-- `by_filter_reason`: 按过滤链顺序排列的对象
-- `raw`: 进入过滤链的标准化 URL 总数
-- 后续每个 key 都是 `{filter_kind}:{filter_reason}`
-- 每个 value 表示执行完该过滤器后，仍然剩余多少 URL
+- `by_filter_reason`: 兼容字段。按过滤链顺序排列的对象；每个 value 表示执行完该过滤器后仍然剩余多少 URL，末尾包含 `success` 与 `blogs`
+- `rule_drops`: 每个 `rule:*` 规则实际拦截的 URL 数量
+- `success_sources`: `success` URL 的判定来源计数
+  - `rss`: 通过 RSS/Atom feed discovery 判定为博客
+  - `model`: 通过模型共识判定为博客
+  - `unknown`: 缺少来源字段的成功 URL，通常只会出现在旧数据或手工导入数据中
+- `funnel`: 面向前端可视化的关键漏斗节点
+  - `raw`: 进入过滤链的标准化 URL 总数
+  - `after_rules`: 通过全部确定性规则后的候选 URL 数
+  - `model_rejected`: 被模型共识拒绝的 URL 数
+  - `success`: 成功判定为博客 URL 的总数
+  - `blogs`: 实际入库博客总数
 
 统计语义：
 
 - 顺序由 `runtime_resources/filter_chain.toml` 中启用的过滤器顺序决定
 - 统计基础来自持久化表 `raw_discovered_urls`
 - `rule:duplicate_url` 是过滤链前置状态：同一个 `normalized_url` 已经存在更小 `id` 的 raw 行时，当前 raw URL 会提前标记为重复，不再进入后续过滤链；更大 `id` 的未来/后续行不会反向影响当前行
-- URL 通过整条过滤链时会被写为 `success`
-- 接口不会返回 `success`，只返回 `raw` 和各过滤器步骤后的剩余数量
+- URL 通过 RSS 或模型成功判定后仍写为 `status=success`，同时用 `accepted_by` 记录来源
+- `success` 与 `blogs` 可能不同，因为 `upsert_blog` 会按 `identity_key` 合并同一站点
 
 响应示例：
 
@@ -250,10 +256,28 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 {
   "by_filter_reason": {
     "raw": 1000,
-    "rule:same_domain": 920,
-    "rule:platform_blocked": 860,
-    "rule:blocked_tld": 820,
-    "model:model_consensus_all_non_blog": 800
+    "rule:duplicate_url": 930,
+    "rule:same_domain": 880,
+    "rss:rss_feed_found": 700,
+    "model:model_consensus_all_non_blog": 620,
+    "success": 620,
+    "blogs": 590
+  },
+  "rule_drops": {
+    "rule:duplicate_url": 70,
+    "rule:same_domain": 50
+  },
+  "success_sources": {
+    "rss": 260,
+    "model": 360,
+    "unknown": 0
+  },
+  "funnel": {
+    "raw": 1000,
+    "after_rules": 700,
+    "model_rejected": 80,
+    "success": 620,
+    "blogs": 590
   }
 }
 ```
@@ -513,73 +537,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `domain`
 - `title`
 - `icon_url`
-
-### 3.4 管理员重新过滤任务
-
-#### `POST /api/admin/url-refilter-runs`
-
-用途：在过滤链配置变化后，从 `raw_discovered_urls` 重新应用当前过滤链，并同步修正 `blogs` / `edges`。
-
-固定执行顺序：
-
-1. 记录任务并写入事件日志
-2. 若 crawler 正在运行，则先停止 crawler
-3. 备份当前数据库
-4. 按 `raw_discovered_urls.id ASC` 重新扫描
-5. 对重复 `normalized_url` 先标记 `rule:duplicate_url`
-6. 按状态差异更新原始 URL、blog 与 edge
-
-状态迁移规则：
-
-- 重复 URL：同一个 `normalized_url` 只保留最早 raw 行继续跑过滤链；每条 raw 行只检查 `id` 更小的历史行，后续 raw 行直接标记 `rule:duplicate_url`
-- 非 `success` -> `success`：补建目标 blog，并补建从 `source_blog_id` 指向该 blog 的 edge；新补建的 raw-derived blog 默认使用对应 `raw_discovered_urls.id` 作为 `blogs.blog_id`，若该 ID 已被旧 blog 占用则自动回退到新的安全 ID
-- `success` -> 非 `success`：删除对应 edge；若该 URL 已无任何成功原始记录，则删除对应 blog 及其相关 edges
-- 非 `success` -> 非 `success`：仅更新 `raw_discovered_urls.status`
-
-`raw_discovered_urls.source_blog_id` 是发现来源的业务 ID 快照，不再作为 `blogs.blog_id` 的外键；删除或重建派生 blog 不会级联删除原始 raw URL 记录。
-
-返回字段：
-
-- `id`
-- `status`
-- `backup_path`
-- `total_count`
-- `scanned_count`
-- `unchanged_count`
-- `activated_count`
-- `deactivated_count`
-- `retagged_count`
-- `last_raw_url_id`
-- `started_at`
-- `completed_at`
-- `error_message`
-
-#### `GET /api/admin/url-refilter-runs/latest`
-
-用途：返回最近一次重新过滤任务摘要，供 Admin 页面轮询显示当前状态和汇总结果。
-
-#### `GET /api/admin/url-refilter-runs/{run_id}/events`
-
-用途：返回某次重新过滤任务的完整事件时间线。
-
-响应示例：
-
-```json
-[
-  {
-    "id": 1,
-    "run_id": 12,
-    "message": "停止爬虫中",
-    "created_at": "2026-04-22T17:30:00+00:00"
-  },
-  {
-    "id": 2,
-    "run_id": 12,
-    "message": "备份完成，文件保存在 /app/data/exports/db-backups/heyblog-refilter-backup-20260422T173001Z.sqlite",
-    "created_at": "2026-04-22T17:30:01+00:00"
-  }
-]
-```
 
 ### 3.5 管理员博客人工标注台
 
@@ -1017,7 +974,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 当前 public API 已不再暴露 legacy 的 `/api/logs` 与 `/api/search`。
 - 运行日志统一由 `shared.observability` 输出到类型目录，默认是 `logs/app/`、`logs/error/`、`logs/access/`；每个类型目录下再按服务分目录，保存 `<service>-YYYYMMDD-HH.log` 小时切片，Docker Compose 中对应 `volumes/logs`。
 - legacy `/internal/logs` 仍保留兼容入口，但当前不会把 crawl log 写入业务数据库。
-- URL refilter 是高风险结构性维护操作：进度仍通过 run/event 接口持久化，同时 backend 发起/停爬虫阶段和 persistence 执行阶段都会写入独立日志服务 `url-refilter`，文件与 `backend`、`crawler`、`persistence-api` 并列，例如 `logs/app/url-refilter/url-refilter-YYYYMMDD-HH.log` 和 `logs/error/url-refilter/url-refilter-YYYYMMDD-HH.log`；Docker Compose 默认落在宿主机 `volumes/logs/app/url-refilter/` 和 `volumes/logs/error/url-refilter/`。
 - blog dedup scan 这类维护任务的进度属于 domain event，仍通过各自 run/event 接口持久化，不混入通用 application log。
 - `search` 服务仍保留为内部可重建索引组件，供 health 检查与 reindex 维护链路使用，并在缓存为空时回退到 `persistence-api /internal/search-snapshot`。
 - 浏览器当前没有直接依赖的 public 搜索页；public 发现主路径已经收敛到 `catalog / lookup / detail / graph views`。
@@ -1206,6 +1162,26 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `reason_codes`
 - `survivor_selection_basis`
   当前承载 scanned blog id 与 decision score 等辅助调试信息
+
+#### `POST /api/admin/blogs/requeue-failed`
+
+用途：把所有 `FAILED` 状态的 blog 重新放回 crawler 待处理队列。
+
+行为说明：
+
+- 仅允许在 crawler 运行器不处于 `starting/running/stopping` 时调用
+- 若运行器忙碌，返回 `409`，错误详情为 `crawler_busy`
+- 会把当前所有 `crawl_status=FAILED` 的 blog 改为 `WAITING`
+- 会清空这些 blog 的 `status_code`，并更新 `updated_at`
+- 若对应 ingestion request 处于 `FAILED`，会同步改回 `QUEUED` 并清空 `error_message`
+
+成功响应示例：
+
+```json
+{
+  "requeued": 733
+}
+```
 
 #### `POST /api/admin/database/reset`
 
@@ -1582,6 +1558,18 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 ```json
 {
   "ok": true
+}
+```
+
+### `POST /internal/blogs/requeue-failed`
+
+用途：供 backend admin API 调用，把所有失败 blog 重新入队。
+
+响应：
+
+```json
+{
+  "requeued": 733
 }
 ```
 

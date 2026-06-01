@@ -161,6 +161,10 @@ export interface AdminRuntimeCurrent {
   elapsedSeconds: number | null;
 }
 
+export interface AdminRequeueFailedBlogsResult {
+  requeued: number;
+}
+
 export interface AdminDedupSummary {
   id: number;
   status: string;
@@ -170,33 +174,6 @@ export interface AdminDedupSummary {
   keptCount: number;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface AdminUrlRefilterRun {
-  id: number;
-  status: string;
-  filterChainVersion: string;
-  crawlerWasRunning: boolean;
-  backupPath: string | null;
-  totalCount: number;
-  scannedCount: number;
-  unchangedCount: number;
-  activatedCount: number;
-  deactivatedCount: number;
-  retaggedCount: number;
-  lastRawUrlId: number | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  errorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface AdminUrlRefilterRunEvent {
-  id: number;
-  runId: number;
-  message: string;
-  createdAt: string | null;
 }
 
 export interface AdminBlogLabelTag {
@@ -250,4 +227,13 @@ export interface AdminBlogLabelParquetStatus {
 
 export interface FilterStatsData {
   byFilterReason: Record<string, number>;
+  ruleDrops: Record<string, number>;
+  successSources: Record<string, number>;
+  funnel: {
+    raw: number;
+    afterRules: number;
+    modelRejected: number;
+    success: number;
+    blogs: number;
+  };
 }

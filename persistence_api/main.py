@@ -25,17 +25,13 @@ from persistence_api.repository import build_repository
 from persistence_api.stats_service import StatsService
 from shared.config import Settings
 from shared.observability import RequestIdMiddleware
-from shared.observability import configure_dedicated_event_logger
 from shared.observability import configure_logging
 from shared.observability import get_logger
 from shared.observability import log_event
 
 
 SERVICE_NAME = "persistence-api"
-URL_REFILTER_LOG_SERVICE_NAME = "url-refilter"
-URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
 LOGGER = get_logger(__name__)
-URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
 
 
 @dataclass(slots=True)
@@ -52,6 +48,7 @@ class UpsertBlogRequest(BaseModel):
     normalized_url: str
     domain: str
     email: str | None = None
+    feed_url: str | None = None
 
 
 class CreateIngestionRequest(BaseModel):
@@ -88,6 +85,7 @@ class CreateRawDiscoveredUrlRequest(BaseModel):
 
 class UpdateRawDiscoveredUrlStatusRequest(BaseModel):
     status: str
+    accepted_by: str | None = None
 
 
 class AddLogRequest(BaseModel):
@@ -131,14 +129,6 @@ class FinalizeBlogDedupScanRunRequest(BaseModel):
     crawler_restart_succeeded: bool
     search_reindexed: bool
     error_message: str | None = None
-
-
-class UrlRefilterRunEventRequest(BaseModel):
-    message: str
-
-
-class UrlRefilterRunFailureRequest(BaseModel):
-    error_message: str
 
 
 _T = TypeVar("_T")
@@ -286,16 +276,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     settings = Settings.from_env()
     configure_logging(
         service=SERVICE_NAME,
-        log_dir=settings.log_dir,
-        level=settings.log_level,
-        file_enabled=settings.log_file_enabled,
-        console_enabled=settings.log_console_enabled,
-        log_format=settings.log_format,
-        retention_days=settings.log_retention_days,
-    )
-    configure_dedicated_event_logger(
-        logger_name=URL_REFILTER_LOGGER_NAME,
-        service=URL_REFILTER_LOG_SERVICE_NAME,
         log_dir=settings.log_dir,
         level=settings.log_level,
         file_enabled=settings.log_file_enabled,
@@ -539,66 +519,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             detail="ingestion_request_not_found",
         )
 
-    @app.post("/internal/url-refilter-runs")
-    def create_url_refilter_run(crawler_was_running: bool = False) -> dict[str, Any]:
-        return get_state().repository.create_url_refilter_run(crawler_was_running=crawler_was_running)
-
-    @app.post("/internal/url-refilter-runs/{run_id}/events")
-    def append_url_refilter_run_event(run_id: int, payload: UrlRefilterRunEventRequest) -> dict[str, Any]:
-        event = _call_with_value_error_http_translation(
-            lambda: get_state().repository.append_url_refilter_run_event(
-                run_id=run_id,
-                message=payload.message,
-            ),
-            status_code=404,
-        )
-        log_event(
-            URL_REFILTER_LOGGER,
-            event="maintenance.url_refilter.progress",
-            message=payload.message,
-            stage="url_refilter",
-            run_id=run_id,
-        )
-        return event
-
-    @app.post("/internal/url-refilter-runs/{run_id}/failed")
-    def mark_url_refilter_run_failed(run_id: int, payload: UrlRefilterRunFailureRequest) -> dict[str, Any]:
-        result = _call_with_value_error_http_translation(
-            lambda: get_state().repository.mark_url_refilter_run_failed(
-                run_id=run_id,
-                error_message=payload.error_message,
-            ),
-            status_code=404,
-        )
-        log_event(
-            URL_REFILTER_LOGGER,
-            event="maintenance.url_refilter.failed",
-            message="url refilter run failed",
-            level=30,
-            stage="url_refilter",
-            run_id=run_id,
-            error_message=payload.error_message,
-        )
-        return result
-
-    @app.post("/internal/url-refilter-runs/{run_id}/execute")
-    def execute_url_refilter_run(run_id: int) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
-            lambda: get_state().repository.execute_url_refilter_run(run_id=run_id),
-            status_code=404,
-        )
-
-    @app.get("/internal/url-refilter-runs/latest")
-    def get_latest_url_refilter_run() -> dict[str, Any]:
-        return _require_payload(
-            get_state().repository.get_latest_url_refilter_run(),
-            detail="url_refilter_run_not_found",
-        )
-
-    @app.get("/internal/url-refilter-runs/{run_id}/events")
-    def list_url_refilter_run_events(run_id: int) -> list[dict[str, Any]]:
-        return get_state().repository.list_url_refilter_run_events(run_id)
-
     @app.post("/internal/blog-dedup-scans/runs")
     def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
         return get_state().repository.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
@@ -648,6 +568,11 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             lambda: get_state().repository.mark_blog_result(blog_id=blog_id, **payload.model_dump()),
         )
 
+    @app.post("/internal/blogs/requeue-failed")
+    def requeue_failed_blogs() -> dict[str, Any]:
+        """Move all failed blogs back into the waiting crawler queue."""
+        return get_state().repository.requeue_failed_blogs()
+
     @app.post("/internal/edges")
     def add_edge(payload: AddEdgeRequest) -> dict[str, bool]:
         return _run_action_and_return_ok(
@@ -668,6 +593,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 lambda: get_state().repository.update_raw_discovered_url_status(
                     record_id=record_id,
                     status=payload.status,
+                    accepted_by=payload.accepted_by,
                 ),
                 status_code=404,
             ),

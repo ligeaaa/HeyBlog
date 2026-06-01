@@ -24,3 +24,5 @@ slim_refactor/*
 tracker/*
 !tracker/log-system.md
 todo.md
+.claude/
+.playwright-mcp/*

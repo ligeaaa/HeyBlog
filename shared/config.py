@@ -117,6 +117,7 @@ class Settings:
     admin_dev_bypass: bool = False
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
     filter_chain_config_path: Path = DEFAULT_FILTER_CHAIN_CONFIG_PATH
+    rss_discovery_enabled: bool = True
     decision_model_consensus_enabled: bool = True
     decision_model_consensus_strategy: str = DEFAULT_DECISION_MODEL_CONSENSUS_STRATEGY
     decision_model_consensus_threshold: float = DEFAULT_DECISION_MODEL_CONSENSUS_THRESHOLD
@@ -236,6 +237,10 @@ class Settings:
             ),
             filter_chain_config_path=Path(
                 os.getenv("HEYBLOG_FILTER_CHAIN_CONFIG_PATH", str(DEFAULT_FILTER_CHAIN_CONFIG_PATH))
+            ),
+            rss_discovery_enabled=_parse_bool_env(
+                "HEYBLOG_RSS_DISCOVERY_ENABLED",
+                default=True,
             ),
             decision_model_consensus_enabled=_parse_bool_env(
                 "HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED",

@@ -8,10 +8,8 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import hmac
 import json
-import logging
 from math import ceil
 from pathlib import Path
-import sqlite3
 from secrets import token_urlsafe
 import re
 import tempfile
@@ -49,13 +47,10 @@ from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
-from persistence_api.models import UrlRefilterRunEventModel
-from persistence_api.models import UrlRefilterRunModel
 from persistence_api.models import UserModel
 from persistence_api.models import UserSessionModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.decisions.chain import build_url_decision_chain
-from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
 from crawler.crawling.normalization import BlogIdentityResolution
 from crawler.crawling.normalization import normalize_url
@@ -63,7 +58,6 @@ from crawler.crawling.normalization import resolve_blog_identity
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
 from shared.observability import get_logger
-from shared.observability import log_event
 
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
 BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
@@ -93,9 +87,9 @@ BLOG_LABEL_ID_TO_NAME = {label_id: name for label_id, name in DEFAULT_BLOG_LABEL
 RANDOM_BLOG_LABEL_SLUGS = frozenset({"blog", "company", "other", "unknown"})
 BLOG_LABEL_BLOG_ID = BLOG_LABEL_NAME_TO_ID["blog"]
 RAW_DISCOVERED_URL_DUPLICATE_STATUS = "rule:duplicate_url"
-URL_REFILTER_LOGGER_NAME = "heyblog.url_refilter"
-URL_REFILTER_LOGGER = get_logger(URL_REFILTER_LOGGER_NAME)
-URL_REFILTER_PROGRESS_LOG_INTERVAL = 10_000
+RAW_DISCOVERED_URL_SUCCESS_STATUS = "success"
+REPOSITORY_LOGGER_NAME = "heyblog.repository"
+LOGGER = get_logger(REPOSITORY_LOGGER_NAME)
 INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
 INGESTION_REQUEST_STATUS_DEDUPED_EXISTING = "DEDUPED_EXISTING"
 INGESTION_REQUEST_STATUS_QUEUED = "QUEUED"
@@ -593,6 +587,8 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
     with engine.begin() as connection:
         if "email" not in blog_columns:
             connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
+        if "feed_url" not in blog_columns:
+            connection.execute(text("ALTER TABLE blogs ADD COLUMN feed_url TEXT"))
         if "identity_key" not in blog_columns:
             connection.execute(text("ALTER TABLE blogs ADD COLUMN identity_key TEXT"))
         if "identity_reason_codes" not in blog_columns:
@@ -912,6 +908,9 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                 existing_tables.discard(obsolete_table)
         if "raw_discovered_urls" in existing_tables:
             dialect_name = connection.dialect.name
+            raw_url_columns = {column["name"] for column in inspector.get_columns("raw_discovered_urls")}
+            if "accepted_by" not in raw_url_columns:
+                connection.execute(text("ALTER TABLE raw_discovered_urls ADD COLUMN accepted_by TEXT"))
             existing_indexes = {index["name"] for index in inspector.get_indexes("raw_discovered_urls")}
             for index_name, columns in (
                 ("ix_raw_discovered_urls_status_id", ("status", "id")),
@@ -1058,6 +1057,7 @@ class _BlogPayloadView:
             "identity_ruleset_version": self.model.identity_ruleset_version,
             "domain": self.model.domain,
             "email": self.model.email,
+            "feed_url": self.model.feed_url,
             "title": self.title,
             "icon_url": self.icon_url,
             "status_code": self.model.status_code,
@@ -1450,7 +1450,7 @@ class _MaintenanceRunPayloadView:
     @classmethod
     def from_model(
         cls,
-        model: BlogDedupScanRunModel | UrlRefilterRunModel,
+        model: BlogDedupScanRunModel,
     ) -> _MaintenanceRunPayloadView:
         """Return the shared lifecycle view for one maintenance run row."""
         return cls(
@@ -1510,30 +1510,6 @@ def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[
     }
 
 
-def _url_refilter_run_payload(model: UrlRefilterRunModel) -> dict[str, Any]:
-    run_view = _MaintenanceRunPayloadView.from_model(model)
-    return run_view.as_payload() | {
-        "filter_chain_version": model.filter_chain_version,
-        "backup_path": model.backup_path,
-        "total_count": int(model.total_count),
-        "scanned_count": int(model.scanned_count),
-        "unchanged_count": int(model.unchanged_count),
-        "activated_count": int(model.activated_count),
-        "deactivated_count": int(model.deactivated_count),
-        "retagged_count": int(model.retagged_count),
-        "last_raw_url_id": int(model.last_raw_url_id) if model.last_raw_url_id is not None else None,
-    }
-
-
-def _url_refilter_run_event_payload(model: UrlRefilterRunEventModel) -> dict[str, Any]:
-    return {
-        "id": int(model.id),
-        "run_id": int(model.run_id),
-        "message": model.message,
-        "created_at": _iso(model.created_at),
-    }
-
-
 def _decision_scan_ruleset_version(settings: Settings) -> str:
     """Describe the current URL decision-chain configuration in one string.
 
@@ -1547,11 +1523,6 @@ def _decision_scan_ruleset_version(settings: Settings) -> str:
     if settings.decision_model_consensus_enabled:
         return "url_decision_chain:rule_based+model_consensus"
     return "url_decision_chain:rule_based"
-
-
-def _filter_chain_version(settings: Settings) -> str:
-    """Return one stable string describing the configured URL filter chain."""
-    return "|".join(build_url_decision_chain(settings).ordered_statuses())
 
 
 def _blog_labeling_payload(
@@ -1663,6 +1634,7 @@ class RepositoryProtocol(Protocol):
         normalized_url: str,
         domain: str,
         email: str | None = None,
+        feed_url: str | None = None,
     ) -> tuple[int, bool]: ...
 
     def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None: ...
@@ -1733,7 +1705,15 @@ class RepositoryProtocol(Protocol):
         status: str,
     ) -> dict[str, Any]: ...
 
-    def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None: ...
+    def update_raw_discovered_url_status(
+        self,
+        *,
+        record_id: int,
+        status: str,
+        accepted_by: str | None = None,
+    ) -> None: ...
+
+    def requeue_failed_blogs(self) -> dict[str, Any]: ...
 
     def list_blogs(self) -> list[dict[str, Any]]: ...
 
@@ -1809,18 +1789,6 @@ class RepositoryProtocol(Protocol):
 
     def get_filter_stats_by_chain_order(self) -> dict[str, Any]: ...
 
-    def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
-
-    def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]: ...
-
-    def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]: ...
-
-    def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]: ...
-
-    def get_latest_url_refilter_run(self) -> dict[str, Any] | None: ...
-
-    def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]: ...
-
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
 
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]: ...
@@ -1859,7 +1827,6 @@ class SQLAlchemyRepository:
             Base.metadata.create_all(self.engine)
             ensure_legacy_compat_schema(self.engine)
         with session_scope(self.session_factory) as session:
-            self._fail_orphaned_url_refilter_runs(session)
             self._fail_orphaned_dedup_scan_runs(session)
             self._requeue_processing(session)
 
@@ -1897,24 +1864,6 @@ class SQLAlchemyRepository:
             run.duration_ms = max(int((failed_at - started_at).total_seconds() * 1000), 0)
             run.error_message = "orphaned_dedup_scan_run_cleaned_on_startup"
             run.updated_at = failed_at
-
-    def _fail_orphaned_url_refilter_runs(self, session: Session) -> None:
-        orphaned_runs = session.scalars(
-            select(UrlRefilterRunModel).where(UrlRefilterRunModel.status == "RUNNING")
-        ).all()
-        if not orphaned_runs:
-            return
-        failed_at = now_utc()
-        for run in orphaned_runs:
-            run.status = "FAILED"
-            run.completed_at = failed_at
-            run.error_message = "orphaned_url_refilter_run_cleaned_on_startup"
-            run.updated_at = failed_at
-            self._append_url_refilter_run_event_in_session(
-                session,
-                run_id=int(run.id),
-                message="重新过滤任务在服务重启后被标记为失败",
-            )
 
     def _get_blog_by_business_id(self, session: Session, blog_id: int) -> BlogModel | None:
         """Return one blog row by business ``blog_id``."""
@@ -2312,38 +2261,6 @@ class SQLAlchemyRepository:
             decision_model_consensus_enabled=False,
         )
 
-    def _append_url_refilter_run_event_in_session(
-        self,
-        session: Session,
-        *,
-        run_id: int,
-        message: str,
-    ) -> UrlRefilterRunEventModel:
-        event = UrlRefilterRunEventModel(
-            run_id=run_id,
-            message=message,
-            created_at=now_utc(),
-        )
-        session.add(event)
-        session.flush()
-        return event
-
-    def _backup_sqlite_database(self) -> str:
-        """Create one timestamped SQLite backup and return the written path."""
-        database_path = Path(str(self.engine.url.database)).resolve()
-        backup_dir = self._decision_scan_settings().export_dir / "db-backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        backup_path = backup_dir / f"heyblog-refilter-backup-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.sqlite"
-        self.engine.dispose()
-        source = sqlite3.connect(str(database_path))
-        target = sqlite3.connect(str(backup_path))
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-            source.close()
-        return str(backup_path)
-
     def _upsert_blog_in_session(
         self,
         session: Session,
@@ -2352,6 +2269,7 @@ class SQLAlchemyRepository:
         normalized_url: str,
         domain: str,
         email: str | None = None,
+        feed_url: str | None = None,
         preferred_blog_id: int | None = None,
     ) -> tuple[BlogModel, bool]:
         """Create or update one blog row and initialize its business id.
@@ -2362,6 +2280,8 @@ class SQLAlchemyRepository:
             normalized_url: Normalized URL candidate.
             domain: Domain associated with the URL.
             email: Optional contact email to fill when the row is missing one.
+            feed_url: Optional RSS/Atom feed URL discovered for the blog. Stored
+                when present; an existing feed is never overwritten with ``None``.
             preferred_blog_id: Preferred externally meaningful ``blogs.blog_id``.
 
         Returns:
@@ -2391,6 +2311,8 @@ class SQLAlchemyRepository:
                 existing.domain = stored_domain
             if email is not None and not (existing.email or "").strip():
                 existing.email = email
+            if feed_url is not None and not (existing.feed_url or "").strip():
+                existing.feed_url = feed_url
             existing.identity_key = identity.identity_key
             existing.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
             existing.identity_ruleset_version = identity.ruleset_version
@@ -2412,6 +2334,7 @@ class SQLAlchemyRepository:
             identity_ruleset_version=identity.ruleset_version,
             domain=stored_domain,
             email=email,
+            feed_url=feed_url,
             crawl_status=CrawlStatus.WAITING,
             friend_links_count=0,
             created_at=now_utc(),
@@ -2498,102 +2421,6 @@ class SQLAlchemyRepository:
             )
         )
 
-    def _handle_refilter_activated_success(
-        self,
-        session: Session,
-        *,
-        raw: RawDiscoveredUrlModel,
-    ) -> None:
-        source_blog_exists = self._get_blog_by_business_id(session, int(raw.source_blog_id)) is not None
-        normalized = normalize_url(raw.normalized_url)
-        target_blog, _ = self._upsert_blog_in_session(
-            session,
-            url=raw.normalized_url,
-            normalized_url=normalized.normalized_url,
-            domain=normalized.domain,
-            preferred_blog_id=int(raw.id),
-        )
-        if not source_blog_exists:
-            return
-        self._ensure_edge_in_session(
-            session,
-            from_blog_id=int(raw.source_blog_id),
-            to_blog_id=int(_business_blog_id(target_blog)),
-            link_url_raw=raw.normalized_url,
-            link_text=None,
-        )
-
-    def _handle_refilter_deactivated_success(
-        self,
-        session: Session,
-        *,
-        raw: RawDiscoveredUrlModel,
-    ) -> None:
-        session.flush()
-        identity = resolve_blog_identity(raw.normalized_url)
-        normalized = normalize_url(raw.normalized_url)
-        stored_url, _ = _storage_url_and_domain(
-            input_url=raw.normalized_url,
-            input_normalized_url=normalized.normalized_url,
-            input_domain=normalized.domain,
-            identity=identity,
-        )
-        target_blog = session.scalar(
-            select(BlogModel).where(
-                or_(
-                    BlogModel.normalized_url == stored_url,
-                    BlogModel.identity_key == identity.identity_key,
-                )
-            )
-        )
-        if target_blog is None:
-            return
-        self._delete_edge_if_exists(
-            session,
-            from_blog_id=int(raw.source_blog_id),
-            to_blog_id=int(_business_blog_id(target_blog)),
-        )
-        remaining_success = int(
-            session.scalar(
-                select(func.count())
-                .select_from(RawDiscoveredUrlModel)
-                .where(
-                    RawDiscoveredUrlModel.normalized_url == raw.normalized_url,
-                    RawDiscoveredUrlModel.status == "success",
-                )
-            )
-            or 0
-        )
-        if remaining_success == 0:
-            self._delete_blog_graph(session, blog_id=int(_business_blog_id(target_blog)))
-            session.flush()
-
-    def _delete_edge_if_exists(
-        self,
-        session: Session,
-        *,
-        from_blog_id: int,
-        to_blog_id: int,
-    ) -> None:
-        """Delete one directed edge only when it is still present.
-
-        Args:
-            session: Active database session used for the lookup and deletion.
-            from_blog_id: Business blog ID of the source endpoint.
-            to_blog_id: Business blog ID of the target endpoint.
-
-        Returns:
-            ``None``. Missing edges are treated as already-clean state.
-        """
-        edge_id = session.scalar(
-            select(EdgeModel.id).where(
-                EdgeModel.from_blog_id == from_blog_id,
-                EdgeModel.to_blog_id == to_blog_id,
-            )
-        )
-        if edge_id is not None:
-            session.query(EdgeModel).filter(EdgeModel.id == int(edge_id)).delete(synchronize_session=False)
-
     def _delete_blog_graph(self, session: Session, *, blog_id: int) -> None:
         """Delete one blog and its direct graph attachments safely.
 
@@ -2639,6 +2466,7 @@ class SQLAlchemyRepository:
         normalized_url: str,
         domain: str,
         email: str | None = None,
+        feed_url: str | None = None,
     ) -> tuple[int, bool]:
         with session_scope(self.session_factory) as session:
             blog, inserted = self._upsert_blog_in_session(
@@ -2647,6 +2475,7 @@ class SQLAlchemyRepository:
                 normalized_url=normalized_url,
                 domain=domain,
                 email=email,
+                feed_url=feed_url,
             )
             return int(_business_blog_id(blog)), inserted
 
@@ -3120,6 +2949,35 @@ class SQLAlchemyRepository:
                 self._waiting_blog_claim_statement(include_priority=include_priority),
             )
 
+    def requeue_failed_blogs(self) -> dict[str, Any]:
+        """Move every failed blog back into the waiting crawl queue.
+
+        Returns:
+            Payload containing the number of blog rows changed from `FAILED` to
+            `WAITING`.
+        """
+        with session_scope(self.session_factory) as session:
+            blogs = session.scalars(select(BlogModel).where(BlogModel.crawl_status == CrawlStatus.FAILED)).all()
+            requeued_count = len(blogs)
+            timestamp = now_utc()
+            for blog in blogs:
+                blog.crawl_status = CrawlStatus.WAITING
+                blog.status_code = None
+                blog.updated_at = timestamp
+
+            requests = session.scalars(
+                select(IngestionRequestModel).where(
+                    IngestionRequestModel.seed_blog_id.in_([int(_business_blog_id(blog)) for blog in blogs]),
+                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_FAILED,
+                )
+            ).all()
+            for request in requests:
+                request.status = INGESTION_REQUEST_STATUS_QUEUED
+                request.error_message = None
+                request.updated_at = timestamp
+
+            return {"requeued": requeued_count}
+
     def mark_blog_result(
         self,
         *,
@@ -3257,7 +3115,13 @@ class SQLAlchemyRepository:
             session.flush()
             return {"id": int(record.id), "status": str(record.status)}
 
-    def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None:
+    def update_raw_discovered_url_status(
+        self,
+        *,
+        record_id: int,
+        status: str,
+        accepted_by: str | None = None,
+    ) -> None:
         with session_scope(self.session_factory) as session:
             record = self._require_model(
                 session,
@@ -3266,6 +3130,7 @@ class SQLAlchemyRepository:
                 not_found_error="raw_discovered_url_not_found",
             )
             record.status = status
+            record.accepted_by = accepted_by if status == RAW_DISCOVERED_URL_SUCCESS_STATUS else None
             record.updated_at = now_utc()
 
     def _labelable_raw_url_condition(self) -> ColumnElement[bool]:
@@ -4320,311 +4185,74 @@ class SQLAlchemyRepository:
         decision_chain = build_url_decision_chain(settings)
         with session_scope(self.session_factory) as session:
             total_raw = _count_selectable_rows(session, RawDiscoveredUrlModel)
+            total_blogs = _count_selectable_rows(session, BlogModel)
             grouped_rows = session.execute(
                 select(RawDiscoveredUrlModel.status, func.count()).group_by(RawDiscoveredUrlModel.status)
             ).all()
+            accepted_rows = session.execute(
+                select(RawDiscoveredUrlModel.accepted_by, func.count())
+                .where(RawDiscoveredUrlModel.status == RAW_DISCOVERED_URL_SUCCESS_STATUS)
+                .group_by(RawDiscoveredUrlModel.accepted_by)
+            ).all()
         counts_by_status = {str(status): int(count) for status, count in grouped_rows}
+        success_count = counts_by_status.get(RAW_DISCOVERED_URL_SUCCESS_STATUS, 0)
+        success_sources = {
+            "rss": 0,
+            "model": 0,
+            "unknown": 0,
+        }
+        for accepted_by, count in accepted_rows:
+            source = str(accepted_by or "").strip().lower() or "unknown"
+            success_sources[source] = success_sources.get(source, 0) + int(count)
+
         remaining = total_raw
         by_filter_reason: dict[str, int] = {"raw": total_raw}
+        rule_drops: dict[str, int] = {}
+        after_rules = total_raw
         for status in decision_chain.ordered_statuses():
-            remaining -= counts_by_status.get(status, 0)
+            dropped = counts_by_status.get(status, 0)
+            remaining -= dropped
             by_filter_reason[status] = max(remaining, 0)
-        return {"by_filter_reason": by_filter_reason}
+            if status.startswith("rule:"):
+                rule_drops[status] = dropped
+                after_rules = max(remaining, 0)
 
-    def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        with session_scope(self.session_factory) as session:
-            run = UrlRefilterRunModel(
-                status="PENDING",
-                filter_chain_version=_filter_chain_version(self._decision_scan_settings()),
-                crawler_was_running=crawler_was_running,
-                backup_path=None,
-                total_count=0,
-                scanned_count=0,
-                unchanged_count=0,
-                activated_count=0,
-                deactivated_count=0,
-                retagged_count=0,
-                last_raw_url_id=None,
-                started_at=None,
-                completed_at=None,
-                error_message=None,
-                created_at=now_utc(),
-                updated_at=now_utc(),
-            )
-            session.add(run)
-            session.flush()
-            return _url_refilter_run_payload(run)
+        # Terminal nodes: the chain loop above only subtracts the rejecting
+        # statuses, so close the funnel with the real accepted-URL count and the
+        # blog count it produces. ``success`` -> ``blogs`` differ by the URLs
+        # that ``upsert_blog`` merges into an existing site via identity_key.
+        by_filter_reason[RAW_DISCOVERED_URL_SUCCESS_STATUS] = success_count
+        by_filter_reason["blogs"] = total_blogs
 
-    def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]:
-        with session_scope(self.session_factory) as session:
-            run = self._require_model(
-                session,
-                UrlRefilterRunModel,
-                run_id,
-                not_found_error="url_refilter_run_not_found",
-            )
-            event = self._append_url_refilter_run_event_in_session(session, run_id=run_id, message=message)
-            run.updated_at = now_utc()
-            return _url_refilter_run_event_payload(event)
-
-    def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]:
-        with session_scope(self.session_factory) as session:
-            run = self._require_model(
-                session,
-                UrlRefilterRunModel,
-                run_id,
-                not_found_error="url_refilter_run_not_found",
-            )
-            completed_at = now_utc()
-            run.status = "FAILED"
-            run.error_message = error_message
-            run.completed_at = completed_at
-            run.updated_at = completed_at
-            self._append_url_refilter_run_event_in_session(
-                session,
-                run_id=run_id,
-                message=f"重新过滤失败：{error_message}",
-            )
-            return _url_refilter_run_payload(run)
-
-    def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]:
-        settings = self._decision_scan_settings()
-        decision_chain = build_url_decision_chain(settings)
-        started_at = now_utc()
-        filter_chain_version = _filter_chain_version(settings)
-        log_event(
-            URL_REFILTER_LOGGER,
-            event="maintenance.url_refilter.execute.started",
-            message="url refilter execution started: loading current filter chain and preparing backup",
-            stage="url_refilter",
-            run_id=run_id,
-            filter_chain_version=filter_chain_version,
-            reason="operator_requested_refilter",
+        # Reconcile: every raw URL is either accepted (success) or carries a
+        # rejecting status. Any leftover means an unaccounted status slipped
+        # past the chain ordering, so surface it instead of hiding the gap.
+        rejected_total = sum(
+            count for status, count in counts_by_status.items() if status != RAW_DISCOVERED_URL_SUCCESS_STATUS
         )
-        try:
-            with session_scope(self.session_factory) as session:
-                run = self._require_model(
-                    session,
-                    UrlRefilterRunModel,
-                    run_id,
-                    not_found_error="url_refilter_run_not_found",
-                )
-                run.status = "RUNNING"
-                run.started_at = started_at
-                run.completed_at = None
-                run.error_message = None
-                run.filter_chain_version = filter_chain_version
-                run.total_count = _count_selectable_rows(session, RawDiscoveredUrlModel)
-                run.scanned_count = 0
-                run.unchanged_count = 0
-                run.activated_count = 0
-                run.deactivated_count = 0
-                run.retagged_count = 0
-                run.last_raw_url_id = None
-                run.updated_at = started_at
-                self._append_url_refilter_run_event_in_session(session, run_id=run_id, message="备份中")
-
-            backup_path = self._backup_sqlite_database()
-
-            with session_scope(self.session_factory) as session:
-                run = self._require_model(
-                    session,
-                    UrlRefilterRunModel,
-                    run_id,
-                    not_found_error="url_refilter_run_not_found",
-                )
-                run.backup_path = backup_path
-                run.updated_at = now_utc()
-                self._append_url_refilter_run_event_in_session(
-                    session,
-                    run_id=run_id,
-                    message=f"备份完成，文件保存在 {backup_path}",
-                )
-                self._append_url_refilter_run_event_in_session(
-                    session,
-                    run_id=run_id,
-                    message="开始按过滤链重新扫描原始URL表",
-                )
-
-            scanned_count = 0
-            unchanged_count = 0
-            activated_count = 0
-            deactivated_count = 0
-            retagged_count = 0
-            last_raw_url_id = 0
-            source_domain_cache: dict[int, str] = {}
-            seen_raw_urls: set[str] = set()
-            cursor = 0
-            batch_size = 1000
-
-            while True:
-                with session_scope(self.session_factory) as session:
-                    run = self._require_model(
-                        session,
-                        UrlRefilterRunModel,
-                        run_id,
-                        not_found_error="url_refilter_run_not_found",
-                    )
-                    raws = session.scalars(
-                        select(RawDiscoveredUrlModel)
-                        .where(RawDiscoveredUrlModel.id > cursor)
-                        .order_by(RawDiscoveredUrlModel.id.asc())
-                        .limit(batch_size)
-                    ).all()
-                    if not raws:
-                        completed_at = now_utc()
-                        run.status = "SUCCEEDED"
-                        run.scanned_count = scanned_count
-                        run.unchanged_count = unchanged_count
-                        run.activated_count = activated_count
-                        run.deactivated_count = deactivated_count
-                        run.retagged_count = retagged_count
-                        run.last_raw_url_id = last_raw_url_id or None
-                        run.completed_at = completed_at
-                        run.updated_at = completed_at
-                        self._append_url_refilter_run_event_in_session(
-                            session,
-                            run_id=run_id,
-                            message=(
-                                "重新过滤完成："
-                                f"scanned={scanned_count}, unchanged={unchanged_count}, "
-                                f"activated={activated_count}, deactivated={deactivated_count}, "
-                                f"retagged={retagged_count}"
-                            ),
-                        )
-                        log_event(
-                            URL_REFILTER_LOGGER,
-                            event="maintenance.url_refilter.execute.finished",
-                            message="url refilter execution finished: all raw URLs scanned successfully",
-                            stage="url_refilter",
-                            run_id=run_id,
-                            reason="all_raw_urls_scanned",
-                            scanned_count=scanned_count,
-                            total_count=int(run.total_count),
-                            unchanged_count=unchanged_count,
-                            activated_count=activated_count,
-                            deactivated_count=deactivated_count,
-                            retagged_count=retagged_count,
-                            last_raw_url_id=last_raw_url_id or None,
-                            completed_status="SUCCEEDED",
-                        )
-                        return _url_refilter_run_payload(run)
-
-                    for raw in raws:
-                        last_raw_url_id = int(raw.id)
-                        source_blog_id = int(raw.source_blog_id)
-                        old_status = str(raw.status)
-                        if raw.normalized_url in seen_raw_urls:
-                            new_status = RAW_DISCOVERED_URL_DUPLICATE_STATUS
-                            if new_status == old_status:
-                                unchanged_count += 1
-                            else:
-                                raw.status = new_status
-                                raw.updated_at = now_utc()
-                                if old_status == "success":
-                                    self._handle_refilter_deactivated_success(session, raw=raw)
-                                    deactivated_count += 1
-                                else:
-                                    retagged_count += 1
-                            scanned_count += 1
-                            cursor = int(raw.id)
-                            continue
-                        seen_raw_urls.add(raw.normalized_url)
-                        source_domain = source_domain_cache.get(source_blog_id)
-                        if source_domain is None:
-                            source_blog = self._get_blog_by_business_id(session, source_blog_id)
-                            source_domain = source_blog.domain if source_blog is not None else ""
-                            source_domain_cache[source_blog_id] = source_domain
-
-                        decision = decision_chain.evaluate(
-                            UrlCandidateContext(
-                                source_blog_id=source_blog_id,
-                                source_domain=source_domain,
-                                normalized_url=raw.normalized_url,
-                            )
-                        )
-                        new_status = decision.status or "success"
-                        if new_status == old_status:
-                            unchanged_count += 1
-                        else:
-                            raw.status = new_status
-                            raw.updated_at = now_utc()
-                            if old_status != "success" and new_status == "success":
-                                self._handle_refilter_activated_success(session, raw=raw)
-                                activated_count += 1
-                            elif old_status == "success" and new_status != "success":
-                                self._handle_refilter_deactivated_success(session, raw=raw)
-                                deactivated_count += 1
-                            else:
-                                retagged_count += 1
-                        scanned_count += 1
-                        cursor = int(raw.id)
-
-                    run.scanned_count = scanned_count
-                    run.unchanged_count = unchanged_count
-                    run.activated_count = activated_count
-                    run.deactivated_count = deactivated_count
-                    run.retagged_count = retagged_count
-                    run.last_raw_url_id = last_raw_url_id
-                    run.updated_at = now_utc()
-                    if scanned_count % URL_REFILTER_PROGRESS_LOG_INTERVAL == 0:
-                        self._append_url_refilter_run_event_in_session(
-                            session,
-                            run_id=run_id,
-                            message=(
-                                f"当前扫描原始URL进度 {scanned_count}/{int(run.total_count)}，"
-                                f"当前记录id={last_raw_url_id}"
-                            ),
-                        )
-                        log_event(
-                            URL_REFILTER_LOGGER,
-                            event="maintenance.url_refilter.execute.progress",
-                            message="url refilter execution progress",
-                            stage="url_refilter",
-                            run_id=run_id,
-                            scanned_count=scanned_count,
-                            total_count=int(run.total_count),
-                            unchanged_count=unchanged_count,
-                            activated_count=activated_count,
-                            deactivated_count=deactivated_count,
-                            retagged_count=retagged_count,
-                            last_raw_url_id=last_raw_url_id,
-                        )
-        except Exception as exc:
-            log_event(
-                URL_REFILTER_LOGGER,
-                event="maintenance.url_refilter.execute.exited",
-                message=f"url refilter execution exited: {exc}",
-                level=logging.ERROR,
-                stage="url_refilter",
-                run_id=run_id,
-                reason="execution_error",
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-                completed_status="FAILED",
+        unaccounted = total_raw - success_count - rejected_total
+        if unaccounted:
+            LOGGER.warning(
+                "filter_stats unaccounted raw URLs: total=%s success=%s rejected=%s unaccounted=%s",
+                total_raw,
+                success_count,
+                rejected_total,
+                unaccounted,
             )
-            self.mark_url_refilter_run_failed(run_id=run_id, error_message=str(exc))
-            raise
-
-    def get_latest_url_refilter_run(self) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._latest_row_payload(
-                session,
-                statement=select(UrlRefilterRunModel).order_by(UrlRefilterRunModel.id.desc()).limit(1),
-                serializer=_url_refilter_run_payload,
-            )
-
-    def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]:
-        with session_scope(self.session_factory) as session:
-            return self._ordered_row_payloads(
-                session,
-                statement=(
-                    select(UrlRefilterRunEventModel)
-                    .where(UrlRefilterRunEventModel.run_id == run_id)
-                    .order_by(UrlRefilterRunEventModel.id.asc())
-                ),
-                serializer=_url_refilter_run_event_payload,
-            )
+            by_filter_reason["other"] = unaccounted
+        funnel = {
+            "raw": total_raw,
+            "after_rules": after_rules,
+            "model_rejected": counts_by_status.get("model:model_consensus_all_non_blog", 0),
+            "success": success_count,
+            "blogs": total_blogs,
+        }
+        return {
+            "by_filter_reason": by_filter_reason,
+            "rule_drops": rule_drops,
+            "success_sources": success_sources,
+            "funnel": funnel,
+        }
 
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         started_at = now_utc()
@@ -4823,20 +4451,15 @@ class SQLAlchemyRepository:
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
             scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
             scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
-            refilter_events_deleted = _count_selectable_rows(session, UrlRefilterRunEventModel)
-            refilter_runs_deleted = _count_selectable_rows(session, UrlRefilterRunModel)
             if self.dialect_name == "postgresql":
                 session.execute(
                     text(
-                        "TRUNCATE TABLE url_refilter_run_events, url_refilter_runs, "
-                        "blog_dedup_scan_run_items, blog_dedup_scan_runs, "
+                        "TRUNCATE TABLE blog_dedup_scan_run_items, blog_dedup_scan_runs, "
                         "raw_discovered_urls, ingestion_requests, edges, blogs "
                         "RESTART IDENTITY CASCADE"
                     )
                 )
             else:
-                session.query(UrlRefilterRunEventModel).delete()
-                session.query(UrlRefilterRunModel).delete()
                 session.query(BlogDedupScanRunItemModel).delete()
                 session.query(BlogDedupScanRunModel).delete()
                 session.query(RawDiscoveredUrlModel).delete()
@@ -4860,8 +4483,6 @@ class SQLAlchemyRepository:
                 "blog_link_labels_preserved": labels_preserved,
                 "blog_label_tags_preserved": label_tags_preserved,
                 "raw_discovered_urls_deleted": raw_urls_deleted,
-                "url_refilter_run_events_deleted": refilter_events_deleted,
-                "url_refilter_runs_deleted": refilter_runs_deleted,
                 "blog_dedup_scan_items_deleted": scan_items_deleted,
                 "blog_dedup_scan_runs_deleted": scan_runs_deleted,
             }

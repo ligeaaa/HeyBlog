@@ -20,6 +20,28 @@ from crawler.crawling.decisions.rule_helpers import path_has_blocked_segment
 
 
 @dataclass(slots=True)
+class DuplicateUrlFilter(StaticStatusUrlFilter):
+    """Account for the ingestion-time duplicate-URL step in the filter chain.
+
+    Duplicate detection is stateful: it compares a candidate against rows that
+    were already stored, so it runs inside
+    ``create_raw_discovered_url_record`` *before* the rule chain. By the time a
+    candidate reaches ``evaluate`` it is guaranteed to be non-duplicate, so this
+    filter always accepts. It exists purely so the chain's ``ordered_statuses``
+    and the funnel statistics account for the ``rule:duplicate_url`` status
+    alongside every other filter step.
+    """
+
+    kind: str = "duplicate_url"
+    filter_kind: str = "rule"
+    filter_reason: str = "duplicate_url"
+
+    def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
+        del candidate
+        return self.accept()
+
+
+@dataclass(slots=True)
 class NonHttpSchemeFilter(StaticStatusUrlFilter):
     """Reject candidate URLs that do not use HTTP(S)."""
 

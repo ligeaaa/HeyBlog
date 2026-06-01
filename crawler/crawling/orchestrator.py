@@ -5,6 +5,7 @@ from __future__ import annotations
 from time import monotonic
 
 from crawler.contracts.results import BlogCrawlResult
+from crawler.crawling.decisions.base import FilterDecision
 from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.decisions.chain import ConfiguredUrlFilterChain
 from crawler.crawling.discovery import discover_friend_links_pages
@@ -152,6 +153,7 @@ class CrawlOrchestrator:
                 blog=blog,
                 page=page_attempt.result,
                 seen_normalized=seen_normalized,
+                deadline=deadline,
             )
 
         return discovered_count
@@ -188,6 +190,7 @@ class CrawlOrchestrator:
         blog: BlogNode,
         page: FetchResult,
         seen_normalized: set[str],
+        deadline: float,
     ) -> int:
         """Persist accepted extracted links from one fetched candidate page.
 
@@ -196,6 +199,8 @@ class CrawlOrchestrator:
             page: Successful fetched candidate page.
             seen_normalized: Set used to avoid persisting duplicate normalized
                 child URLs across multiple candidate pages.
+            deadline: Monotonic deadline bounding the whole per-blog crawl so
+                feed-discovery fetches cannot exceed the crawl budget.
 
         Returns:
             Number of newly stored outbound blog links from the page.
@@ -216,8 +221,13 @@ class CrawlOrchestrator:
             raw_record_id = int(raw_record["id"])
             if raw_record["status"] == "rule:duplicate_url":
                 continue
-            status = self._evaluate_link_status(blog, normalized.normalized_url, link)
-            self.repository.update_raw_discovered_url_status(record_id=raw_record_id, status=status)
+            decision = self._evaluate_link(blog, normalized.normalized_url, link, deadline=deadline)
+            status = str(decision.status or "success")
+            self.repository.update_raw_discovered_url_status(
+                record_id=raw_record_id,
+                status=status,
+                accepted_by=decision.accepted_by,
+            )
             if status != "success":
                 continue
 
@@ -231,6 +241,7 @@ class CrawlOrchestrator:
                 url=link.url,
                 normalized_url=normalized.normalized_url,
                 domain=normalized.domain,
+                feed_url=decision.feed_url,
             )
             edge = FriendLinkEdge(
                 from_blog_id=blog.id,
@@ -248,28 +259,39 @@ class CrawlOrchestrator:
 
         return stored_count
 
-    def _evaluate_link_status(self, blog: BlogNode, normalized_url: str, link: ExtractedLink) -> str:
-        """Return the final filter-chain status for one normalized candidate URL.
+    def _evaluate_link(
+        self,
+        blog: BlogNode,
+        normalized_url: str,
+        link: ExtractedLink,
+        *,
+        deadline: float,
+    ) -> FilterDecision:
+        """Return the full filter-chain decision for one normalized candidate URL.
 
         Args:
             blog: Source blog currently being crawled.
             normalized_url: Normalized candidate URL extracted from a friend-link page.
             link: Extracted anchor carrying visible text and local section
                 context for model-based filters.
+            deadline: Monotonic per-blog crawl deadline forwarded to network-bound
+                success deciders such as RSS discovery.
 
         Returns:
-            The final status emitted by the configured filter chain.
+            The ``FilterDecision`` emitted by the configured filter chain,
+            including any discovered ``feed_url``.
         """
-        decision = self.decision_chain.evaluate(
+        return self.decision_chain.evaluate(
             UrlCandidateContext(
                 source_blog_id=blog.id,
                 source_domain=blog.domain,
                 normalized_url=normalized_url,
                 link_text=link.text,
                 context_text=link.context_text,
+                fetcher=self.fetcher,
+                fetch_deadline=deadline,
             )
         )
-        return str(decision.status or "success")
 
     def _mark_blog_finished(self, blog: BlogNode, result: BlogCrawlResult) -> None:
         """Persist the final crawl result for one processed blog.
