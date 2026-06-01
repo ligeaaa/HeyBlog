@@ -77,10 +77,6 @@ export function FilterStatsPage() {
             <Filter className="h-4 w-4" />
             Filter Stats
           </div>
-          <h1 className="mt-5 text-4xl font-semibold text-slate-950">过滤链统计</h1>
-          <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-500">
-            规则过滤负责减少候选 URL；RSS 与模型是两个并列的成功判定出口。
-          </p>
         </section>
 
         {isLoading ? (

@@ -426,7 +426,7 @@ test("adds a public filter stats route that renders success-source split", async
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: "过滤链统计" })).toBeInTheDocument();
+    expect(screen.getByText("Filter Stats")).toBeInTheDocument();
   });
 
   expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/filter-stats"), expect.anything());
