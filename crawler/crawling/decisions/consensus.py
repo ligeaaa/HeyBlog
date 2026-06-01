@@ -12,6 +12,7 @@ import pickle
 import sys
 from typing import Any
 
+from crawler.crawling.decisions.base import DECIDER_ROLE_SUCCESS
 from crawler.crawling.decisions.base import FilterDecision
 from crawler.crawling.decisions.base import StaticStatusUrlFilter
 from crawler.crawling.decisions.base import UrlCandidateContext
@@ -215,6 +216,7 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
     kind: str = field(init=False, default="model_consensus")
     filter_kind: str = field(init=False, default="model")
     filter_reason: str = field(init=False, default="model_consensus_all_non_blog")
+    decider_role: str = field(init=False, default=DECIDER_ROLE_SUCCESS)
     loaded_models: tuple[LoadedConsensusModel, ...] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -366,7 +368,9 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
         if not probabilities:
             return self.accept()
 
-        return self.decision_for(rejected=self._should_reject(probabilities))
+        if self._should_reject(probabilities):
+            return self.reject()
+        return self.confirm(accepted_by="model")
 
 
 @dataclass(slots=True)

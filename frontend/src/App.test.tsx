@@ -130,6 +130,24 @@ beforeEach(() => {
             raw: 100,
             "rule:same_domain": 80,
             "rule:platform_blocked": 60,
+            success: 45,
+            blogs: 40,
+          },
+          rule_drops: {
+            "rule:same_domain": 20,
+            "rule:platform_blocked": 20,
+          },
+          success_sources: {
+            rss: 18,
+            model: 27,
+            unknown: 0,
+          },
+          funnel: {
+            raw: 100,
+            after_rules: 60,
+            model_rejected: 15,
+            success: 45,
+            blogs: 40,
           },
         }),
       );
@@ -402,7 +420,7 @@ test("uses cached visualization graph data for repeated sampled sizes", async ()
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/graph/views/core"), expect.anything());
 });
 
-test("adds a public filter stats route that renders ordered remaining counts", async () => {
+test("adds a public filter stats route that renders success-source split", async () => {
   window.history.replaceState({}, "", "/filter-stats");
 
   render(<App />);
@@ -412,10 +430,14 @@ test("adds a public filter stats route that renders ordered remaining counts", a
   });
 
   expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/filter-stats"), expect.anything());
-  expect(screen.getByText("raw")).toBeInTheDocument();
+  expect(screen.getByText("原始候选")).toBeInTheDocument();
+  expect(screen.getByText("RSS 判定为博客")).toBeInTheDocument();
+  expect(screen.getByText("模型判定为博客")).toBeInTheDocument();
+  expect(screen.getByText("模型判定非博客")).toBeInTheDocument();
   expect(screen.getByText("rule:same_domain")).toBeInTheDocument();
   expect(screen.getByText("rule:platform_blocked")).toBeInTheDocument();
   expect(screen.getByText("100")).toBeInTheDocument();
-  expect(screen.getByText("80")).toBeInTheDocument();
   expect(screen.getByText("60")).toBeInTheDocument();
+  expect(screen.getByText("18")).toBeInTheDocument();
+  expect(screen.getByText("27")).toBeInTheDocument();
 });

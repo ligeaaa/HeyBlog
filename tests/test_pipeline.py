@@ -5,6 +5,7 @@ from typing import Any
 from typing import Callable
 
 import pytest
+from sqlalchemy import select
 
 from crawler.crawling.fetching.base import FetchAttempt
 from crawler.crawling.fetching.base import FetchResult
@@ -153,17 +154,17 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
 
     with session_scope(repository.session_factory) as session:
         raw_rows = [
-            (row.source_blog_id, row.normalized_url, row.status)
+            (row.source_blog_id, row.normalized_url, row.status, row.accepted_by)
             for row in session.query(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()).all()
         ]
 
-    assert [source_blog_id for source_blog_id, _, _ in raw_rows] == [blog["blog_id"], blog["blog_id"], blog["blog_id"]]
-    assert [normalized_url for _, normalized_url, _ in raw_rows] == [
+    assert [source_blog_id for source_blog_id, _, _, _ in raw_rows] == [blog["blog_id"], blog["blog_id"], blog["blog_id"]]
+    assert [normalized_url for _, normalized_url, _, _ in raw_rows] == [
         "https://friend.example/",
         "https://github.com/example",
         "https://agency.gov/",
     ]
-    assert [status for _, _, status in raw_rows] == [
+    assert [status for _, _, status, _ in raw_rows] == [
         "success",
         "rule:platform_blocked",
         "rule:blocked_tld",
@@ -173,6 +174,64 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     child_blog = next(blog_row for blog_row in blogs if blog_row["id"] != blog["id"])
     assert child_blog["domain"] == "friend.example"
     assert "depth" not in child_blog
+
+
+def test_pipeline_stores_feed_url_when_friend_link_exposes_rss(tmp_path: Path) -> None:
+    """A friend link whose homepage exposes a valid feed should persist its feed URL."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    homepage_html = '<html><body><footer><a href="/friends">友情链接</a></footer></body></html>'
+    friend_page_html = """
+    <html>
+      <body>
+        <section class="friend-links">
+          <h2>友情链接</h2>
+          <ul><li><a href="https://friend.example/">Friend</a></li></ul>
+        </section>
+      </body>
+    </html>
+    """
+    friend_homepage_html = (
+        '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml">'
+        "</head><body>hi</body></html>"
+    )
+    valid_feed = (
+        '<?xml version="1.0"?><rss version="2.0"><channel>'
+        "<title>Friend Blog</title><item><title>Post</title></item></channel></rss>"
+    )
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/", status_code=200, text=homepage_html
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends", status_code=200, text=friend_page_html
+            ),
+            "https://friend.example/": FetchResult(
+                url="https://friend.example/", status_code=200, text=friend_homepage_html
+            ),
+            "https://friend.example/feed.xml": FetchResult(
+                url="https://friend.example/feed.xml", status_code=200, text=valid_feed
+            ),
+        }
+    )
+
+    discovered = pipeline._crawl_blog(blog)
+
+    assert discovered == 1
+    blogs = repository.list_blogs_catalog(page_size=50)["items"]
+    child_blog = next(row for row in blogs if row["domain"] == "friend.example")
+    assert child_blog["feed_url"] == "https://friend.example/feed.xml"
+    with session_scope(repository.session_factory) as session:
+        raw = session.scalar(
+            select(RawDiscoveredUrlModel).where(RawDiscoveredUrlModel.normalized_url == "https://friend.example/")
+        )
+        raw_status = None if raw is None else raw.status
+        raw_accepted_by = None if raw is None else raw.accepted_by
+    assert raw is not None
+    assert raw_status == "success"
+    assert raw_accepted_by == "rss"
 
 
 def test_pipeline_stops_before_claim_when_raw_discovered_url_limit_is_reached(tmp_path: Path) -> None:

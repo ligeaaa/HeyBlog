@@ -21,6 +21,7 @@
 - [crawler/crawling/extraction.py](../crawler/crawling/extraction.py)
 - [crawler/filters.py](../crawler/filters.py)
 - [crawler/crawling/decisions/chain.py](../crawler/crawling/decisions/chain.py)
+- [crawler/crawling/decisions/rss.py](../crawler/crawling/decisions/rss.py)
 - [crawler/crawling/decisions/consensus.py](../crawler/crawling/decisions/consensus.py)
 - [crawler/crawling/normalization.py](../crawler/crawling/normalization.py)
 
@@ -240,20 +241,30 @@ crawler 的两种主要运行方式：
 
 ## 7. URL 过滤总览
 
-当前 URL 过滤不是单一函数，而是一条决策链，由 [crawler/crawling/decisions/chain.py](../crawler/crawling/decisions/chain.py) 组装。
+当前 URL 过滤不是单一函数，而是一条两阶段决策链，由 [crawler/crawling/decisions/chain.py](../crawler/crawling/decisions/chain.py) 组装。
+
+链中的过滤器分成两类角色（`decider_role`）：
+
+- `rule`：确定性硬规则，组成一个**强制 AND 闸门**。
+- `success`：成功判定器，组成一个**有序 OR 组**。
 
 默认顺序：
 
-1. `RuleBasedDecider`
-2. `ModelConsensusDecider`（若启用）
+1. 所有 `rule` 过滤器（`duplicate_url`、`non_http_scheme`、`same_domain`、平台/域名/TLD/路径黑名单等）
+2. `rss_discovery`（success，若启用）
+3. `model_consensus`（success，若启用）
 
 执行语义是：
 
-- 按顺序逐步判断
-- 任一步拒绝就立即返回
-- 只有所有步骤都通过，链接才会被保留
+- 先依次跑所有 `rule` 过滤器；任一条拒绝就立即返回该拒绝状态。
+- 通过硬规则后，再按顺序跑 `success` 判定器：
+  - 第一个**确认（confirm）**候选是博客的判定器立即保留该候选（并携带它发现的 `feed_url`）。
+  - 一个判定器“弃权（abstain）”表示它没有意见，会把候选交给下一个判定器。
+  - 如果没有任何判定器确认，但至少有一个明确拒绝，则返回最后一次拒绝；否则保留候选。
 
-因此，模型层不会覆盖硬规则层，而是只会进一步过滤硬规则已经允许通过的候选。
+因此，模型层和 RSS 层都不会覆盖硬规则层，只会在硬规则放行之后进一步判定；而 RSS“没找到订阅源”只是弃权，不会把候选直接判死，会继续交给模型共识。
+
+> 历史说明：旧版决策链是纯 AND（每个步骤只能拒绝，全部通过才保留）。现在硬规则仍是 AND 闸门，但其后的部分改成了“任一成功判定器通过即视为博客”的逐层递进式 OR 链。当 RSS 与模型层都关闭时，行为与旧版完全一致。
 
 ## 8. 确定性 URL 过滤规则
 
@@ -359,13 +370,46 @@ crawler 的两种主要运行方式：
 
 也就是说，运行时配置可以扩展拦截面，但不会改变决策链顺序。
 
-## 10. 多模型共识逻辑
+## 10. RSS/Atom 订阅源发现（第一层成功判定器）
 
-[crawler/crawling/decisions/consensus.py](../crawler/crawling/decisions/consensus.py) 提供第二层过滤：模型共识。
+[crawler/crawling/decisions/rss.py](../crawler/crawling/decisions/rss.py) 是硬规则之后的第一个 `success` 判定器，由 `HEYBLOG_RSS_DISCOVERY_ENABLED` 控制（默认开启）。
+
+它的目标很直接：**如果候选博客主页本身暴露了一个可解析的订阅源，就直接判定它是博客**，并把订阅源 URL 记下来，方便后期/线下根据订阅源拉取整理内容。
+
+### 10.1 发现流程
+
+对每个通过硬规则的候选 URL：
+
+1. 抓取候选主页，解析 `<link rel="alternate" type="application/rss+xml|atom+xml|feed+json">` 声明的订阅源。
+2. 若主页没有声明，回退探测常见路径：`/feed`、`/feed/`、`/rss`、`/rss.xml`、`/atom.xml`、`/feed.xml`、`/index.xml`。
+3. 对每个候选订阅源 URL 再抓取一次，用 `feedparser` 校验：必须能识别出 feed 版本，且含有 feed 标题或至少一个 entry，才算有效。
+
+### 10.2 判定语义
+
+- 找到有效订阅源 → **确认（confirm）**：候选立即判定为博客，跳过后续模型共识；订阅源 URL 写入 `blogs.feed_url`。
+- 没找到订阅源 → **弃权（abstain）**：不拒绝候选，继续交给模型共识层判断。
+- 任何抓取失败都按“没找到”处理，不会中断整次爬取。
+
+### 10.3 成本与边界
+
+- RSS 层需要实时 `fetcher`。没有 fetcher 的离线调用方（去重扫描、漏斗统计）会自动跳过该层（弃权），因此它们仍然是纯本地、不联网的。
+- 因为 RSS 层排在硬规则之后，它只会对“已经像根域名主页”的候选发起额外请求，请求量被硬规则提前收敛。
+- 每个候选会在原本只抓源博客的基础上，额外产生“主页 + 若干订阅源探测”的请求，并受单博客爬取超时预算（`fetch_deadline`）约束：预算耗尽时该层直接弃权。
+
+### 10.4 落库
+
+订阅源 URL 通过 `upsert_blog(..., feed_url=...)` 写入 `blogs.feed_url`：
+
+- 新建博客行时直接写入；
+- 已存在的博客行只在其 `feed_url` 仍为空时补写，不会用 `None` 覆盖已有订阅源。
+
+## 11. 多模型共识逻辑
+
+[crawler/crawling/decisions/consensus.py](../crawler/crawling/decisions/consensus.py) 提供第二个 `success` 判定器：模型共识。
 
 它会在硬规则已经放行候选 URL 后，把 URL、anchor text 和友链局部上下文交给运行时模型。默认策略不再是简单“一票保留”，而是按模型验证指标加权平均 blog 概率，让表现更好的新模型拥有更高权重。
 
-### 10.1 模型加载方式
+### 11.1 模型加载方式
 
 模型根目录来自：
 
@@ -387,7 +431,7 @@ Docker 默认会把它映射为容器内：
 
 系统会扫描每个模型目录下名称最大的最新 run，并加载其中的 `model.joblib`。如果 run 目录里有 `metrics.json`，默认会优先读取 `f1` 作为该模型的共识权重；如果没有可用指标，则回退到权重 `1.0`。
 
-### 10.2 模型共识策略
+### 11.2 模型共识策略
 
 每个候选 URL 会先被转换成一个 `ConsensusSample`，其中包含：
 
@@ -416,7 +460,7 @@ Docker 默认会把它映射为容器内：
 - 如果策略判定为 `non_blog`：拒绝，reason=`model_consensus_all_non_blog`
 - 如果策略判定为 `blog`：保留，reason=`model_consensus_kept`
 
-### 10.3 为什么这样设计
+### 11.3 为什么这样设计
 
 旧设计偏保守，只有所有模型都明确不认同时才拒绝，这能降低误杀，但也会让旧弱模型长期稀释新模型的收益。当前默认策略改为指标加权，是为了：
 
@@ -424,7 +468,7 @@ Docker 默认会把它映射为容器内：
 - 保留 `any_blog` 作为兼容开关，方便回退旧行为
 - 仍然把模型层放在硬规则之后，避免模型覆盖确定性的 URL 安全和去重规则
 
-## 11. URL 标准化与 identity 归一
+## 12. URL 标准化与 identity 归一
 
 这部分在 [crawler/crawling/normalization.py](../crawler/crawling/normalization.py)。
 
@@ -433,7 +477,7 @@ Docker 默认会把它映射为容器内：
 - `normalize_url()`：轻量标准化，直接影响 crawler 去重和落库
 - `resolve_blog_identity()`：更强的 homepage identity 归一，服务于站点级归并
 
-### 11.1 `normalize_url()`
+### 12.1 `normalize_url()`
 
 当前会做：
 
@@ -455,7 +499,7 @@ Docker 默认会把它映射为容器内：
 
 这一层不会主动判断“两个 URL 是否属于同一个站点首页”，它的目标只是给 crawler 一个稳定、轻量的去重 key。
 
-### 11.2 `resolve_blog_identity()`
+### 12.2 `resolve_blog_identity()`
 
 这一层会进一步尝试把多个等价首页 URL 合并成一个 blog identity。
 
@@ -479,7 +523,7 @@ identity 输出里会记录：
 
 - `2026-04-07-v5`
 
-## 12. 过滤结果如何落库
+## 13. 过滤结果如何落库
 
 在 [crawler/crawling/orchestrator.py](../crawler/crawling/orchestrator.py) 里，候选链接通过决策链后会进入 `_store_page_links()`。
 
@@ -496,7 +540,7 @@ identity 输出里会记录：
 - 单次 crawl 过程中：以 `normalized_url` 去重
 - 持久化层：再由 repository 的 upsert 逻辑兜底
 
-## 13. 超时与大页面处理
+## 14. 超时与大页面处理
 
 爬虫不仅过滤 URL，也对页面抓取本身做预算限制。
 
@@ -521,7 +565,7 @@ identity 输出里会记录：
 - 页面过大
 - 页面提取阶段未命中 friend-links 容器
 
-## 14. 当前设计的真实取向
+## 15. 当前设计的真实取向
 
 当前 crawler 的整体风格是保守、确定性优先：
 
@@ -542,16 +586,17 @@ identity 输出里会记录：
 - 对“友情链接页面结构非常奇怪”的站点依赖 fallback
 - 对“非博客主页但看起来像根域名”的站点仍可能漏拦
 
-## 15. 调试建议
+## 16. 调试建议
 
 如果你想排查一个链接为什么没进图里，建议按这个顺序看：
 
 1. 看首页是否发现了候选友链页：`crawling/discovery.py`
 2. 看候选页是否抽出了那个链接：`crawling/extraction.py`
 3. 看 URL 是否被硬规则拒绝：`filters.py`
-4. 看是否被模型共识拒绝：`decisions/consensus.py`
-5. 看是否因超时/页面过大在更早阶段失败：`fetching/httpx_fetcher.py`
-6. 看持久化层最终是否 `upsert_blog` / `add_edge`
+4. 看是否被 RSS 发现层确认/弃权：`decisions/rss.py`
+5. 看是否被模型共识拒绝：`decisions/consensus.py`
+6. 看是否因超时/页面过大在更早阶段失败：`fetching/httpx_fetcher.py`
+7. 看持久化层最终是否 `upsert_blog`（含 `feed_url`）/ `add_edge`
 
 如果只是想快速调试一次真实流程，可以优先从仓库里的：
 
@@ -559,7 +604,7 @@ identity 输出里会记录：
 
 入手。
 
-## 16. 相关文档
+## 17. 相关文档
 
 - [crawler/README.md](../crawler/README.md)
 - [config-reference.md](./config-reference.md)

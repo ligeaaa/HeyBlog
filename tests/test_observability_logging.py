@@ -67,8 +67,8 @@ def test_dedicated_event_logger_writes_parallel_service_files(tmp_path: Path) ->
 
     configure_logging(service="persistence-api", log_dir=tmp_path, console_enabled=False)
     dedicated = configure_dedicated_event_logger(
-        logger_name="tests.url_refilter",
-        service="url-refilter",
+        logger_name="tests.maintenance",
+        service="maintenance",
         log_dir=tmp_path,
         console_enabled=False,
     )
@@ -77,22 +77,22 @@ def test_dedicated_event_logger_writes_parallel_service_files(tmp_path: Path) ->
     log_event(app_logger, event="persistence.normal", message="normal persistence event")
     log_event(
         dedicated,
-        event="maintenance.url_refilter.execute.started",
-        message="url refilter execution started",
-        stage="url_refilter",
+        event="maintenance.execute.started",
+        message="maintenance execution started",
+        stage="maintenance",
         run_id=42,
     )
 
     persistence_file = _single_log_file(tmp_path / "app" / "persistence-api")
-    refilter_file = _single_log_file(tmp_path / "app" / "url-refilter")
+    maintenance_file = _single_log_file(tmp_path / "app" / "maintenance")
     persistence_logs = _read_json_lines(persistence_file)
-    refilter_logs = _read_json_lines(refilter_file)
+    maintenance_logs = _read_json_lines(maintenance_file)
 
     assert persistence_logs[-1]["service"] == "persistence-api"
     assert persistence_logs[-1]["event"] == "persistence.normal"
-    assert refilter_logs[-1]["service"] == "url-refilter"
-    assert refilter_logs[-1]["event"] == "maintenance.url_refilter.execute.started"
-    assert refilter_logs[-1]["run_id"] == 42
+    assert maintenance_logs[-1]["service"] == "maintenance"
+    assert maintenance_logs[-1]["event"] == "maintenance.execute.started"
+    assert maintenance_logs[-1]["run_id"] == 42
 
 
 def test_request_id_middleware_logs_access_and_propagates_context(tmp_path: Path) -> None:

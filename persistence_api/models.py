@@ -47,6 +47,7 @@ class BlogModel(Base):
     identity_ruleset_version: Mapped[str] = mapped_column(Text, nullable=False, default="")
     domain: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feed_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -242,6 +243,7 @@ class RawDiscoveredUrlModel(Base):
     source_blog_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
+    accepted_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -292,43 +294,4 @@ class BlogDedupScanRunItemModel(Base):
     reason_code: Mapped[str] = mapped_column(Text, nullable=False)
     reason_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     survivor_selection_basis: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class UrlRefilterRunModel(Base):
-    """Administrative URL refilter run summary."""
-
-    __tablename__ = "url_refilter_runs"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    filter_chain_version: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    crawler_was_running: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    backup_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    scanned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    activated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    deactivated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    retagged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_raw_url_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class UrlRefilterRunEventModel(Base):
-    """Timestamped event log for one URL refilter run."""
-
-    __tablename__ = "url_refilter_run_events"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[int] = mapped_column(
-        ForeignKey("url_refilter_runs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

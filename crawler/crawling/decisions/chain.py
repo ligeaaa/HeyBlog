@@ -9,6 +9,8 @@ import tomllib
 from typing import Any
 
 from crawler.crawling.decisions.base import BaseUrlFilter
+from crawler.crawling.decisions.base import DECIDER_ROLE_RULE
+from crawler.crawling.decisions.base import DECIDER_ROLE_SUCCESS
 from crawler.crawling.decisions.base import FilterDecision
 from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.decisions.consensus import ModelConsensusFilter
@@ -24,6 +26,7 @@ from crawler.crawling.decisions.filters import PlatformDomainFilter
 from crawler.crawling.decisions.filters import PrefixBlocklistFilter
 from crawler.crawling.decisions.filters import RootPathFilter
 from crawler.crawling.decisions.filters import SameDomainFilter
+from crawler.crawling.decisions.rss import RssDiscoveryFilter
 from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
 from shared.config import Settings
@@ -86,6 +89,11 @@ def _build_model_consensus_filter(settings: Settings) -> BaseUrlFilter:
     )
 
 
+def _build_rss_discovery_filter(settings: Settings) -> BaseUrlFilter:
+    del settings
+    return RssDiscoveryFilter()
+
+
 FILTER_REGISTRY: dict[str, FilterFactory] = {
     "duplicate_url": _static_filter_factory(DuplicateUrlFilter),
     "non_http_scheme": _static_filter_factory(NonHttpSchemeFilter),
@@ -111,6 +119,7 @@ FILTER_REGISTRY: dict[str, FilterFactory] = {
     "location_fragment": _static_filter_factory(LocationFragmentFilter),
     "asset_suffix": _static_filter_factory(AssetSuffixFilter),
     "blocked_path": _static_filter_factory(BlockedPathFilter),
+    "rss_discovery": _build_rss_discovery_filter,
     "model_consensus": _build_model_consensus_filter,
 }
 
@@ -127,6 +136,7 @@ DEFAULT_FILTER_KINDS = (
     "location_fragment",
     "asset_suffix",
     "blocked_path",
+    "rss_discovery",
     "model_consensus",
 )
 
@@ -163,18 +173,57 @@ class ConfiguredUrlFilterChain:
             kind = str(item.get("kind", "")).strip()
             if kind == "model_consensus" and not settings.decision_model_consensus_enabled:
                 continue
+            if kind == "rss_discovery" and not settings.rss_discovery_enabled:
+                continue
             factory = FILTER_REGISTRY.get(kind)
             if factory is None:
                 raise ValueError(f"unknown_filter_kind:{kind}")
             loaded_filters.append(factory(settings))
         return cls(filters=tuple(loaded_filters))
 
+    @property
+    def rule_filters(self) -> tuple[BaseUrlFilter, ...]:
+        """Return the mandatory deterministic rule filters (the AND-gate)."""
+        return tuple(f for f in self.filters if getattr(f, "decider_role", DECIDER_ROLE_RULE) == DECIDER_ROLE_RULE)
+
+    @property
+    def success_deciders(self) -> tuple[BaseUrlFilter, ...]:
+        """Return the success deciders evaluated as an ordered OR-group."""
+        return tuple(f for f in self.filters if getattr(f, "decider_role", DECIDER_ROLE_RULE) == DECIDER_ROLE_SUCCESS)
+
     def evaluate(self, candidate: UrlCandidateContext) -> FilterDecision:
-        """Return the first rejecting filter decision or ``success``."""
-        for url_filter in self.filters:
+        """Evaluate the rule AND-gate then the success OR-group.
+
+        Semantics:
+            * Every ``rule`` filter must accept; the first rejection terminates
+              evaluation and is returned verbatim.
+            * The ``success`` deciders then run in order. The first decider that
+              *confirms* the candidate keeps it immediately (carrying any
+              discovered ``feed_url``). A decider that abstains (accepts without
+              confirming) defers to the next decider. If no decider confirms and
+              at least one positively rejected, the last rejection is returned;
+              otherwise the candidate is kept.
+        """
+        for url_filter in self.rule_filters:
             decision = url_filter.apply(candidate)
             if not decision.accepted:
                 return decision
+
+        last_rejection: FilterDecision | None = None
+        for decider in self.success_deciders:
+            decision = decider.apply(candidate)
+            if decision.confirmed:
+                return FilterDecision(
+                    accepted=True,
+                    status="success",
+                    confirmed=True,
+                    feed_url=decision.feed_url,
+                    accepted_by=decision.accepted_by,
+                )
+            if not decision.accepted:
+                last_rejection = decision
+        if last_rejection is not None:
+            return last_rejection
         return FilterDecision(accepted=True, status="success")
 
     def ordered_statuses(self) -> list[str]:

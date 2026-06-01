@@ -12,6 +12,7 @@ dependencies = [
   "alembic>=1.14,<2",
   "beautifulsoup4>=4.12,<5",
   "fastapi>=0.115,<1",
+  "feedparser>=6.0,<7",
   "httpx>=0.28,<1",
   "pydantic>=2.7,<3",
   "pyarrow>=18.1,<25",

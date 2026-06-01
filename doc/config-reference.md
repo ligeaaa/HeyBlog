@@ -60,6 +60,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST` | 空 | `crawler` | 逗号分隔的精确 URL 黑名单 |
 | `HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST` | 空 | `crawler` | 逗号分隔的 URL 前缀黑名单 |
 | `HEYBLOG_DECISION_MODEL_ROOT` | `./runtime_resources/models/url_decision/current` | `crawler`、`persistence-api` | 运行时 URL 决策模型根目录。建议将训练完成后、准备上线的模型发布到这个目录，而不是直接让服务读取 `HeyBlog_model/data/model/` |
+| `HEYBLOG_RSS_DISCOVERY_ENABLED` | `true` | `crawler` | 是否启用 RSS/Atom 订阅源发现成功决策层。开启后，候选博客主页若暴露可解析的订阅源会被直接判定为博客并记录 `feed_url`；缺失订阅源不算拒绝，会继续交给模型共识层。需要实时 fetcher，离线扫描会自动跳过 |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_ENABLED` | `true` | `crawler`、`persistence-api` | 是否启用多模型负向共识决策层 |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` | `weighted_average` | `crawler`、`persistence-api` | 多模型共识策略。可选 `weighted_average`、`majority_blog`、`any_blog`；默认按模型评估指标加权平均概率 |
 | `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | `0.4` | `crawler`、`persistence-api` | `weighted_average` 策略下的全局保留阈值，加权平均 blog 概率低于该值时拒绝；当前值来自 `blog-classification-redesign-20260523` validation split 调优 |

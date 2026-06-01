@@ -4,11 +4,10 @@ import type {
   AdminBlogLabelingCandidate,
   AdminBlogLabelingPage,
   AdminBlogLabelParquetStatus,
+  AdminRequeueFailedBlogsResult,
   AdminBlogLabelTag,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
-  AdminUrlRefilterRun,
-  AdminUrlRefilterRunEvent,
   BlogCatalogItem,
   BlogCatalogPage,
   BlogDetail,
@@ -138,6 +137,15 @@ interface BackendStatusPayload {
 
 interface BackendFilterStatsPayload {
   by_filter_reason: Record<string, number>;
+  rule_drops?: Record<string, number>;
+  success_sources?: Record<string, number>;
+  funnel?: {
+    raw: number;
+    after_rules: number;
+    model_rejected: number;
+    success: number;
+    blogs: number;
+  };
 }
 
 interface BackendCatalogPayload {
@@ -207,33 +215,6 @@ interface BackendDedupSummary {
   kept_count: number;
   created_at: string;
   updated_at: string;
-}
-
-interface BackendUrlRefilterRun {
-  id: number;
-  status: string;
-  filter_chain_version: string;
-  crawler_was_running: boolean;
-  backup_path: string | null;
-  total_count: number;
-  scanned_count: number;
-  unchanged_count: number;
-  activated_count: number;
-  deactivated_count: number;
-  retagged_count: number;
-  last_raw_url_id: number | null;
-  started_at: string | null;
-  completed_at: string | null;
-  error_message: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-interface BackendUrlRefilterRunEvent {
-  id: number;
-  run_id: number;
-  message: string;
-  created_at: string | null;
 }
 
 interface BackendBlogLabelTag {
@@ -691,8 +672,39 @@ export async function fetchStatus(): Promise<StatusData> {
  */
 export async function fetchFilterStats(): Promise<FilterStatsData> {
   const payload = await apiJson<BackendFilterStatsPayload>("/api/filter-stats");
+  const fallbackRaw = payload.by_filter_reason.raw ?? 0;
+  const fallbackSuccess = payload.by_filter_reason.success ?? 0;
+  const fallbackBlogs = payload.by_filter_reason.blogs ?? 0;
+  const derivedRuleDrops: Record<string, number> = {};
+  let previousRemaining = fallbackRaw;
+  let fallbackAfterRules = fallbackRaw;
+  for (const [status, remaining] of Object.entries(payload.by_filter_reason)) {
+    if (!status.startsWith("rule:")) {
+      continue;
+    }
+    derivedRuleDrops[status] = Math.max(previousRemaining - remaining, 0);
+    previousRemaining = remaining;
+    fallbackAfterRules = remaining;
+  }
+  const hasExplicitSources = payload.success_sources !== undefined;
   return {
     byFilterReason: payload.by_filter_reason,
+    ruleDrops: payload.rule_drops ?? derivedRuleDrops,
+    successSources: payload.success_sources ?? {},
+    funnel: {
+      raw: payload.funnel?.raw ?? fallbackRaw,
+      afterRules: payload.funnel?.after_rules ?? fallbackAfterRules,
+      modelRejected: payload.funnel?.model_rejected ?? 0,
+      success: payload.funnel?.success ?? fallbackSuccess,
+      blogs: payload.funnel?.blogs ?? fallbackBlogs,
+    },
+    ...(hasExplicitSources
+      ? {}
+      : {
+          successSources: {
+            unknown: fallbackSuccess,
+          },
+        }),
   };
 }
 
@@ -895,50 +907,6 @@ export async function fetchAdminDedupLatest(adminToken: string): Promise<AdminDe
   } catch {
     return null;
   }
-}
-
-export async function fetchAdminUrlRefilterLatest(adminToken: string): Promise<AdminUrlRefilterRun | null> {
-  try {
-    const payload = await apiJson<BackendUrlRefilterRun>("/api/admin/url-refilter-runs/latest", {
-      headers: adminHeaders(adminToken),
-    });
-    return {
-      id: payload.id,
-      status: payload.status,
-      filterChainVersion: payload.filter_chain_version,
-      crawlerWasRunning: payload.crawler_was_running,
-      backupPath: payload.backup_path,
-      totalCount: payload.total_count,
-      scannedCount: payload.scanned_count,
-      unchangedCount: payload.unchanged_count,
-      activatedCount: payload.activated_count,
-      deactivatedCount: payload.deactivated_count,
-      retaggedCount: payload.retagged_count,
-      lastRawUrlId: payload.last_raw_url_id,
-      startedAt: payload.started_at,
-      completedAt: payload.completed_at,
-      errorMessage: payload.error_message,
-      createdAt: payload.created_at,
-      updatedAt: payload.updated_at,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchAdminUrlRefilterEvents(
-  adminToken: string,
-  runId: number,
-): Promise<AdminUrlRefilterRunEvent[]> {
-  const payload = await apiJson<BackendUrlRefilterRunEvent[]>(`/api/admin/url-refilter-runs/${runId}/events`, {
-    headers: adminHeaders(adminToken),
-  });
-  return payload.map((event) => ({
-    id: event.id,
-    runId: event.run_id,
-    message: event.message,
-    createdAt: event.created_at,
-  }));
 }
 
 /**
@@ -1230,6 +1198,19 @@ export async function postAdminRunBatch(adminToken: string, maxNodes: number): P
 }
 
 /**
+ * Requeue every failed blog so the crawler can retry it.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @returns Number of failed blogs moved back to the waiting queue.
+ */
+export async function postAdminRequeueFailedBlogs(adminToken: string): Promise<AdminRequeueFailedBlogsResult> {
+  return apiJson<AdminRequeueFailedBlogsResult>("/api/admin/blogs/requeue-failed", {
+    method: "POST",
+    headers: adminHeaders(adminToken),
+  });
+}
+
+/**
  * Reset crawler persistence data through the admin maintenance endpoint.
  *
  * @param adminToken Bearer token used for the protected endpoint.
@@ -1237,13 +1218,6 @@ export async function postAdminRunBatch(adminToken: string, maxNodes: number): P
  */
 export async function postAdminResetDatabase(adminToken: string): Promise<unknown> {
   return apiJson("/api/admin/database/reset", {
-    method: "POST",
-    headers: adminHeaders(adminToken),
-  });
-}
-
-export async function postAdminRunUrlRefilter(adminToken: string): Promise<unknown> {
-  return apiJson("/api/admin/url-refilter-runs", {
     method: "POST",
     headers: adminHeaders(adminToken),
   });

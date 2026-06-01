@@ -9,8 +9,6 @@ import httpx
 
 from shared.http_clients.context import context_header_kwargs
 
-URL_REFILTER_EXECUTE_TIMEOUT_SECONDS = 24 * 7 * 60 * 60
-
 
 class PersistenceHttpClient:
     """Expose repository-like methods backed by the persistence API."""
@@ -171,6 +169,7 @@ class PersistenceHttpClient:
         normalized_url: str,
         domain: str,
         email: str | None = None,
+        feed_url: str | None = None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -179,6 +178,7 @@ class PersistenceHttpClient:
                 "normalized_url": normalized_url,
                 "domain": domain,
                 "email": email,
+                "feed_url": feed_url,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
@@ -261,41 +261,6 @@ class PersistenceHttpClient:
             crawler_was_running=crawler_was_running,
         )
 
-    def create_url_refilter_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        return self._create_maintenance_run(
-            "/internal/url-refilter-runs",
-            crawler_was_running=crawler_was_running,
-        )
-
-    def append_url_refilter_run_event(self, *, run_id: int, message: str) -> dict[str, Any]:
-        return self._post(f"/internal/url-refilter-runs/{run_id}/events", {"message": message})
-
-    def mark_url_refilter_run_failed(self, *, run_id: int, error_message: str) -> dict[str, Any]:
-        return self._post_maintenance_run_action(
-            "/internal/url-refilter-runs",
-            run_id=run_id,
-            action="failed",
-            payload={"error_message": error_message},
-        )
-
-    def execute_url_refilter_run(self, *, run_id: int) -> dict[str, Any]:
-        return self._post_maintenance_run_action(
-            "/internal/url-refilter-runs",
-            run_id=run_id,
-            action="execute",
-            timeout_seconds=URL_REFILTER_EXECUTE_TIMEOUT_SECONDS,
-        )
-
-    def latest_url_refilter_run(self) -> dict[str, Any]:
-        return self._get_latest_maintenance_run("/internal/url-refilter-runs")
-
-    def list_url_refilter_run_events(self, run_id: int) -> list[dict[str, Any]]:
-        return self._list_maintenance_run_children(
-            "/internal/url-refilter-runs",
-            run_id=run_id,
-            child_resource="events",
-        )
-
     def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
         return self._post_maintenance_run_action(
             "/internal/blog-dedup-scans",
@@ -364,6 +329,10 @@ class PersistenceHttpClient:
             },
         )
 
+    def requeue_failed_blogs(self) -> dict[str, Any]:
+        """Move all failed blogs back into the waiting crawler queue."""
+        return self._post("/internal/blogs/requeue-failed", {})
+
     def add_edge(
         self,
         *,
@@ -413,8 +382,17 @@ class PersistenceHttpClient:
         )
         return {"id": int(payload["id"]), "status": str(payload["status"])}
 
-    def update_raw_discovered_url_status(self, *, record_id: int, status: str) -> None:
-        self._put(f"/internal/raw-discovered-urls/{record_id}/status", {"status": status})
+    def update_raw_discovered_url_status(
+        self,
+        *,
+        record_id: int,
+        status: str,
+        accepted_by: str | None = None,
+    ) -> None:
+        self._put(
+            f"/internal/raw-discovered-urls/{record_id}/status",
+            {"status": status, "accepted_by": accepted_by},
+        )
 
     def list_blogs_catalog(
         self,

@@ -191,7 +191,7 @@ backend health / crawl-run / runtime-run-batch / database-reset
 | --- | --- | --- |
 | `blogs` / `edges` | `persistence-api` | 系统事实来源 |
 | application/access/error logs | 统一日志目录 | 默认按类型和服务写到 `logs/app/<service>`、`logs/error/<service>`、`logs/access/<service>` 的小时切片，Docker 中映射到 `volumes/logs` |
-| maintenance run events | `persistence-api` | URL refilter、blog dedup scan 等后台维护进度 |
+| maintenance run events | `persistence-api` | blog dedup scan 等后台维护进度 |
 | `stats` / `graph` / graph snapshots | `persistence-api` | 基于事实数据组装出的读模型 |
 | `search-index.json` | `search` | 可重建缓存 |
 | `RuntimeSnapshot` | `crawler` | 进程内内存态，不是持久化状态 |

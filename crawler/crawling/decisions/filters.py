@@ -25,11 +25,11 @@ class DuplicateUrlFilter(StaticStatusUrlFilter):
 
     Duplicate detection is stateful: it compares a candidate against rows that
     were already stored, so it runs inside
-    ``create_raw_discovered_url_record`` (and the refilter scan) *before* the
-    rule chain. By the time a candidate reaches ``evaluate`` it is guaranteed
-    to be non-duplicate, so this filter always accepts. It exists purely so the
-    chain's ``ordered_statuses`` and the funnel statistics account for the
-    ``rule:duplicate_url`` status alongside every other filter step.
+    ``create_raw_discovered_url_record`` *before* the rule chain. By the time a
+    candidate reaches ``evaluate`` it is guaranteed to be non-duplicate, so this
+    filter always accepts. It exists purely so the chain's ``ordered_statuses``
+    and the funnel statistics account for the ``rule:duplicate_url`` status
+    alongside every other filter step.
     """
 
     kind: str = "duplicate_url"
