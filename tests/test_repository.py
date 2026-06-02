@@ -187,6 +187,87 @@ def test_repository_mark_blog_result_persists_site_metadata(tmp_path: Path) -> N
     assert blog["icon_url"] == "https://blog.example.com/favicon.ico"
 
 
+def test_repository_keeps_accepted_blog_visible_after_crawl_failure(tmp_path: Path) -> None:
+    """Crawl failures must not undo durable blog acceptance.
+
+    Args:
+        tmp_path: Temporary directory used for the SQLite test database.
+
+    Returns:
+        None. Assertions verify acceptance fields and catalog eligibility.
+    """
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://friend.example.com/",
+        normalized_url="https://friend.example.com/",
+        domain="friend.example.com",
+        accepted_by="rss",
+    )
+    assert inserted is True
+
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FAILED",
+        status_code=413,
+        friend_links_count=0,
+        crawl_error_kind="page_too_large",
+        crawl_error_message="homepage exceeded max page bytes",
+    )
+
+    blog = repository.get_blog(blog_id)
+    assert blog is not None
+    assert blog["acceptance_status"] == "ACCEPTED"
+    assert blog["accepted_by"] == "rss"
+    assert blog["crawl_status"] == "FAILED"
+    assert blog["crawl_error_kind"] == "page_too_large"
+    assert blog["successful_crawl_at"] is None
+
+    catalog = repository.list_blogs_catalog()
+    assert [item["id"] for item in catalog["items"]] == [blog_id]
+    assert catalog["filters"]["acceptance_status"] == "ACCEPTED"
+
+
+def test_repository_successful_crawl_clears_previous_error(tmp_path: Path) -> None:
+    """A later successful crawl should clear stale failure details.
+
+    Args:
+        tmp_path: Temporary directory used for the SQLite test database.
+
+    Returns:
+        None. Assertions verify failure details do not survive a success.
+    """
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+        accepted_by="model",
+    )
+
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FAILED",
+        status_code=None,
+        friend_links_count=0,
+        crawl_error_kind="timeout",
+        crawl_error_message="timed out",
+    )
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=3,
+    )
+
+    blog = repository.get_blog(blog_id)
+    assert blog is not None
+    assert blog["acceptance_status"] == "ACCEPTED"
+    assert blog["accepted_by"] == "model"
+    assert blog["crawl_error_kind"] is None
+    assert blog["crawl_error_message"] is None
+    assert blog["successful_crawl_at"] is not None
+
+
 def test_repository_defaults_blog_email_to_none(tmp_path: Path) -> None:
     """New blogs should keep a nullable email field until claimed by a user."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -1140,6 +1221,7 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
         "has_title": None,
         "has_icon": None,
         "min_connections": 0,
+        "acceptance_status": "ACCEPTED",
     }
 
     last_page = repository.list_blogs_catalog(page=99, page_size=2)
@@ -2335,6 +2417,13 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         "title": "delta.example title",
         "icon_url": "https://delta.example/favicon.ico",
         "status_code": 200,
+        "acceptance_status": "ACCEPTED",
+        "accepted_by": None,
+        "accepted_at": detail["recommended_blogs"][0]["blog"]["accepted_at"],
+        "crawl_error_kind": None,
+        "crawl_error_message": None,
+        "last_crawl_attempt_at": detail["recommended_blogs"][0]["blog"]["last_crawl_attempt_at"],
+        "successful_crawl_at": detail["recommended_blogs"][0]["blog"]["successful_crawl_at"],
         "crawl_status": "FINISHED",
         "friend_links_count": 1,
         "last_crawled_at": detail["recommended_blogs"][0]["blog"]["last_crawled_at"],

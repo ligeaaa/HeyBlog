@@ -49,6 +49,7 @@ class UpsertBlogRequest(BaseModel):
     domain: str
     email: str | None = None
     feed_url: str | None = None
+    accepted_by: str | None = None
 
 
 class CreateIngestionRequest(BaseModel):
@@ -68,6 +69,8 @@ class BlogResultRequest(BaseModel):
     metadata_captured: bool = False
     title: str | None = None
     icon_url: str | None = None
+    crawl_error_kind: str | None = None
+    crawl_error_message: str | None = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -309,6 +312,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         has_title: str | None = None,
         has_icon: str | None = None,
         min_connections: str | None = None,
+        acceptance_status: str | None = "ACCEPTED",
     ) -> dict[str, Any]:
         return _call_with_value_error_http_translation(
             lambda: get_state().repository.list_blogs_catalog(
@@ -323,6 +327,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 has_title=has_title,
                 has_icon=has_icon,
                 min_connections=min_connections,
+                acceptance_status=acceptance_status,
             ),
             status_code=422,
         )

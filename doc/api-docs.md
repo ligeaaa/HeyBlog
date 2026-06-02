@@ -395,6 +395,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `url`: URL 筛选，匹配 `url` / `normalized_url`
 - `status`: 抓取状态精确筛选；会先做 `trim + uppercase`，仅允许 `WAITING`、`PROCESSING`、`FINISHED`、`FAILED`
 - `statuses`: 多状态筛选，逗号分隔；会对每个值做 `trim + uppercase`，仅允许 `WAITING`、`PROCESSING`、`FINISHED`、`FAILED`
+- `acceptance_status`: 博客接受状态筛选，默认 `ACCEPTED`；允许 `ACCEPTED`、`UNKNOWN`、`REJECTED`。该字段表示 URL 是否已被 seed、RSS 或模型确认为博客，独立于 `crawl_status`
 - `sort`: 排序方式，允许 `id_asc`、`id_desc`、`recent_activity`、`connections`、`recently_discovered`、`random`
 - `has_title`: 是否要求有标题；支持布尔值，也接受 `1/0`、`true/false`、`yes/no`
 - `has_icon`: 是否要求有 icon；支持布尔值，也接受 `1/0`、`true/false`、`yes/no`
@@ -405,8 +406,10 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 空白字符串会被视为未传参
 - 非法 `status` 返回 `422`
 - 非法 `statuses` 返回 `422`
+- 非法 `acceptance_status` 返回 `422`
 - 非法 `sort` 返回 `422`
 - 当 `statuses` 存在时优先于 `status`，用于同时查询多个 `crawl_status`
+- 默认只返回 `acceptance_status=ACCEPTED` 的 URL；`crawl_status=FAILED` 只表示最近一次抓取尝试失败，不表示该 URL 不是博客
 - `has_title` / `has_icon` 仅在传入真值时启用过滤；传入假值会保留参数值但不额外筛掉空字段记录
 - `id_asc` 按业务 `blog_id ASC`
 - `recent_activity` 按 `activity_at DESC, connection_count DESC, blog_id DESC`
@@ -1840,6 +1843,13 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 | `title` | `string \| null` | 站点主页解析出的 `<title>`，缺失时为 `null` |
 | `icon_url` | `string \| null` | 站点标签页 icon URL；优先使用页面声明的 icon 链接，缺失时可能回退为 `${origin}/favicon.ico` |
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
+| `acceptance_status` | `string` | 博客接受状态，当前主要使用 `ACCEPTED` 与 `UNKNOWN`；该字段决定“是否被确认为博客” |
+| `accepted_by` | `string \| null` | 接受来源，例如 `seed`、`rss`、`model` |
+| `accepted_at` | `string \| null` | URL 被确认为博客的时间 |
+| `crawl_error_kind` | `string \| null` | 最近一次抓取失败分类，例如 `timeout`、`page_too_large`、`http_status` |
+| `crawl_error_message` | `string \| null` | 最近一次抓取失败详情摘要 |
+| `last_crawl_attempt_at` | `string \| null` | 最近一次抓取尝试时间 |
+| `successful_crawl_at` | `string \| null` | 最近一次成功完成抓取时间 |
 | `crawl_status` | `string` | 当前抓取状态，常见值有 `WAITING` `PROCESSING` `FAILED` `FINISHED` |
 | `friend_links_count` | `number` | 最近一次抓取发现的友链数 |
 | `last_crawled_at` | `string \| null` | 最近抓取时间 |

@@ -242,6 +242,7 @@ class CrawlOrchestrator:
                 normalized_url=normalized.normalized_url,
                 domain=normalized.domain,
                 feed_url=decision.feed_url,
+                accepted_by=decision.accepted_by,
             )
             edge = FriendLinkEdge(
                 from_blog_id=blog.id,

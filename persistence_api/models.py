@@ -51,6 +51,13 @@ class BlogModel(Base):
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acceptance_status: Mapped[str] = mapped_column(Text, nullable=False, default="UNKNOWN")
+    accepted_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    crawl_error_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    crawl_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_crawl_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    successful_crawl_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     crawl_status: Mapped[CrawlStatus] = mapped_column(
         Enum(CrawlStatus, name="crawl_status"),
         nullable=False,

@@ -140,6 +140,7 @@ crawler 的两种主要运行方式：
 - `icon_url`
 
 如果超时或异常，则由 `CrawlPipeline._mark_blog_failed()` 标记为 `FAILED`。
+`FAILED` 只表示最近一次抓取尝试没有完整结束，不会撤销 `acceptance_status=ACCEPTED` 的博客判定；RSS、模型或 seed 接受来源会保留在 `accepted_by` / `accepted_at` 中。
 
 ## 5. 首页友链页发现逻辑
 
@@ -556,7 +557,7 @@ identity 输出里会记录：
 - 一个博客的整次 crawl 有总超时预算
 - 候选页可并发抓取
 - 单页超出字节上限会触发 `PageTooLargeError`
-- 若候选页超大，当前 blog 会被标记为 `FAILED`
+- 若候选页超大，当前 blog 会被标记为 `FAILED`，并记录 `crawl_error_kind=page_too_large`；这只影响抓取生命周期，不表示该 URL 不是博客
 
 因此“没有抓到友链”不一定是过滤规则问题，也可能是：
 

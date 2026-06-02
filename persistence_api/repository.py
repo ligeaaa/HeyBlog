@@ -59,12 +59,17 @@ from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
 from shared.observability import get_logger
 
+BLOG_ACCEPTANCE_ACCEPTED = "ACCEPTED"
+BLOG_ACCEPTANCE_UNKNOWN = "UNKNOWN"
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
 BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
 BLOG_CATALOG_MAX_PAGE_SIZE = 200
 BLOG_CATALOG_DEFAULT_SORT = "id_desc"
 BLOG_CATALOG_ALLOWED_SORTS = frozenset(
     {"id_asc", "id_desc", "recent_activity", "connections", "recently_discovered", "random"}
+)
+BLOG_CATALOG_ALLOWED_ACCEPTANCE_STATUSES = frozenset(
+    {BLOG_ACCEPTANCE_ACCEPTED, BLOG_ACCEPTANCE_UNKNOWN, "REJECTED"}
 )
 INGESTION_PRIORITY_LIST_LIMIT = 20
 BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
@@ -449,6 +454,7 @@ def normalize_blog_catalog_query(
     has_title: bool | str | None = None,
     has_icon: bool | str | None = None,
     min_connections: int | str | None = None,
+    acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
 ) -> dict[str, Any]:
     """Normalize catalog query params into one shared spec."""
     normalized_statuses: list[str] | None = None
@@ -477,6 +483,11 @@ def normalize_blog_catalog_query(
     normalized_sort = _normalize_catalog_text(sort) or BLOG_CATALOG_DEFAULT_SORT
     if normalized_sort not in BLOG_CATALOG_ALLOWED_SORTS:
         raise ValueError(f"Unsupported blog catalog sort: {normalized_sort}")
+    normalized_acceptance_status = _normalize_catalog_text(acceptance_status)
+    if normalized_acceptance_status is not None:
+        normalized_acceptance_status = normalized_acceptance_status.upper()
+        if normalized_acceptance_status not in BLOG_CATALOG_ALLOWED_ACCEPTANCE_STATUSES:
+            raise ValueError(f"Unsupported blog acceptance status: {normalized_acceptance_status}")
 
     return {
         "page": max(page, 1),
@@ -490,6 +501,7 @@ def normalize_blog_catalog_query(
         "has_title": _normalize_catalog_bool(has_title),
         "has_icon": _normalize_catalog_bool(has_icon),
         "min_connections": _normalize_catalog_int(min_connections),
+        "acceptance_status": normalized_acceptance_status,
     }
 
 
@@ -934,6 +946,37 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                         connection.execute(
                             text(f'ALTER TABLE raw_discovered_urls DROP CONSTRAINT IF EXISTS "{constraint_name}"')
                         )
+        if "blogs" in existing_tables:
+            blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
+            for column_name, ddl in (
+                ("acceptance_status", "ALTER TABLE blogs ADD COLUMN acceptance_status TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+                ("accepted_by", "ALTER TABLE blogs ADD COLUMN accepted_by TEXT"),
+                ("accepted_at", "ALTER TABLE blogs ADD COLUMN accepted_at TIMESTAMP"),
+                ("crawl_error_kind", "ALTER TABLE blogs ADD COLUMN crawl_error_kind TEXT"),
+                ("crawl_error_message", "ALTER TABLE blogs ADD COLUMN crawl_error_message TEXT"),
+                ("last_crawl_attempt_at", "ALTER TABLE blogs ADD COLUMN last_crawl_attempt_at TIMESTAMP"),
+                ("successful_crawl_at", "ALTER TABLE blogs ADD COLUMN successful_crawl_at TIMESTAMP"),
+            ):
+                if column_name not in blog_columns:
+                    connection.execute(text(ddl))
+            connection.execute(
+                text(
+                    "UPDATE blogs SET acceptance_status = 'ACCEPTED', "
+                    "accepted_by = COALESCE(accepted_by, 'seed'), "
+                    "accepted_at = COALESCE(accepted_at, created_at) "
+                    "WHERE acceptance_status = 'UNKNOWN' "
+                    "AND blog_id NOT IN (SELECT to_blog_id FROM edges)"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE blogs SET acceptance_status = 'ACCEPTED', "
+                    "accepted_by = COALESCE(accepted_by, 'graph'), "
+                    "accepted_at = COALESCE(accepted_at, created_at) "
+                    "WHERE acceptance_status = 'UNKNOWN' "
+                    "AND blog_id IN (SELECT from_blog_id FROM edges UNION SELECT to_blog_id FROM edges)"
+                )
+            )
         blog_rows = connection.execute(
             text(
                 "SELECT id, blog_id, url, normalized_url, domain, identity_key, identity_ruleset_version "
@@ -1061,6 +1104,13 @@ class _BlogPayloadView:
             "title": self.title,
             "icon_url": self.icon_url,
             "status_code": self.model.status_code,
+            "acceptance_status": self.model.acceptance_status,
+            "accepted_by": self.model.accepted_by,
+            "accepted_at": _iso(self.model.accepted_at),
+            "crawl_error_kind": self.model.crawl_error_kind,
+            "crawl_error_message": self.model.crawl_error_message,
+            "last_crawl_attempt_at": _iso(self.model.last_crawl_attempt_at),
+            "successful_crawl_at": _iso(self.model.successful_crawl_at),
             "crawl_status": self.model.crawl_status.value,
             "friend_links_count": int(self.model.friend_links_count),
             "last_crawled_at": _iso(self.model.last_crawled_at),
@@ -1635,6 +1685,7 @@ class RepositoryProtocol(Protocol):
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
     ) -> tuple[int, bool]: ...
 
     def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None: ...
@@ -1678,6 +1729,8 @@ class RepositoryProtocol(Protocol):
         metadata_captured: bool = False,
         title: str | None = None,
         icon_url: str | None = None,
+        crawl_error_kind: str | None = None,
+        crawl_error_message: str | None = None,
     ) -> None: ...
 
     def add_edge(
@@ -1731,6 +1784,7 @@ class RepositoryProtocol(Protocol):
         has_title: bool | str | None = None,
         has_icon: bool | str | None = None,
         min_connections: int | None = None,
+        acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
     ) -> dict[str, Any]: ...
 
     def list_blog_labeling_candidates(
@@ -2270,6 +2324,7 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
         preferred_blog_id: int | None = None,
     ) -> tuple[BlogModel, bool]:
         """Create or update one blog row and initialize its business id.
@@ -2282,6 +2337,8 @@ class SQLAlchemyRepository:
             email: Optional contact email to fill when the row is missing one.
             feed_url: Optional RSS/Atom feed URL discovered for the blog. Stored
                 when present; an existing feed is never overwritten with ``None``.
+            accepted_by: Optional acceptance source such as ``seed``, ``rss``,
+                or ``model``. When present, the blog is durably accepted.
             preferred_blog_id: Preferred externally meaningful ``blogs.blog_id``.
 
         Returns:
@@ -2313,6 +2370,12 @@ class SQLAlchemyRepository:
                 existing.email = email
             if feed_url is not None and not (existing.feed_url or "").strip():
                 existing.feed_url = feed_url
+            if existing.acceptance_status != BLOG_ACCEPTANCE_ACCEPTED:
+                existing.acceptance_status = BLOG_ACCEPTANCE_ACCEPTED
+                existing.accepted_at = existing.accepted_at or now_utc()
+            if accepted_by is not None:
+                existing.accepted_by = accepted_by
+                existing.accepted_at = existing.accepted_at or now_utc()
             existing.identity_key = identity.identity_key
             existing.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
             existing.identity_ruleset_version = identity.ruleset_version
@@ -2335,6 +2398,9 @@ class SQLAlchemyRepository:
             domain=stored_domain,
             email=email,
             feed_url=feed_url,
+            acceptance_status=BLOG_ACCEPTANCE_ACCEPTED,
+            accepted_by=accepted_by,
+            accepted_at=now_utc(),
             crawl_status=CrawlStatus.WAITING,
             friend_links_count=0,
             created_at=now_utc(),
@@ -2467,6 +2533,7 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
     ) -> tuple[int, bool]:
         with session_scope(self.session_factory) as session:
             blog, inserted = self._upsert_blog_in_session(
@@ -2476,6 +2543,7 @@ class SQLAlchemyRepository:
                 domain=domain,
                 email=email,
                 feed_url=feed_url,
+                accepted_by=accepted_by,
             )
             return int(_business_blog_id(blog)), inserted
 
@@ -2541,6 +2609,9 @@ class SQLAlchemyRepository:
                     identity_ruleset_version=ruleset_version,
                     domain=domain,
                     email=normalized_email,
+                    acceptance_status=BLOG_ACCEPTANCE_ACCEPTED,
+                    accepted_by="seed",
+                    accepted_at=now_utc(),
                     crawl_status=CrawlStatus.WAITING,
                     friend_links_count=0,
                     created_at=now_utc(),
@@ -2963,6 +3034,8 @@ class SQLAlchemyRepository:
             for blog in blogs:
                 blog.crawl_status = CrawlStatus.WAITING
                 blog.status_code = None
+                blog.crawl_error_kind = None
+                blog.crawl_error_message = None
                 blog.updated_at = timestamp
 
             requests = session.scalars(
@@ -2988,16 +3061,28 @@ class SQLAlchemyRepository:
         metadata_captured: bool = False,
         title: str | None = None,
         icon_url: str | None = None,
+        crawl_error_kind: str | None = None,
+        crawl_error_message: str | None = None,
     ) -> None:
         with session_scope(self.session_factory) as session:
             blog = self._get_blog_by_business_id(session, blog_id)
             if blog is None:
                 return
-            blog.crawl_status = CrawlStatus(crawl_status)
+            resolved_status = CrawlStatus(crawl_status)
+            timestamp = now_utc()
+            blog.crawl_status = resolved_status
             blog.status_code = status_code
             blog.friend_links_count = friend_links_count
-            blog.last_crawled_at = now_utc()
-            blog.updated_at = now_utc()
+            blog.last_crawled_at = timestamp
+            blog.last_crawl_attempt_at = timestamp
+            blog.updated_at = timestamp
+            if resolved_status == CrawlStatus.FINISHED:
+                blog.successful_crawl_at = timestamp
+                blog.crawl_error_kind = None
+                blog.crawl_error_message = None
+            elif resolved_status == CrawlStatus.FAILED:
+                blog.crawl_error_kind = crawl_error_kind
+                blog.crawl_error_message = crawl_error_message
             if metadata_captured:
                 blog.title = title
                 blog.icon_url = icon_url
@@ -3308,6 +3393,7 @@ class SQLAlchemyRepository:
         has_title: bool | str | None = None,
         has_icon: bool | str | None = None,
         min_connections: int | None = None,
+        acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
     ) -> dict[str, Any]:
         query = normalize_blog_catalog_query(
             page=page,
@@ -3321,9 +3407,12 @@ class SQLAlchemyRepository:
             has_title=has_title,
             has_icon=has_icon,
             min_connections=min_connections,
+            acceptance_status=acceptance_status,
         )
         with session_scope(self.session_factory) as session:
             statement, metrics = self._blog_select()
+            if query["acceptance_status"] is not None:
+                statement = statement.where(BlogModel.acceptance_status == query["acceptance_status"])
             if query["site"] is not None:
                 pattern = f"%{query['site']}%"
                 statement = statement.where(
@@ -3410,6 +3499,7 @@ class SQLAlchemyRepository:
                     "has_title": query["has_title"],
                     "has_icon": query["has_icon"],
                     "min_connections": query["min_connections"],
+                    "acceptance_status": query["acceptance_status"],
                 },
             )
 

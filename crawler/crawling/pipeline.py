@@ -26,6 +26,29 @@ BlogErrorHook = Callable[[dict[str, Any], Exception], None]
 ShouldStopHook = Callable[[], bool]
 
 
+def _crawl_error_kind(error: Exception) -> str:
+    """Return a stable crawl failure category for persistence.
+
+    Args:
+        error: Exception raised while processing one blog.
+
+    Returns:
+        Machine-readable failure kind used to separate retryable crawl errors
+        from blog acceptance semantics.
+    """
+
+    if isinstance(error, PageTooLargeError):
+        return "page_too_large"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    error_name = type(error).__name__.lower()
+    if "http" in error_name:
+        return "http_status"
+    if "request" in error_name:
+        return "request_error"
+    return "crawl_error"
+
+
 class CrawlPipeline:
     """Coordinate seed bootstrap, one-shot crawl batches, and export writing.
 
@@ -292,6 +315,8 @@ class CrawlPipeline:
             crawl_status=state.status,
             status_code=state.status_code,
             friend_links_count=state.friend_links_count,
+            crawl_error_kind=_crawl_error_kind(error),
+            crawl_error_message=str(error)[:1000],
         )
         self.logger.crawl_error(blog_id=blog_id, error=error)
 

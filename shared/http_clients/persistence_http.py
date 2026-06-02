@@ -170,6 +170,7 @@ class PersistenceHttpClient:
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -179,6 +180,7 @@ class PersistenceHttpClient:
                 "domain": domain,
                 "email": email,
                 "feed_url": feed_url,
+                "accepted_by": accepted_by,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
@@ -316,6 +318,8 @@ class PersistenceHttpClient:
         metadata_captured: bool = False,
         title: str | None = None,
         icon_url: str | None = None,
+        crawl_error_kind: str | None = None,
+        crawl_error_message: str | None = None,
     ) -> None:
         self._post(
             f"/internal/blogs/{blog_id}/result",
@@ -326,6 +330,8 @@ class PersistenceHttpClient:
                 "metadata_captured": metadata_captured,
                 "title": title,
                 "icon_url": icon_url,
+                "crawl_error_kind": crawl_error_kind,
+                "crawl_error_message": crawl_error_message,
             },
         )
 
@@ -408,6 +414,7 @@ class PersistenceHttpClient:
         has_title: bool | None = None,
         has_icon: bool | None = None,
         min_connections: int | None = None,
+        acceptance_status: str | None = "ACCEPTED",
     ) -> dict[str, Any]:
         return self._get(
             "/internal/blogs/catalog",
@@ -423,6 +430,7 @@ class PersistenceHttpClient:
                 "has_title": has_title,
                 "has_icon": has_icon,
                 "min_connections": min_connections,
+                "acceptance_status": acceptance_status,
             },
         )
 

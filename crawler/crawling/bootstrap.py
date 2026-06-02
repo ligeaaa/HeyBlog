@@ -57,6 +57,7 @@ class BootstrapService:
                     url=raw_url,
                     normalized_url=normalized.normalized_url,
                     domain=normalized.domain,
+                    accepted_by="seed",
                 )
                 created += int(inserted)
         self.logger.bootstrap_success(seed_path)

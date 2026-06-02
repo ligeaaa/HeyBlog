@@ -436,6 +436,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         has_title: str | None = None,
         has_icon: str | None = None,
         min_connections: str | None = None,
+        acceptance_status: str | None = "ACCEPTED",
     ) -> dict[str, Any]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.list_blogs_catalog(
@@ -450,6 +451,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 has_title=has_title,
                 has_icon=has_icon,
                 min_connections=min_connections,
+                acceptance_status=acceptance_status,
             )
         )
 
