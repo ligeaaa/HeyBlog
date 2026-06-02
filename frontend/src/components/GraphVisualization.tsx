@@ -2,7 +2,7 @@ import { RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
-import { resolveBlogIconUrl } from "../lib/icon";
+import { resolveBlogIconUrls } from "../lib/icon";
 import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
 export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
@@ -26,6 +26,7 @@ interface RenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
   label: string;
   val: number;
   iconUrl?: string;
+  iconUrls: string[];
 }
 
 interface RenderLink extends Omit<GraphEdge, "source" | "target"> {
@@ -58,6 +59,7 @@ function buildGraphData(data: GraphData): RenderGraphData {
     if (!id) {
       continue;
     }
+    const iconUrls = resolveBlogIconUrls(node);
     nodesById.set(id, {
       ...node,
       id,
@@ -65,7 +67,8 @@ function buildGraphData(data: GraphData): RenderGraphData {
       original: node,
       label: nodeTitle(node),
       val: 1,
-      iconUrl: resolveBlogIconUrl(node),
+      iconUrls,
+      iconUrl: iconUrls[0],
     });
   }
 
@@ -165,20 +168,13 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
 
   group.add(glow);
   group.add(core);
+  group.userData = { blogId: node.blogId, iconUrl: node.iconUrl };
 
-  if (node.iconUrl) {
+  const iconUrls = node.iconUrls.length > 0 ? node.iconUrls : node.iconUrl ? [node.iconUrl] : [];
+  if (iconUrls.length > 0) {
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
-    const texture = loader.load(
-      node.iconUrl,
-      () => {
-        core.visible = false;
-      },
-      undefined,
-      () => {
-        core.visible = true;
-      },
-    );
+    const texture = new THREE.Texture();
     texture.colorSpace = THREE.SRGBColorSpace;
     const icon = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -190,9 +186,31 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
     icon.scale.set(size * 2.1, size * 2.1, 1);
     icon.position.set(0, 0, size * 0.08);
     group.add(icon);
+
+    const loadIcon = (index: number) => {
+      const candidate = iconUrls[index];
+      if (!candidate) {
+        core.visible = true;
+        icon.visible = false;
+        return;
+      }
+      loader.load(
+        candidate,
+        (loadedTexture) => {
+          loadedTexture.colorSpace = THREE.SRGBColorSpace;
+          icon.material.map = loadedTexture;
+          icon.material.needsUpdate = true;
+          core.visible = false;
+          icon.visible = true;
+          group.userData.iconUrl = candidate;
+        },
+        undefined,
+        () => loadIcon(index + 1),
+      );
+    };
+    loadIcon(0);
   }
 
-  group.userData = { blogId: node.blogId, iconUrl: node.iconUrl };
   return group;
 }
 

@@ -1356,7 +1356,7 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
 
 
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:
-    """Catalog should remain usable for older rows that were created before metadata capture existed."""
+    """Catalog should keep title fallback but not synthesize unverified icons."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
     blog_id, inserted = repository.upsert_blog(
         url="https://legacy.example/posts/1",
@@ -1375,9 +1375,9 @@ def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows
     title_filtered = repository.list_blogs_catalog(has_title=True)
     icon_filtered = repository.list_blogs_catalog(has_icon=True)
     assert [row["id"] for row in title_filtered["items"]] == [blog_id]
-    assert [row["id"] for row in icon_filtered["items"]] == [blog_id]
+    assert icon_filtered["items"] == []
     assert title_filtered["items"][0]["title"] == "legacy.example"
-    assert icon_filtered["items"][0]["icon_url"] == "https://legacy.example/favicon.ico"
+    assert title_filtered["items"][0]["icon_url"] is None
 
 
 def test_repository_blog_catalog_has_title_filters_on_stored_title_only(tmp_path: Path) -> None:

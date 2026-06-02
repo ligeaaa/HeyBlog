@@ -4,7 +4,7 @@ from crawler.crawling.metadata import extract_site_metadata
 
 
 def test_extract_site_metadata_ignores_non_http_icon_urls() -> None:
-    """Unsafe icon schemes should be skipped in favor of a safe fallback."""
+    """Unsafe icon schemes should be skipped without synthesizing a fallback."""
     metadata = extract_site_metadata(
         "https://blog.example.com/",
         """
@@ -19,11 +19,11 @@ def test_extract_site_metadata_ignores_non_http_icon_urls() -> None:
     )
 
     assert metadata.title == "Alpha Blog"
-    assert metadata.icon_url == "https://blog.example.com/favicon.ico"
+    assert metadata.icon_url is None
 
 
 def test_extract_site_metadata_returns_none_when_page_url_is_not_http() -> None:
-    """Fallback favicon should only be synthesized for HTTP(S) page URLs."""
+    """Non-HTTP page URLs should not produce icon candidates."""
     metadata = extract_site_metadata(
         "ftp://blog.example.com/",
         "<html><head><title>Alpha Blog</title></head></html>",

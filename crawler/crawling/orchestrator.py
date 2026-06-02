@@ -87,6 +87,7 @@ class CrawlOrchestrator:
             timeout_seconds=self._remaining_timeout_seconds(deadline, blog_record.url),
         )
         metadata = extract_site_metadata(homepage.url, homepage.text)
+        validated_icon_url = self._validated_icon_url(metadata.icon_url, deadline, blog_record.url)
         candidate_pages = self._discover_candidate_pages(homepage)
         discovered_count = self._crawl_candidate_pages(
             blog_record,
@@ -100,10 +101,27 @@ class CrawlOrchestrator:
                 status_code=homepage.status_code,
                 discovered_count=discovered_count,
                 title=metadata.title,
-                icon_url=metadata.icon_url,
+                icon_url=validated_icon_url,
             ),
         )
         return discovered_count
+
+    def _validated_icon_url(self, icon_url: str | None, deadline: float, blog_url: str) -> str | None:
+        """Return a reachable icon URL, or ``None`` when no candidate validates.
+
+        Args:
+            icon_url: Candidate icon URL extracted from homepage metadata.
+            deadline: Monotonic crawl deadline shared by the current blog crawl.
+            blog_url: Source blog URL used in timeout error messages.
+
+        Returns:
+            Final reachable icon URL when validation succeeds; otherwise
+            ``None``.
+        """
+        if not icon_url:
+            return None
+        remaining = self._remaining_timeout_seconds(deadline, blog_url)
+        return self.fetcher.validate_icon_url(icon_url, timeout_seconds=remaining)
 
     def _discover_candidate_pages(self, homepage: FetchResult) -> list[str]:
         """Discover friend-link candidate pages starting from the homepage.

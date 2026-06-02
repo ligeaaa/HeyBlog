@@ -11,6 +11,7 @@ from crawler.crawling.fetching.base import FetchAttempt
 from crawler.crawling.fetching.base import FetchResult
 from crawler.crawling.pipeline import CrawlPipeline
 from persistence_api.db import session_scope
+from persistence_api.models import BlogModel
 from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.repository import Repository
 from shared.config import Settings
@@ -26,6 +27,7 @@ class FakeFetcher:
         batch_results: dict[str, FetchAttempt] | None = None,
         on_fetch: Callable[[str, float | None], None] | None = None,
         on_fetch_many: Callable[[list[str], float | None], None] | None = None,
+        valid_icon_urls: dict[str, str | None] | None = None,
     ) -> None:
         self.responses = responses
         self.batch_results = batch_results or {}
@@ -35,6 +37,8 @@ class FakeFetcher:
         self.fetch_timeouts: list[float | None] = []
         self.fetch_many_calls: list[tuple[list[str], int, float | None]] = []
         self.batch_completion_order: list[str] = []
+        self.valid_icon_urls = valid_icon_urls or {}
+        self.icon_validation_calls: list[tuple[str, float | None]] = []
 
     def fetch(self, url: str, *, timeout_seconds: float | None = None) -> FetchResult:
         self.calls.append(url)
@@ -75,6 +79,10 @@ class FakeFetcher:
             )
             for url in urls
         }
+
+    def validate_icon_url(self, url: str, *, timeout_seconds: float | None = None) -> str | None:
+        self.icon_validation_calls.append((url, timeout_seconds))
+        return self.valid_icon_urls.get(url)
 
 
 def build_pipeline(tmp_path: Path) -> tuple[CrawlPipeline, Repository]:
@@ -142,7 +150,10 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
                 status_code=200,
                 text=friend_page_html,
             ),
-        }
+        },
+        valid_icon_urls={
+            "https://blog.example.com/static/favicon.png": "https://cdn.example.com/favicon.png",
+        },
     )
 
     discovered = pipeline._crawl_blog(blog)
@@ -295,7 +306,10 @@ def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
                 status_code=200,
                 text=friend_page_html,
             ),
-        }
+        },
+        valid_icon_urls={
+            "https://blog.example.com/static/favicon.png": "https://cdn.example.com/favicon.png",
+        },
     )
 
     pipeline._crawl_blog(blog)
@@ -303,11 +317,12 @@ def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
     refreshed = repository.get_blog(int(blog["id"]))
     assert refreshed is not None
     assert refreshed["title"] == "Alpha Blog"
-    assert refreshed["icon_url"] == "https://blog.example.com/static/favicon.png"
+    assert refreshed["icon_url"] == "https://cdn.example.com/favicon.png"
+    assert pipeline.fetcher.icon_validation_calls[0][0] == "https://blog.example.com/static/favicon.png"
 
 
-def test_pipeline_falls_back_to_origin_favicon_when_page_has_no_icon_link(tmp_path: Path) -> None:
-    """Missing explicit icon markup should still produce an origin favicon candidate."""
+def test_pipeline_keeps_icon_null_when_page_has_no_icon_link(tmp_path: Path) -> None:
+    """Missing explicit icon markup should leave persisted icon metadata empty."""
     pipeline, repository = build_pipeline(tmp_path)
     blog = seed_blog(repository)
 
@@ -326,7 +341,43 @@ def test_pipeline_falls_back_to_origin_favicon_when_page_has_no_icon_link(tmp_pa
     refreshed = repository.get_blog(int(blog["id"]))
     assert refreshed is not None
     assert refreshed["title"] == "Plain Blog"
-    assert refreshed["icon_url"] == "https://blog.example.com/favicon.ico"
+    assert refreshed["icon_url"] is None
+    with session_scope(repository.session_factory) as session:
+        stored_icon_url = session.scalar(select(BlogModel.icon_url).where(BlogModel.blog_id == int(blog["id"])))
+    assert stored_icon_url is None
+    assert pipeline.fetcher.icon_validation_calls == []
+
+
+def test_pipeline_keeps_icon_null_when_icon_validation_fails(tmp_path: Path) -> None:
+    """Unreachable extracted icon candidates should not be persisted."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text=(
+                    "<html><head><title>Plain Blog</title>"
+                    '<link rel="icon" href="/missing.ico" />'
+                    "</head><body></body></html>"
+                ),
+            ),
+        },
+        valid_icon_urls={"https://blog.example.com/missing.ico": None},
+    )
+
+    pipeline._crawl_blog(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["title"] == "Plain Blog"
+    assert refreshed["icon_url"] is None
+    with session_scope(repository.session_factory) as session:
+        stored_icon_url = session.scalar(select(BlogModel.icon_url).where(BlogModel.blog_id == int(blog["id"])))
+    assert stored_icon_url is None
+    assert pipeline.fetcher.icon_validation_calls[0][0] == "https://blog.example.com/missing.ico"
 
 
 def test_pipeline_enqueues_discovered_children_without_depth_gating(tmp_path: Path) -> None:

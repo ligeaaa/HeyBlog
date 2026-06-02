@@ -87,10 +87,10 @@ vi.mock("three", async () => {
     TextureLoader: class {
       setCrossOrigin = vi.fn();
 
-      load = vi.fn((url: string, onLoad?: () => void) => {
+      load = vi.fn((url: string, onLoad?: (texture: any) => void) => {
         const texture = new actual.Texture();
         texture.userData = { url };
-        onLoad?.();
+        onLoad?.(texture);
         return texture;
       });
     },
@@ -197,14 +197,15 @@ describe("GraphVisualization", () => {
               id: "1",
               blogId: 1,
               label: "Alpha Blog",
-              iconUrl: "https://icons.duckduckgo.com/ip3/alpha.example.com.ico",
+              iconUrl: "https://alpha.example.com/favicon.ico",
               val: 1,
             }),
             expect.objectContaining({
               id: "2",
               blogId: 2,
               label: "Beta Blog",
-              iconUrl: "https://icons.duckduckgo.com/ip3/beta.example.com.ico",
+              iconUrl:
+                "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://beta.example.com&size=64",
               val: 1,
             }),
           ]),
@@ -297,7 +298,7 @@ describe("GraphVisualization", () => {
     const nodeObject = graphProps!.nodeThreeObject(iconNode);
 
     expect(nodeObject.children).toHaveLength(3);
-    expect(nodeObject.userData.iconUrl).toBe("https://icons.duckduckgo.com/ip3/alpha.example.com.ico");
+    expect(nodeObject.userData.iconUrl).toBe("https://alpha.example.com/favicon.ico");
   });
 
   test("tunes forces for natural clusters instead of a centered sphere", () => {

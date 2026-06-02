@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 from bs4 import Tag
+from extract_favicon import from_html as extract_favicons_from_html
 
 from crawler.utils import clean_text
 
@@ -102,14 +103,56 @@ def _pick_icon_url(page_url: str, soup: BeautifulSoup) -> str | None:
             continue
         ranked_candidates.append((priority, index, resolved_href))
 
-    if ranked_candidates:
-        ranked_candidates.sort(key=lambda item: (item[0], item[1]))
-        return ranked_candidates[0][2]
-
-    if not _is_http_url(page_url):
+    if not ranked_candidates:
         return None
-    parsed = urlsplit(page_url)
-    return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    ranked_candidates.sort(key=lambda item: (item[0], item[1]))
+    return ranked_candidates[0][2]
+
+
+def _favicon_score(favicon: object, ordinal: int) -> tuple[int, int]:
+    """Return a sortable quality score for one `extract-favicon` result.
+
+    Args:
+        favicon: Favicon-like object returned by `extract-favicon`.
+        ordinal: Original candidate order used as a stable tie-breaker.
+
+    Returns:
+        Tuple where larger values are preferred.
+    """
+    width = int(getattr(favicon, "width", 0) or 0)
+    height = int(getattr(favicon, "height", 0) or 0)
+    area = width * height
+    return (area, -ordinal)
+
+
+def _pick_icon_url_with_library(page_url: str, html: str) -> str | None:
+    """Pick the best explicit icon URL using `extract-favicon`.
+
+    Args:
+        page_url: Final fetched page URL used to resolve relative icon paths.
+        html: Raw homepage HTML to parse.
+
+    Returns:
+        Best HTTP(S) icon candidate from page metadata, or ``None`` when the
+        page declares no usable icon.
+    """
+    favicons = extract_favicons_from_html(html, root_url=page_url, include_fallbacks=False)
+    candidates = [
+        (favicon, str(getattr(favicon, "url", "") or "").strip())
+        for favicon in sorted(favicons, key=lambda item: str(getattr(item, "url", "")))
+    ]
+    usable = [
+        (favicon, url)
+        for favicon, url in candidates
+        if url and _is_http_url(url)
+    ]
+    if not usable:
+        return None
+    _favicon, url = max(
+        enumerate(usable),
+        key=lambda item: _favicon_score(item[1][0], item[0]),
+    )[1]
+    return url
 
 
 def extract_site_metadata(page_url: str, html: str) -> SiteMetadata:
@@ -128,4 +171,5 @@ def extract_site_metadata(page_url: str, html: str) -> SiteMetadata:
     if soup.title is not None:
         title = clean_text(soup.title.get_text(" ", strip=True)) or None
 
-    return SiteMetadata(title=title, icon_url=_pick_icon_url(page_url, soup))
+    icon_url = _pick_icon_url_with_library(page_url, html) or _pick_icon_url(page_url, soup)
+    return SiteMetadata(title=title, icon_url=icon_url)

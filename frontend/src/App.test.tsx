@@ -373,7 +373,7 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
   expect(screen.getByAltText("extra-blog-32.example.com icon")).toHaveAttribute(
     "src",
-    "https://icons.duckduckgo.com/ip3/extra-blog-32.example.com.ico",
+    "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://extra-blog-32.example.com&size=64",
   );
 
   fireEvent.click(screen.getByRole("button", { name: /刷新随机博客/i }));

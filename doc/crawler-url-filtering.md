@@ -137,7 +137,7 @@ crawler 的两种主要运行方式：
 - `status_code=首页 HTTP 状态码`
 - `friend_links_count=本次接受的外链博客数`
 - `title`
-- `icon_url`
+- `icon_url`，仅当页面 metadata 提取出的 icon 候选能通过轻量 HTTP 验证时写入；无候选或验证失败时保持 `NULL`
 
 如果超时或异常，则由 `CrawlPipeline._mark_blog_failed()` 标记为 `FAILED`。
 `FAILED` 只表示最近一次抓取尝试没有完整结束，不会撤销 `acceptance_status=ACCEPTED` 的博客判定；RSS、模型或 seed 接受来源会保留在 `accepted_by` / `accepted_at` 中。

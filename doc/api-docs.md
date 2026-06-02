@@ -1841,7 +1841,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 | `domain` | `string` | 域名 |
 | `email` | `string \| null` | 博主联系邮箱；仅在用户自助优先录入时写入，默认 `null` |
 | `title` | `string \| null` | 站点主页解析出的 `<title>`，缺失时为 `null` |
-| `icon_url` | `string \| null` | 站点标签页 icon URL；优先使用页面声明的 icon 链接，缺失时可能回退为 `${origin}/favicon.ico` |
+| `icon_url` | `string \| null` | 站点标签页 icon URL；仅在 crawler 从页面 metadata 提取并验证可访问后持久化，缺失或验证失败时为 `null`。前端可使用第三方 favicon API 做展示兜底，但不回写该字段 |
 | `status_code` | `number \| null` | 最近抓取 HTTP 状态码 |
 | `acceptance_status` | `string` | 博客接受状态，当前主要使用 `ACCEPTED` 与 `UNKNOWN`；该字段决定“是否被确认为博客” |
 | `accepted_by` | `string \| null` | 接受来源，例如 `seed`、`rss`、`model` |

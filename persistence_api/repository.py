@@ -1051,11 +1051,7 @@ def _resolved_blog_icon_url(model: BlogModel) -> str | None:
     icon_url = (model.icon_url or "").strip()
     if icon_url:
         return icon_url
-
-    parsed = urlparse(model.url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3446,11 +3442,7 @@ class SQLAlchemyRepository:
                 )
             if query["has_icon"] is True:
                 statement = statement.where(
-                    or_(
-                        and_(BlogModel.icon_url.is_not(None), BlogModel.icon_url != ""),
-                        BlogModel.url.like("http://%"),
-                        BlogModel.url.like("https://%"),
-                    )
+                    and_(BlogModel.icon_url.is_not(None), BlogModel.icon_url != "")
                 )
             if query["min_connections"] > 0:
                 statement = statement.where(metrics["connection_count"] >= query["min_connections"])

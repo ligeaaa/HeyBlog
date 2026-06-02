@@ -88,3 +88,16 @@ class FetchingStrategy(Protocol):
             ``FetchAttempt`` result.
         """
         ...
+
+    def validate_icon_url(self, url: str, *, timeout_seconds: float | None = None) -> str | None:
+        """Return a reachable final icon URL, or ``None`` when unusable.
+
+        Args:
+            url: Absolute HTTP(S) icon candidate URL to verify.
+            timeout_seconds: Optional per-request timeout override in seconds.
+
+        Returns:
+            Final URL after redirects when the candidate is reachable and looks
+            like an image resource; otherwise ``None``.
+        """
+        ...
