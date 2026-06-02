@@ -1,51 +1,14 @@
 import { Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { BlogDetailPanel } from "../components/BlogDetailPanel";
 import { GraphVisualization } from "../components/GraphVisualization";
 import { Navigation } from "../components/Navigation";
-import { fetchBlogDetail, fetchGraphData, fetchSubgraph } from "../lib/api";
+import { fetchBlogDetail, fetchGraphData, fetchStats, fetchSubgraph } from "../lib/api";
 import type { BlogDetail, GraphData, GraphNode } from "../types/graph";
 
-const GRAPH_LIMIT_OPTIONS = [200, 500, 1000, 10000] as const;
-const GRAPH_SAMPLE_SEED = 42;
-const GRAPH_CACHE_VERSION = "3d-v1";
-
-type GraphLimit = (typeof GRAPH_LIMIT_OPTIONS)[number];
-
-function graphCacheKey(limit: GraphLimit): string {
-  return `heyblog:visualization:${GRAPH_CACHE_VERSION}:seed-${GRAPH_SAMPLE_SEED}:limit-${limit}`;
-}
-
-function readCachedGraph(limit: GraphLimit): GraphData | null {
-  try {
-    const raw = window.localStorage.getItem(graphCacheKey(limit));
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as GraphData;
-    if (Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
-      return parsed;
-    }
-  } catch {
-    window.localStorage.removeItem(graphCacheKey(limit));
-  }
-  return null;
-}
-
-function graphPayloadSizeMb(data: GraphData): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
-  return (bytes / (1024 * 1024)).toFixed(2);
-}
-
-function writeCachedGraph(limit: GraphLimit, data: GraphData): void {
-  try {
-    window.localStorage.setItem(graphCacheKey(limit), JSON.stringify(data));
-  } catch {
-    // Browsers can reject large localStorage writes; graph rendering should still continue.
-  }
-}
+const DEFAULT_GRAPH_LIMIT = 200;
 
 /**
  * Render the dedicated graph exploration route.
@@ -57,10 +20,22 @@ export function VisualizationPage() {
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
   const [blogDetail, setBlogDetail] = useState<BlogDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedLimit, setSelectedLimit] = useState<GraphLimit | null>(null);
-  const [graphSizeMb, setGraphSizeMb] = useState<string | null>(null);
-  const [usedCachedGraph, setUsedCachedGraph] = useState(false);
+  const [isStatsLoading, setIsStatsLoading] = useState(true);
+  const [isRendering, setIsRendering] = useState(false);
+  const [renderProgress, setRenderProgress] = useState(0);
+  const [maxGraphLimit, setMaxGraphLimit] = useState(0);
+  const [pendingLimit, setPendingLimit] = useState(DEFAULT_GRAPH_LIMIT);
+  const [selectedLimit, setSelectedLimit] = useState<number | null>(null);
   const [highlightNodeId, setHighlightNodeId] = useState<number | undefined>();
+  const shouldShowProgressOverlay = isLoading || isRendering;
+  const progressPercent = useMemo(() => {
+    const loadingFloor = isLoading ? 0.08 : 0;
+    return Math.round(Math.max(loadingFloor, renderProgress) * 100);
+  }, [isLoading, renderProgress]);
+
+  useEffect(() => {
+    void loadGraphLimitBounds();
+  }, []);
 
   useEffect(() => {
     const highlight = searchParams.get("highlight");
@@ -75,33 +50,49 @@ export function VisualizationPage() {
   }, [searchParams]);
 
   /**
+   * Load the current graph-size slider range from public stats.
+   *
+   * @returns Promise resolved after slider bounds update.
+   */
+  async function loadGraphLimitBounds() {
+    try {
+      setIsStatsLoading(true);
+      const stats = await fetchStats();
+      const totalBlogs = Math.max(0, stats.totalNodes);
+      setMaxGraphLimit(totalBlogs);
+      setPendingLimit(Math.min(DEFAULT_GRAPH_LIMIT, totalBlogs));
+    } catch {
+      toast.error("图谱规模加载失败，请刷新页面重试。");
+      setMaxGraphLimit(DEFAULT_GRAPH_LIMIT);
+      setPendingLimit(DEFAULT_GRAPH_LIMIT);
+    } finally {
+      setIsStatsLoading(false);
+    }
+  }
+
+  /**
    * Load the selected graph size using deterministic backend sampling.
    *
    * @param limit Requested node count.
    * @returns Promise resolved after graph state updates.
    */
-  async function loadFullGraph(limit: GraphLimit) {
+  async function loadFullGraph(limit: number) {
     setSelectedLimit(limit);
     setBlogDetail(null);
     setHighlightNodeId(undefined);
-
-    const cachedGraph = readCachedGraph(limit);
-    if (cachedGraph) {
-      setGraphData(cachedGraph);
-      setGraphSizeMb(graphPayloadSizeMb(cachedGraph));
-      setUsedCachedGraph(true);
-      return;
-    }
+    setIsRendering(false);
+    setRenderProgress(0);
 
     try {
-      setUsedCachedGraph(false);
       setIsLoading(true);
-      const graphResponse = await fetchGraphData(limit, { sampleMode: "count", sampleSeed: GRAPH_SAMPLE_SEED });
+      const graphResponse = await fetchGraphData(limit);
+      setRenderProgress(0.12);
+      setIsRendering(true);
       setGraphData(graphResponse);
-      setGraphSizeMb(graphPayloadSizeMb(graphResponse));
-      writeCachedGraph(limit, graphResponse);
     } catch {
       setSelectedLimit(null);
+      setIsRendering(false);
+      setRenderProgress(0);
       toast.error("图谱加载失败，请刷新页面重试。");
     } finally {
       setIsLoading(false);
@@ -156,11 +147,20 @@ export function VisualizationPage() {
       </div>
 
       <div className="relative min-h-0 flex-1">
-        <GraphVisualization data={graphData} onNodeClick={handleNodeClick} highlightNodeId={highlightNodeId} />
+        <GraphVisualization
+          data={graphData}
+          onNodeClick={handleNodeClick}
+          highlightNodeId={highlightNodeId}
+          onRenderProgress={(progress) => setRenderProgress((current) => Math.max(current, progress))}
+          onRenderComplete={() => {
+            setRenderProgress(1);
+            setIsRendering(false);
+          }}
+        />
         {blogDetail ? <BlogDetailPanel detail={blogDetail} onClose={handleCloseDetail} /> : null}
       </div>
 
-      {!selectedLimit || isLoading ? (
+      {!selectedLimit || shouldShowProgressOverlay ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
           <div
             role="dialog"
@@ -168,28 +168,71 @@ export function VisualizationPage() {
             aria-labelledby="visualization-limit-title"
             className="w-full max-w-md rounded-2xl bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.36)]"
           >
-            <h2 id="visualization-limit-title" className="text-2xl font-semibold tracking-normal text-slate-950">
-              选择图谱规模
-            </h2>
-            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {GRAPH_LIMIT_OPTIONS.map((limit) => (
-                <button
-                  key={limit}
-                  type="button"
-                  onClick={() => void loadFullGraph(limit)}
-                  disabled={isLoading}
-                  className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-900 transition-colors hover:border-sky-300 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60"
+            {!selectedLimit ? (
+              <>
+                <h2 id="visualization-limit-title" className="text-2xl font-semibold tracking-normal text-slate-950">
+                  选择图谱规模
+                </h2>
+                {isStatsLoading ? (
+                  <div className="mt-5 flex items-center gap-3 text-sm text-slate-600">
+                    <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
+                    正在读取博客数量...
+                  </div>
+                ) : (
+                  <div className="mt-6">
+                    <div className="flex items-end justify-between gap-4">
+                      <div className="text-sm text-slate-500">节点数量</div>
+                      <div className="text-3xl font-semibold tabular-nums text-slate-950">{pendingLimit}</div>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={maxGraphLimit}
+                      step={1}
+                      value={pendingLimit}
+                      onChange={(event) => setPendingLimit(Number(event.currentTarget.value))}
+                      className="mt-5 w-full accent-sky-500"
+                      aria-label="节点数量"
+                    />
+                    <div className="mt-2 flex items-center justify-between text-sm tabular-nums text-slate-500">
+                      <span>0</span>
+                      <span>{maxGraphLimit}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void loadFullGraph(pendingLimit)}
+                      disabled={isLoading || isStatsLoading}
+                      className="mt-6 w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      确认
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div>
+                <h2 id="visualization-limit-title" className="text-2xl font-semibold tracking-normal text-slate-950">
+                  正在渲染图谱
+                </h2>
+                <div className="mt-5 flex items-center gap-3 text-sm text-slate-600">
+                  <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
+                  {isLoading ? "正在加载图谱数据..." : "正在计算 3D 力导布局..."}
+                </div>
+                <div
+                  className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100"
+                  role="progressbar"
+                  aria-valuenow={progressPercent}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
                 >
-                  {limit}
-                </button>
-              ))}
-            </div>
-            {isLoading ? (
-              <div className="mt-5 flex items-center gap-3 text-sm text-slate-600">
-                <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
-                正在加载图谱数据...
+                  <div
+                    className="h-full rounded-full bg-sky-500 transition-all duration-150 ease-out"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+                <div className="mt-2 text-right text-sm tabular-nums text-slate-500">{progressPercent}%</div>
               </div>
-            ) : null}
+            )}
           </div>
         </div>
       ) : null}

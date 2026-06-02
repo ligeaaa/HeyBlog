@@ -875,7 +875,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - `strategy`: `degree` 或 `seed`
 - `limit`: 默认子图规模上限，当前最大允许 `10000`
-- `sample_mode`: `off` / `count` / `percent`
+- `sample_mode`: `off` / `count` / `percent`；图谱页默认不启用采样
 - `sample_value`: 当采样开启时的数量或百分比；`count` 会先用固定随机种子选择一个起点，再按 BFS 扩展到目标节点数，避免返回大量互不相连的随机点
 - `sample_seed`: 固定随机种子，便于复现随机起点与补充分量顺序
 
@@ -913,6 +913,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - `nodes` 元素沿用 `BlogRecord`，并额外携带 `x`、`y`、`degree`、`incoming_count`、`outgoing_count`、`priority_score`、`component_id`
 - 当 `has_stable_positions` 为 `true` 时，前端会优先使用这些坐标直接渲染，而不是首次实时跑力导布局
+- 当前图谱页用 0 到当前 blog 总数的滑块选择 `N`，默认值为 `min(200, total_blogs)`；点击确认后请求 `strategy=seed&limit=N`，直接按 blog id 升序选择前 N 个 blog 节点，并只返回这些节点之间的边。图谱节点不按 `crawl_status` 过滤，因为发现关系本身可能来自抓取失败或尚未完成的父节点；只要边的两端 blog 仍存在，就会参与图谱投影
 - 当 `sample_mode != off` 时，会返回可复现的随机起点 BFS 子图；若起点所在连通分量不足目标规模，会按同一随机序列继续从其他分量 BFS 补足
 - 服务在返回前会检查底层 graph 是否已变化；若当前仓库数据与最新 snapshot 不一致，会先重建 snapshot，再返回最新视图
 - `snapshot_namespace` 用于区分当前 view 依赖的 snapshot 来源；当前默认值为 `legacy`

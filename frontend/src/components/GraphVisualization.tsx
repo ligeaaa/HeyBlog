@@ -5,10 +5,18 @@ import * as THREE from "three";
 import { resolveBlogIconUrl } from "../lib/icon";
 import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
+export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
+const GRAPH_LINK_DISTANCE = 72;
+const GRAPH_LINK_STRENGTH = 0.34;
+const GRAPH_CHARGE_STRENGTH = -95;
+const GRAPH_CHARGE_DISTANCE_MAX = 920;
+
 interface GraphVisualizationProps {
   data: GraphData;
   onNodeClick?: (node: GraphNode) => void;
   highlightNodeId?: number;
+  onRenderProgress?: (progress: number) => void;
+  onRenderComplete?: () => void;
 }
 
 interface RenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
@@ -189,6 +197,34 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
 }
 
 /**
+ * Tune the d3 force engine so related blogs cluster without a global spherical pull.
+ *
+ * @param graph Force graph instance exposed by react-force-graph-3d.
+ */
+export function tuneNaturalClusterForces(graph: ForceGraphMethods<RenderNode, RenderLink>): void {
+  graph.d3Force("center", null);
+
+  const chargeForce = graph.d3Force("charge") as
+    | {
+        strength?: (value: number) => unknown;
+        distanceMax?: (value: number) => unknown;
+      }
+    | undefined;
+  chargeForce?.strength?.(GRAPH_CHARGE_STRENGTH);
+  chargeForce?.distanceMax?.(GRAPH_CHARGE_DISTANCE_MAX);
+
+  const linkForce = graph.d3Force("link") as
+    | {
+        distance?: (value: number) => unknown;
+        strength?: (value: number) => unknown;
+      }
+    | undefined;
+  linkForce?.distance?.(GRAPH_LINK_DISTANCE);
+  linkForce?.strength?.(GRAPH_LINK_STRENGTH);
+  graph.d3ReheatSimulation();
+}
+
+/**
  * Render an interactive 3D force graph for blog relationship exploration.
  *
  * @param data Graph payload normalized from backend APIs.
@@ -196,9 +232,16 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
  * @param highlightNodeId Selected node id to emphasize.
  * @returns Graph container with 3D canvas and controls.
  */
-export function GraphVisualization({ data, onNodeClick, highlightNodeId }: GraphVisualizationProps) {
+export function GraphVisualization({
+  data,
+  onNodeClick,
+  highlightNodeId,
+  onRenderProgress,
+  onRenderComplete,
+}: GraphVisualizationProps) {
   const graphRef = useRef<ForceGraphMethods<RenderNode, RenderLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const renderTickRef = useRef(0);
   const [size, setSize] = useState({ width: 960, height: 720 });
   const [isMeasured, setIsMeasured] = useState(false);
   const graphData = useMemo(() => buildGraphData(data), [data]);
@@ -220,6 +263,18 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    renderTickRef.current = 0;
+  }, [graphData]);
+
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph || graphData.nodes.length === 0) {
+      return;
+    }
+    tuneNaturalClusterForces(graph);
+  }, [graphData]);
 
   useEffect(() => {
     const graph = graphRef.current;
@@ -259,6 +314,16 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
     graphRef.current?.zoomToFit(650, 80);
   }, []);
 
+  const handleEngineTick = useCallback(() => {
+    renderTickRef.current += 1;
+    onRenderProgress?.(Math.min(renderTickRef.current / GRAPH_RENDER_COOLDOWN_TICKS, 0.98));
+  }, [onRenderProgress]);
+
+  const handleEngineStop = useCallback(() => {
+    onRenderProgress?.(1);
+    onRenderComplete?.();
+  }, [onRenderComplete, onRenderProgress]);
+
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-slate-950">
       <div className="absolute inset-x-0 top-0 z-10 h-24 bg-gradient-to-b from-slate-950 via-slate-950/70 to-transparent" />
@@ -281,17 +346,17 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
           linkTarget="target"
           linkColor={(link: RenderLink) => {
             if (!selectedGraphId) {
-              return "rgba(148, 163, 184, 0.28)";
+              return "rgba(224, 242, 254, 0.78)";
             }
             return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId
-              ? "rgba(125, 211, 252, 0.78)"
-              : "rgba(71, 85, 105, 0.16)";
+              ? "rgba(240, 249, 255, 1)"
+              : "rgba(186, 230, 253, 0.55)";
           }}
           linkWidth={(link: RenderLink) => {
             if (!selectedGraphId) {
-              return 0.8;
+              return 1.6;
             }
-            return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId ? 2 : 0.35;
+            return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId ? 3.2 : 0.9;
           }}
           linkDirectionalArrowLength={3.5}
           linkDirectionalArrowRelPos={1}
@@ -307,7 +372,9 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
           }}
           d3VelocityDecay={0.38}
           d3AlphaDecay={0.025}
-          cooldownTicks={120}
+          cooldownTicks={GRAPH_RENDER_COOLDOWN_TICKS}
+          onEngineTick={handleEngineTick}
+          onEngineStop={handleEngineStop}
           controlType="orbit"
         />
       ) : null}

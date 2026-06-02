@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+const { forceGraphProps } = vi.hoisted(() => ({
+  forceGraphProps: [] as Record<string, any>[],
+}));
+
 vi.mock("react-force-graph-3d", () => ({
-  default: () => <div data-testid="force-graph-3d" />,
+  default: (props: Record<string, any>) => {
+    forceGraphProps.push(props);
+    return <div data-testid="force-graph-3d" />;
+  },
 }));
 
 import App from "./App";
@@ -66,10 +73,35 @@ let statusPayload = {
   total_edges: 10,
 };
 
+class TestResizeObserver {
+  callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe() {
+    this.callback(
+      [
+        {
+          contentRect: { width: 960, height: 720 },
+        } as ResizeObserverEntry,
+      ],
+      this,
+    );
+  }
+
+  unobserve() {}
+
+  disconnect() {}
+}
+
 beforeEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
+  forceGraphProps.length = 0;
   window.history.replaceState({}, "", "/");
   catalogItems = [...baseCatalogItems, makeCatalogItem(33, "PROCESSING", "Newest Processing Blog")];
   window.localStorage.clear();
@@ -121,7 +153,7 @@ beforeEach(() => {
       return new Response(JSON.stringify(statusPayload));
     }
     if (url.pathname === "/api/stats") {
-      return new Response(JSON.stringify({ total_blogs: 34, total_edges: 10 }));
+      return new Response(JSON.stringify({ total_blogs: statusPayload.total_blogs, total_edges: statusPayload.total_edges }));
     }
     if (url.pathname === "/api/filter-stats") {
       return new Response(
@@ -356,7 +388,7 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   });
 });
 
-test("lets visualization users choose a deterministic sampled graph size", async () => {
+test("lets visualization users choose a graph size with a blog-count slider", async () => {
   window.history.replaceState({}, "", "/visualization");
 
   render(<App />);
@@ -366,31 +398,46 @@ test("lets visualization users choose a deterministic sampled graph size", async
   });
 
   expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "10000" })).toBeInTheDocument();
+  const slider = await screen.findByRole("slider", { name: "节点数量" });
+  expect(slider).toHaveAttribute("min", "0");
+  expect(slider).toHaveAttribute("max", "34");
+  expect(slider).toHaveValue("34");
   expect(screen.queryByText(/使用固定随机种子 42 选择起点/)).not.toBeInTheDocument();
   expect(screen.queryByText(/显示实际下载大小/)).not.toBeInTheDocument();
   expect(screen.queryByText("该功能仍不成熟！")).not.toBeInTheDocument();
   expect(screen.queryByText("数据统计")).not.toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: "500" }));
+  fireEvent.change(slider, { target: { value: "20" } });
+  expect(slider).toHaveValue("20");
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog", { name: "选择图谱规模" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "正在渲染图谱" })).toBeInTheDocument();
   });
 
   expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining(
-      "/api/graph/views/core?strategy=degree&limit=500&sample_mode=count&sample_value=500&sample_seed=42",
-    ),
+    expect.stringContaining("/api/graph/views/core?strategy=seed&limit=20"),
     expect.anything(),
   );
-  expect(screen.queryByText(/当前使用固定随机种子 42 展示 500 个节点/)).not.toBeInTheDocument();
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
+  act(() => {
+    forceGraphProps.at(-1)!.onEngineTick();
+    forceGraphProps.at(-1)!.onEngineTick();
+  });
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
+  act(() => {
+    forceGraphProps.at(-1)!.onEngineStop();
+  });
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "正在渲染图谱" })).not.toBeInTheDocument();
+  });
+  expect(screen.queryByText(/当前使用固定随机种子 42 展示 20 个节点/)).not.toBeInTheDocument();
   expect(screen.queryByText("全图最大节点数")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /刷新全图|返回全图/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /搜索博客/i })).not.toBeInTheDocument();
 });
 
-test("uses cached visualization graph data for repeated sampled sizes", async () => {
+test("ignores stale cached visualization graph data and reloads sampled sizes online", async () => {
   window.history.replaceState({}, "", "/visualization");
   window.localStorage.setItem(
     "heyblog:visualization:3d-v1:seed-42:limit-200",
@@ -414,10 +461,30 @@ test("uses cached visualization graph data for repeated sampled sizes", async ()
     expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "200" }));
+  fireEvent.change(screen.getByRole("slider", { name: "节点数量" }), { target: { value: "20" } });
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
-  expect(screen.queryByText(/当前使用固定随机种子 42 展示 200 个节点/)).not.toBeInTheDocument();
-  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/graph/views/core"), expect.anything());
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/graph/views/core?strategy=seed&limit=20"),
+      expect.anything(),
+    );
+  });
+});
+
+test("defaults visualization slider to two hundred when the blog count is larger", async () => {
+  statusPayload = {
+    ...statusPayload,
+    total_blogs: 500,
+  };
+  window.history.replaceState({}, "", "/visualization");
+
+  render(<App />);
+
+  const slider = await screen.findByRole("slider", { name: "节点数量" });
+
+  expect(slider).toHaveAttribute("max", "500");
+  expect(slider).toHaveValue("200");
 });
 
 test("adds a public filter stats route that renders success-source split", async () => {

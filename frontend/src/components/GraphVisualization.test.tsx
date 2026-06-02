@@ -1,55 +1,84 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { GraphVisualization } from "./GraphVisualization";
+import { tuneNaturalClusterForces } from "./GraphVisualization";
+import type { ForwardedRef } from "react";
 import type { GraphData } from "../types/graph";
 
-const { forceGraphRenders, ForceGraph3DMock } = vi.hoisted(() => {
-  const forceGraphRenders: Record<string, any>[] = [];
+const { chargeForce, d3ReheatSimulation, forceCalls, forceGraphRenders, ForceGraph3DMock, linkForce } = vi.hoisted(
+  () => {
+    const forceGraphRenders: Record<string, any>[] = [];
+    const forceCalls: Array<[string, unknown?]> = [];
+    const chargeForce = {
+      strength: vi.fn(),
+      distanceMax: vi.fn(),
+    };
+    const linkForce = {
+      strength: vi.fn(),
+      distance: vi.fn(),
+    };
+    const d3ReheatSimulation = vi.fn();
 
-  function ForceGraph3DMock(props: Record<string, any>) {
-    forceGraphRenders.push(props);
-    const { ref, onNodeClick, graphData } = props;
-    if (ref) {
-      ref.current = {
-        d3Force: vi.fn(() => ({
-          strength: vi.fn(),
-          distance: vi.fn(),
-        })),
-        d3ReheatSimulation: vi.fn(),
-        zoomToFit: vi.fn(),
-        camera: vi.fn(() => ({
-          position: {
-            clone: () => ({
-              normalize: () => ({
-                multiplyScalar: () => ({ x: 0, y: 0, z: 360 }),
+    function ForceGraph3DMock(props: Record<string, any>, ref: ForwardedRef<Record<string, unknown>>) {
+      forceGraphRenders.push(props);
+      const { onNodeClick, graphData } = props;
+      const resolvedRef = ref ?? props.ref;
+      if (resolvedRef) {
+        const graphInstance = {
+          d3Force: vi.fn((name: string, force?: unknown) => {
+            forceCalls.push([name, force]);
+            if (name === "charge") {
+              return chargeForce;
+            }
+            if (name === "link") {
+              return linkForce;
+            }
+            return undefined;
+          }),
+          d3ReheatSimulation,
+          zoomToFit: vi.fn(),
+          camera: vi.fn(() => ({
+            position: {
+              clone: () => ({
+                normalize: () => ({
+                  multiplyScalar: () => ({ x: 0, y: 0, z: 360 }),
+                }),
               }),
-            }),
-            length: () => 360,
-            copy: vi.fn(),
-          },
-        })),
-        controls: vi.fn(() => ({ update: vi.fn() })),
-        cameraPosition: vi.fn(),
-      };
+              length: () => 360,
+              copy: vi.fn(),
+            },
+          })),
+          controls: vi.fn(() => ({ update: vi.fn() })),
+          cameraPosition: vi.fn(),
+        };
+        if (typeof resolvedRef === "function") {
+          resolvedRef(graphInstance);
+        } else {
+          resolvedRef.current = graphInstance;
+        }
+      }
+
+      return (
+        <button
+          type="button"
+          data-testid="force-graph-3d"
+          onClick={() => onNodeClick?.(graphData.nodes[1], new MouseEvent("click"))}
+        >
+          3D graph
+        </button>
+      );
     }
 
-    return (
-      <button
-        type="button"
-        data-testid="force-graph-3d"
-        onClick={() => onNodeClick?.(graphData.nodes[1], new MouseEvent("click"))}
-      >
-        3D graph
-      </button>
-    );
-  }
+    return { chargeForce, d3ReheatSimulation, forceCalls, forceGraphRenders, ForceGraph3DMock, linkForce };
+  },
+);
 
-  return { forceGraphRenders, ForceGraph3DMock };
+vi.mock("react-force-graph-3d", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    default: React.forwardRef(ForceGraph3DMock),
+  };
 });
-
-vi.mock("react-force-graph-3d", () => ({
-  default: ForceGraph3DMock,
-}));
 
 vi.mock("three", async () => {
   const actual = await vi.importActual<typeof import("three")>("three");
@@ -137,6 +166,12 @@ class TestResizeObserver {
 
 beforeEach(() => {
   forceGraphRenders.length = 0;
+  forceCalls.length = 0;
+  chargeForce.strength.mockClear();
+  chargeForce.distanceMax.mockClear();
+  linkForce.strength.mockClear();
+  linkForce.distance.mockClear();
+  d3ReheatSimulation.mockClear();
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
 });
 
@@ -230,10 +265,20 @@ describe("GraphVisualization", () => {
     const graphProps = forceGraphRenders.at(-1);
     const [selectedLink, unrelatedLink] = graphProps!.graphData.links;
 
-    expect(graphProps!.linkWidth(selectedLink)).toBe(2);
-    expect(graphProps!.linkColor(selectedLink)).toBe("rgba(125, 211, 252, 0.78)");
-    expect(graphProps!.linkWidth(unrelatedLink)).toBe(0.35);
-    expect(graphProps!.linkColor(unrelatedLink)).toBe("rgba(71, 85, 105, 0.16)");
+    expect(graphProps!.linkWidth(selectedLink)).toBe(3.2);
+    expect(graphProps!.linkColor(selectedLink)).toBe("rgba(240, 249, 255, 1)");
+    expect(graphProps!.linkWidth(unrelatedLink)).toBe(0.9);
+    expect(graphProps!.linkColor(unrelatedLink)).toBe("rgba(186, 230, 253, 0.55)");
+  });
+
+  test("uses brighter default link color on the dark graph background", () => {
+    render(<GraphVisualization data={forceGraphData} />);
+
+    const graphProps = forceGraphRenders.at(-1);
+    const [defaultLink] = graphProps!.graphData.links;
+
+    expect(graphProps!.linkWidth(defaultLink)).toBe(1.6);
+    expect(graphProps!.linkColor(defaultLink)).toBe("rgba(224, 242, 254, 0.78)");
   });
 
   test("exposes icon-only zoom and reset controls", () => {
@@ -253,5 +298,30 @@ describe("GraphVisualization", () => {
 
     expect(nodeObject.children).toHaveLength(3);
     expect(nodeObject.userData.iconUrl).toBe("https://icons.duckduckgo.com/ip3/alpha.example.com.ico");
+  });
+
+  test("tunes forces for natural clusters instead of a centered sphere", () => {
+    const graph = {
+      d3Force: vi.fn((name: string, force?: unknown) => {
+        forceCalls.push([name, force]);
+        if (name === "charge") {
+          return chargeForce;
+        }
+        if (name === "link") {
+          return linkForce;
+        }
+        return undefined;
+      }),
+      d3ReheatSimulation,
+    };
+
+    tuneNaturalClusterForces(graph as never);
+
+    expect(forceCalls).toContainEqual(["center", null]);
+    expect(chargeForce.strength).toHaveBeenCalledWith(-95);
+    expect(chargeForce.distanceMax).toHaveBeenCalledWith(920);
+    expect(linkForce.distance).toHaveBeenCalledWith(72);
+    expect(linkForce.strength).toHaveBeenCalledWith(0.34);
+    expect(d3ReheatSimulation).toHaveBeenCalled();
   });
 });
