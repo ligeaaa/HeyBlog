@@ -514,6 +514,89 @@ def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -
     }
 
 
+def test_backend_icon_proxy_returns_valid_image(monkeypatch) -> None:
+    """Backend icon proxy should return image bytes through the same origin."""
+    app = create_backend_app(BackendState(persistence=object(), crawler=StubCrawler(), search=StubSearch()))
+    client = TestClient(app)
+
+    class FakeStreamResponse:
+        status_code = 200
+        headers = {"content-type": "image/png", "content-length": "8"}
+        url = "https://icons.example.com/favicon.png"
+
+        def __enter__(self) -> "FakeStreamResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_bytes(self):
+            yield b"png-bytes"
+
+    def fake_stream(method: str, url: str, **kwargs: object) -> FakeStreamResponse:
+        assert method == "GET"
+        assert url == "https://icons.example.com/favicon.png"
+        assert kwargs["follow_redirects"] is False
+        assert kwargs["timeout"] == 8.0
+        return FakeStreamResponse()
+
+    monkeypatch.setattr("backend.main._is_private_icon_proxy_host", lambda hostname: False)
+    monkeypatch.setattr("backend.main.httpx.stream", fake_stream)
+
+    response = client.get("/api/icons/proxy", params={"url": "https://icons.example.com/favicon.png"})
+
+    assert response.status_code == 200
+    assert response.content == b"png-bytes"
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.headers["cache-control"] == "public, max-age=86400"
+
+
+def test_backend_icon_proxy_rejects_unsafe_urls() -> None:
+    """Backend icon proxy should reject unsupported or private URL targets."""
+    app = create_backend_app(BackendState(persistence=object(), crawler=StubCrawler(), search=StubSearch()))
+    client = TestClient(app)
+
+    unsupported = client.get("/api/icons/proxy", params={"url": "file:///etc/passwd"})
+    loopback = client.get("/api/icons/proxy", params={"url": "http://127.0.0.1/favicon.ico"})
+
+    assert unsupported.status_code == 422
+    assert unsupported.json()["detail"] == "unsupported_icon_url"
+    assert loopback.status_code == 422
+    assert loopback.json()["detail"] == "unsafe_icon_url"
+
+
+def test_backend_icon_proxy_rejects_private_redirects(monkeypatch) -> None:
+    """Backend icon proxy should re-check redirect targets before fetching them."""
+    app = create_backend_app(BackendState(persistence=object(), crawler=StubCrawler(), search=StubSearch()))
+    client = TestClient(app)
+
+    class RedirectResponse:
+        status_code = 302
+        headers = {"location": "http://127.0.0.1/favicon.ico"}
+        url = "https://icons.example.com/favicon.png"
+
+        def __enter__(self) -> "RedirectResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_stream(method: str, url: str, **kwargs: object) -> RedirectResponse:
+        del method, url, kwargs
+        return RedirectResponse()
+
+    monkeypatch.setattr("backend.main._is_private_icon_proxy_host", lambda hostname: hostname == "127.0.0.1")
+    monkeypatch.setattr("backend.main.httpx.stream", fake_stream)
+
+    response = client.get("/api/icons/proxy", params={"url": "https://icons.example.com/favicon.png"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "unsafe_icon_url"
+
+
 def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> None:
     """Persistence service should expose multi-tag candidate listing and label management."""
     settings = Settings(
@@ -2417,6 +2500,48 @@ def test_frontend_service_health_checks_backend(tmp_path: Path, monkeypatch) -> 
     health = client.get("/internal/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+
+
+def test_frontend_api_proxy_preserves_cache_control(tmp_path: Path, monkeypatch) -> None:
+    """Frontend API proxy should keep cache headers for proxied icon images."""
+
+    class AsyncClientStub:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "AsyncClientStub":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def request(self, method: str, target: str, **kwargs: object) -> httpx.Response:
+            assert method == "GET"
+            assert target == "http://backend:8000/api/icons/proxy"
+            assert self.timeout == 60.0
+            return httpx.Response(
+                200,
+                content=b"icon",
+                headers={"content-type": "image/png", "cache-control": "public, max-age=86400"},
+                request=httpx.Request(method, target),
+            )
+
+    monkeypatch.setattr("frontend.server.httpx.AsyncClient", AsyncClientStub)
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        backend_base_url="http://backend:8000",
+    )
+    app = create_frontend_app(settings)
+    client = TestClient(app)
+
+    response = client.get("/api/icons/proxy", params={"url": "https://icons.example.com/favicon.png"})
+
+    assert response.status_code == 200
+    assert response.content == b"icon"
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.headers["cache-control"] == "public, max-age=86400"
 
 
 def test_frontend_root_serves_spa_entry(tmp_path: Path) -> None:

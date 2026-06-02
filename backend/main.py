@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
+import socket
 from threading import Thread
 from time import sleep
 from typing import Any
 from typing import Callable
 from typing import NoReturn
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -75,6 +78,145 @@ class CreateBlogLabelTagRequest(BaseModel):
 
 
 ACTIVE_CRAWLER_RUNNER_STATUSES = frozenset({"starting", "running", "stopping"})
+ICON_PROXY_MAX_BYTES = 1_000_000
+ICON_PROXY_ALLOWED_SCHEMES = frozenset({"http", "https"})
+ICON_PROXY_IMAGE_EXTENSIONS = (".ico", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".avif")
+
+
+def _is_private_icon_proxy_host(hostname: str) -> bool:
+    """Return whether one hostname resolves to local or private network space.
+
+    Args:
+        hostname: Parsed URL hostname to validate before proxying.
+
+    Returns:
+        True when the hostname itself or any resolved address is unsafe for the
+        public icon proxy.
+    """
+    try:
+        ip_addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            return True
+        ip_addresses = []
+        for item in resolved:
+            address = item[4][0]
+            try:
+                ip_addresses.append(ipaddress.ip_address(address))
+            except ValueError:
+                return True
+
+    return any(
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        for address in ip_addresses
+    )
+
+
+def _validate_icon_proxy_url(url: str) -> str:
+    """Normalize and validate a remote icon URL before proxying it.
+
+    Args:
+        url: User-supplied absolute URL.
+
+    Returns:
+        The trimmed URL when it is an allowed public HTTP(S) URL.
+
+    Raises:
+        HTTPException: If the URL is unsupported or points at unsafe address
+            space.
+    """
+    clean_url = url.strip()
+    parsed = urlsplit(clean_url)
+    if parsed.scheme.lower() not in ICON_PROXY_ALLOWED_SCHEMES or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="unsupported_icon_url")
+    if _is_private_icon_proxy_host(parsed.hostname):
+        raise HTTPException(status_code=422, detail="unsafe_icon_url")
+    return clean_url
+
+
+def _is_image_like_icon_response(response: httpx.Response) -> bool:
+    """Return whether one HTTP response looks like an icon image.
+
+    Args:
+        response: HTTP response from the remote icon URL.
+
+    Returns:
+        True when the content type is image-like, or a generic binary response
+        has a known image file extension.
+    """
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type.startswith("image/"):
+        return True
+    if content_type in {"application/octet-stream", "binary/octet-stream"}:
+        return urlsplit(str(response.url)).path.lower().endswith(ICON_PROXY_IMAGE_EXTENSIONS)
+    return False
+
+
+def _fetch_icon_proxy_response(url: str) -> Response:
+    """Fetch one remote icon and return it as a same-origin image response.
+
+    Args:
+        url: Validated public HTTP(S) icon URL.
+
+    Returns:
+        FastAPI response containing the icon bytes.
+
+    Raises:
+        HTTPException: If the remote URL cannot be fetched, is too large, or
+            does not return an image-like response.
+    """
+    try:
+        current_url = url
+        for _ in range(4):
+            with httpx.stream(
+                "GET",
+                current_url,
+                follow_redirects=False,
+                timeout=8.0,
+                headers={"User-Agent": "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"},
+            ) as response:
+                if response.status_code in {301, 302, 303, 307, 308} and response.headers.get("location"):
+                    current_url = _validate_icon_proxy_url(str(httpx.URL(str(response.url)).join(response.headers["location"])))
+                    continue
+                response.raise_for_status()
+                if not _is_image_like_icon_response(response):
+                    raise HTTPException(status_code=502, detail="icon_proxy_not_image")
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        if int(content_length) > ICON_PROXY_MAX_BYTES:
+                            raise HTTPException(status_code=502, detail="icon_proxy_too_large")
+                    except ValueError:
+                        pass
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > ICON_PROXY_MAX_BYTES:
+                        raise HTTPException(status_code=502, detail="icon_proxy_too_large")
+                    chunks.append(chunk)
+                content_type = response.headers.get("content-type", "image/x-icon")
+                return Response(
+                    content=b"".join(chunks),
+                    media_type=content_type,
+                    headers={"cache-control": "public, max-age=86400"},
+                )
+        raise HTTPException(status_code=502, detail="icon_proxy_too_many_redirects")
+    except HTTPException:
+        raise
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="icon_proxy_timeout") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"icon_proxy_http_{exc.response.status_code}") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="icon_proxy_fetch_failed") from exc
 
 
 def _crawler_runtime_is_active(runtime: dict[str, Any]) -> bool:
@@ -460,6 +602,18 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.lookup_blog_candidates(url=url)
         )
+
+    @app.get("/api/icons/proxy")
+    def proxy_icon(url: str) -> Response:
+        """Return one remote icon through the backend origin for graph textures.
+
+        Args:
+            url: Absolute HTTP(S) icon URL to fetch.
+
+        Returns:
+            Image response with cache headers when the remote resource is valid.
+        """
+        return _fetch_icon_proxy_response(_validate_icon_proxy_url(url))
 
     @app.post("/api/auth/register")
     def register_user(payload: UserAuthRequest) -> dict[str, Any]:

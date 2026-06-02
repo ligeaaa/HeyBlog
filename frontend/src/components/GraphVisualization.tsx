@@ -2,7 +2,7 @@ import { RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
-import { resolveBlogIconUrls } from "../lib/icon";
+import { resolveProxiedBlogIconUrls } from "../lib/icon";
 import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
 export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
@@ -59,7 +59,7 @@ function buildGraphData(data: GraphData): RenderGraphData {
     if (!id) {
       continue;
     }
-    const iconUrls = resolveBlogIconUrls(node);
+    const iconUrls = resolveProxiedBlogIconUrls(node);
     nodesById.set(id, {
       ...node,
       id,

@@ -66,6 +66,28 @@ export function resolveBlogIconUrls(
 }
 
 /**
+ * Wrap one remote icon URL with the same-origin backend icon proxy.
+ *
+ * @param iconUrl Absolute remote icon URL.
+ * @returns Same-origin proxy URL suitable for CORS-sensitive WebGL textures.
+ */
+export function resolveIconProxyUrl(iconUrl: string): string {
+  return `/api/icons/proxy?url=${encodeURIComponent(iconUrl)}`;
+}
+
+/**
+ * Resolve proxied icon candidates for WebGL texture loading.
+ *
+ * @param node Blog-like frontend node with optional crawled icon metadata.
+ * @returns Ordered same-origin icon proxy URLs.
+ */
+export function resolveProxiedBlogIconUrls(
+  node: Pick<GraphNode, "domain" | "iconUrl" | "url">,
+): string[] {
+  return resolveBlogIconUrls(node).map(resolveIconProxyUrl);
+}
+
+/**
  * Resolve the best displayable icon URL for a blog node.
  *
  * @param node Blog-like frontend node with optional crawled icon metadata.

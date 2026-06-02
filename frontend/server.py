@@ -126,10 +126,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 content=await request.body(),
                 headers=headers,
             )
+        response_headers = {}
+        cache_control = forwarded.headers.get("cache-control")
+        if cache_control:
+            response_headers["cache-control"] = cache_control
         return Response(
             content=forwarded.content,
             status_code=forwarded.status_code,
             media_type=forwarded.headers.get("content-type"),
+            headers=response_headers,
         )
 
     @app.get("/{path:path}", include_in_schema=False)

@@ -77,6 +77,7 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `POST /api/blogs/{blog_id}/user-labels`
 - `GET /api/blogs/lookup`
 - `GET /api/blogs/{blog_id}`
+- `GET /api/icons/proxy`
 - `GET /api/graph/views/core`
 - `GET /api/graph/nodes/{blog_id}/neighbors`
 - `GET /api/graph/snapshots/latest`
@@ -422,6 +423,26 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 响应结构见“数据模型”章节中的 `BlogCatalogPageRecord`。
 
 当前前端使用方式：
+
+#### `GET /api/icons/proxy`
+
+用途：把已知 icon URL 作为同源图片返回，供 3D 图谱 WebGL texture 加载使用。
+
+查询参数：
+
+- `url`: 绝对 `http` / `https` 图片 URL。前端通常传入 `icon_url` 或 favicon API fallback URL。
+
+响应：
+
+- 成功时返回远端图片字节，`Content-Type` 沿用远端图片 MIME，并设置 `Cache-Control: public, max-age=86400`
+- 仅允许公网 HTTP(S) URL；localhost、私网、link-local、reserved 等地址会返回 `422`
+- 远端超时返回 `504`
+- 远端非 2xx、非图片 MIME、或响应超过 1MB 时返回 `502`
+
+说明：
+
+- 该接口不改变 `blogs.icon_url` 的持久化语义，只解决浏览器 WebGL 对跨域 texture 的 CORS 要求
+- 普通 `<img>` 展示仍可直接使用 `icon_url` 或前端 favicon fallback；图谱纹理建议统一使用该代理后的同源 URL
 
 #### `POST /api/blogs/{blog_id}/user-labels`
 

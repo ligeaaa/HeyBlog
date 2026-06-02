@@ -197,7 +197,7 @@ describe("GraphVisualization", () => {
               id: "1",
               blogId: 1,
               label: "Alpha Blog",
-              iconUrl: "https://alpha.example.com/favicon.ico",
+              iconUrl: "/api/icons/proxy?url=https%3A%2F%2Falpha.example.com%2Ffavicon.ico",
               val: 1,
             }),
             expect.objectContaining({
@@ -205,7 +205,7 @@ describe("GraphVisualization", () => {
               blogId: 2,
               label: "Beta Blog",
               iconUrl:
-                "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://beta.example.com&size=64",
+                "/api/icons/proxy?url=https%3A%2F%2Ft2.gstatic.com%2FfaviconV2%3Fclient%3DSOCIAL%26type%3DFAVICON%26fallback_opts%3DTYPE%2CSIZE%2CURL%26url%3Dhttps%3A%2F%2Fbeta.example.com%26size%3D64",
               val: 1,
             }),
           ]),
@@ -298,7 +298,7 @@ describe("GraphVisualization", () => {
     const nodeObject = graphProps!.nodeThreeObject(iconNode);
 
     expect(nodeObject.children).toHaveLength(3);
-    expect(nodeObject.userData.iconUrl).toBe("https://alpha.example.com/favicon.ico");
+    expect(nodeObject.userData.iconUrl).toBe("/api/icons/proxy?url=https%3A%2F%2Falpha.example.com%2Ffavicon.ico");
   });
 
   test("tunes forces for natural clusters instead of a centered sphere", () => {
