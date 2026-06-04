@@ -238,6 +238,12 @@ class CrawlOrchestrator:
             )
             raw_record_id = int(raw_record["id"])
             if raw_record["status"] == "rule:duplicate_url":
+                stored_count += self._store_duplicate_target_edge(
+                    blog=blog,
+                    normalized_url=normalized.normalized_url,
+                    link=link,
+                    seen_normalized=seen_normalized,
+                )
                 continue
             decision = self._evaluate_link(blog, normalized.normalized_url, link, deadline=deadline)
             status = str(decision.status or "success")
@@ -277,6 +283,42 @@ class CrawlOrchestrator:
             stored_count += 1
 
         return stored_count
+
+    def _store_duplicate_target_edge(
+        self,
+        *,
+        blog: BlogNode,
+        normalized_url: str,
+        link: ExtractedLink,
+        seen_normalized: set[str],
+    ) -> int:
+        """Persist an edge for a duplicate raw URL that already maps to a blog.
+
+        Args:
+            blog: Source blog currently being crawled.
+            normalized_url: Normalized target URL already seen by an earlier
+                raw discovery.
+            link: Extracted source-page link carrying raw URL and text.
+            seen_normalized: Per-source crawl de-duplication set for targets.
+
+        Returns:
+            ``1`` when an edge write was attempted for an existing target blog,
+            otherwise ``0``.
+        """
+
+        if normalized_url in seen_normalized:
+            return 0
+        existing_blog_id = self.repository.find_blog_id_by_normalized_url(normalized_url=normalized_url)
+        if existing_blog_id is None:
+            return 0
+        seen_normalized.add(normalized_url)
+        self.repository.add_edge(
+            from_blog_id=blog.id,
+            to_blog_id=existing_blog_id,
+            link_url_raw=link.url,
+            link_text=link.text,
+        )
+        return 1
 
     def _evaluate_link(
         self,

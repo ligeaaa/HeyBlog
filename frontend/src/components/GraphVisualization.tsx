@@ -7,9 +7,9 @@ import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
 export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
 const GRAPH_LINK_DISTANCE = 72;
-const GRAPH_LINK_STRENGTH = 0.34;
-const GRAPH_CHARGE_STRENGTH = -95;
-const GRAPH_CHARGE_DISTANCE_MAX = 920;
+const GRAPH_LINK_STRENGTH = 0.42;
+const GRAPH_CHARGE_STRENGTH = -118;
+const GRAPH_CHARGE_DISTANCE_MAX = 820;
 
 interface GraphVisualizationProps {
   data: GraphData;

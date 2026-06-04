@@ -319,10 +319,10 @@ describe("GraphVisualization", () => {
     tuneNaturalClusterForces(graph as never);
 
     expect(forceCalls).toContainEqual(["center", null]);
-    expect(chargeForce.strength).toHaveBeenCalledWith(-95);
-    expect(chargeForce.distanceMax).toHaveBeenCalledWith(920);
+    expect(chargeForce.strength).toHaveBeenCalledWith(-118);
+    expect(chargeForce.distanceMax).toHaveBeenCalledWith(820);
     expect(linkForce.distance).toHaveBeenCalledWith(72);
-    expect(linkForce.strength).toHaveBeenCalledWith(0.34);
+    expect(linkForce.strength).toHaveBeenCalledWith(0.42);
     expect(d3ReheatSimulation).toHaveBeenCalled();
   });
 });

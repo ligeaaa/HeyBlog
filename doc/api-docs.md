@@ -1509,6 +1509,24 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 命中顺序固定为 `identity_key -> normalized_url -> empty`
 - `match_reason` 只允许 `identity_key`、`normalized_url` 或 `null`
 
+### `GET /internal/blogs/by-normalized-url?normalized_url=...`
+
+用途：为 crawler 在遇到重复 raw URL 时解析已存在的目标 blog id。
+
+响应：
+
+```json
+{
+  "id": 1
+}
+```
+
+补充说明：
+
+- 未找到已接受 blog 时返回 `{ "id": null }`
+- 该接口不改变 raw URL 去重语义；crawler 仍可把重复 URL 标记为 `rule:duplicate_url`，但会用这里返回的 id 补写新的源博客到目标博客的边
+- 主要用于保留 A->C 已存在后，B 后续发现 C 时的 B->C 关系
+
 ### `GET /internal/queue/next`
 
 用途：取出下一个待处理 blog，并立即将其状态更新为 `PROCESSING`。

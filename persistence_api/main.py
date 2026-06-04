@@ -567,6 +567,11 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         blog_id, inserted = get_state().repository.upsert_blog(**payload.model_dump())
         return {"id": blog_id, "inserted": inserted}
 
+    @app.get("/internal/blogs/by-normalized-url")
+    def find_blog_by_normalized_url(normalized_url: str) -> dict[str, int | None]:
+        """Return the existing blog id for one normalized URL."""
+        return {"id": get_state().repository.find_blog_id_by_normalized_url(normalized_url=normalized_url)}
+
     @app.post("/internal/blogs/{blog_id}/result")
     def mark_blog_result(blog_id: int, payload: BlogResultRequest) -> dict[str, bool]:
         return _run_action_and_return_ok(

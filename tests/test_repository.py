@@ -513,6 +513,31 @@ def test_repository_marks_duplicate_raw_urls_before_filter_chain(tmp_path: Path)
     assert first["id"] < duplicate["id"]
 
 
+def test_repository_finds_blog_id_by_normalized_url(tmp_path: Path) -> None:
+    """Duplicate discovery repair should resolve accepted target blogs by URL."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, _ = repository.upsert_blog(
+        url="https://friend.example/",
+        normalized_url="https://friend.example/",
+        domain="friend.example",
+    )
+
+    assert repository.find_blog_id_by_normalized_url(normalized_url="https://friend.example/") == blog_id
+    assert repository.find_blog_id_by_normalized_url(normalized_url="https://missing.example/") is None
+
+
+def test_repository_finds_blog_id_by_normalized_url_identity_fallback(tmp_path: Path) -> None:
+    """Duplicate edge repair should survive blog identity canonicalization."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, _ = repository.upsert_blog(
+        url="https://zhuruilei.66law.cn/",
+        normalized_url="https://zhuruilei.66law.cn/",
+        domain="zhuruilei.66law.cn",
+    )
+
+    assert repository.find_blog_id_by_normalized_url(normalized_url="https://zhuruilei.66law.cn/") == blog_id
+
+
 def test_retired_label_assignment_migration_reports_single_table_rows(tmp_path: Path) -> None:
     """Retired label-assignment migration should leave the single label table intact."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")

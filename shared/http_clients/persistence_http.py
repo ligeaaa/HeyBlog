@@ -257,6 +257,13 @@ class PersistenceHttpClient:
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         return self._get("/internal/blogs/lookup", {"url": url})
 
+    def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None:
+        """Fetch the persisted blog id for one normalized URL."""
+
+        payload = self._get("/internal/blogs/by-normalized-url", {"normalized_url": normalized_url})
+        blog_id = payload.get("id")
+        return int(blog_id) if blog_id is not None else None
+
     def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
         return self._create_maintenance_run(
             "/internal/blog-dedup-scans/runs",

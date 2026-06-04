@@ -187,6 +187,77 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     assert "depth" not in child_blog
 
 
+def test_pipeline_persists_edges_for_duplicate_target_urls(tmp_path: Path) -> None:
+    """Repeated target URL discoveries should still preserve new source edges."""
+    pipeline, repository = build_pipeline(tmp_path)
+    alpha = seed_blog(repository)
+    beta_id, _ = repository.upsert_blog(
+        url="https://beta.example/",
+        normalized_url="https://beta.example/",
+        domain="beta.example",
+    )
+    beta = repository.get_blog(beta_id)
+    assert beta is not None
+
+    homepage_html = '<html><body><footer><a href="/friends">友情链接</a></footer></body></html>'
+    alpha_friend_page_html = """
+    <html><body><section class="friend-links">
+      <a href="https://common.example/">Common</a>
+    </section></body></html>
+    """
+    beta_friend_page_html = """
+    <html><body><section class="friend-links">
+      <a href="https://common.example/">Common Again</a>
+      <a href="https://common.example/">Common Duplicate</a>
+    </section></body></html>
+    """
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text=homepage_html,
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends",
+                status_code=200,
+                text=alpha_friend_page_html,
+            ),
+            "https://beta.example/": FetchResult(
+                url="https://beta.example/",
+                status_code=200,
+                text=homepage_html,
+            ),
+            "https://beta.example/friends": FetchResult(
+                url="https://beta.example/friends",
+                status_code=200,
+                text=beta_friend_page_html,
+            ),
+        }
+    )
+
+    assert pipeline._crawl_blog(alpha) == 1
+    assert pipeline._crawl_blog(beta) == 1
+
+    common_blog = next(blog for blog in repository.list_blogs() if blog["domain"] == "common.example")
+    edges = repository.list_edges()
+    assert {(edge["from_blog_id"], edge["to_blog_id"]) for edge in edges} == {
+        (alpha["blog_id"], common_blog["id"]),
+        (beta["blog_id"], common_blog["id"]),
+    }
+
+    with session_scope(repository.session_factory) as session:
+        raw_rows = [
+            (row.source_blog_id, row.normalized_url, row.status)
+            for row in session.scalars(select(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()))
+        ]
+
+    assert raw_rows == [
+        (alpha["blog_id"], "https://common.example/", "success"),
+        (beta["blog_id"], "https://common.example/", "rule:duplicate_url"),
+    ]
+
+
 def test_pipeline_stores_feed_url_when_friend_link_exposes_rss(tmp_path: Path) -> None:
     """A friend link whose homepage exposes a valid feed should persist its feed URL."""
     pipeline, repository = build_pipeline(tmp_path)

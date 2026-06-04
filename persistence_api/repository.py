@@ -1713,6 +1713,8 @@ class RepositoryProtocol(Protocol):
 
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]: ...
 
+    def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None: ...
+
     def mark_ingestion_request_crawling(self, *, blog_id: int) -> None: ...
 
     def mark_blog_result(
@@ -3195,6 +3197,36 @@ class SQLAlchemyRepository:
             record.updated_at = now_utc()
             session.flush()
             return {"id": int(record.id), "status": str(record.status)}
+
+    def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None:
+        """Return the persisted blog id for one normalized URL when it exists.
+
+        Args:
+            normalized_url: Canonical URL value used by crawler discovery and
+                blog upsert identity checks.
+
+        Returns:
+            Business ``blog_id`` for the matching blog, or ``None`` when the
+            URL has not yet been accepted as a blog.
+        """
+
+        identity = resolve_blog_identity(normalized_url)
+        with session_scope(self.session_factory) as session:
+            blog_id = session.scalar(
+                select(BlogModel.blog_id)
+                .where(BlogModel.normalized_url == normalized_url)
+                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
+                .limit(1)
+            )
+            if blog_id is not None:
+                return int(blog_id)
+            blog_id = session.scalar(
+                select(BlogModel.blog_id)
+                .where(BlogModel.identity_key == identity.identity_key)
+                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
+                .limit(1)
+            )
+            return int(blog_id) if blog_id is not None else None
 
     def update_raw_discovered_url_status(
         self,
