@@ -1,10 +1,11 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { BlogDetailPanel } from "../components/BlogDetailPanel";
 import { GraphVisualization } from "../components/GraphVisualization";
 import { Navigation } from "../components/Navigation";
+import { fetchBenchmarkGraphData } from "../lib/benchmarkGraph";
 import { fetchBlogDetail, fetchGraphData, fetchStats, fetchSubgraph } from "../lib/api";
 import type { BlogDetail, GraphData, GraphNode } from "../types/graph";
 
@@ -16,7 +17,9 @@ const DEFAULT_GRAPH_LIMIT = 200;
  * @returns Visualization page UI.
  */
 export function VisualizationPage() {
+  const location = useLocation();
   const [searchParams] = useSearchParams();
+  const isBenchmarkMode = location.pathname.endsWith("/benchmark") || searchParams.get("benchmark") === "community";
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
   const [blogDetail, setBlogDetail] = useState<BlogDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -34,8 +37,12 @@ export function VisualizationPage() {
   }, [isLoading, renderProgress]);
 
   useEffect(() => {
+    if (isBenchmarkMode) {
+      void loadBenchmarkGraph();
+      return;
+    }
     void loadGraphLimitBounds();
-  }, []);
+  }, [isBenchmarkMode]);
 
   useEffect(() => {
     const highlight = searchParams.get("highlight");
@@ -67,6 +74,37 @@ export function VisualizationPage() {
       setPendingLimit(DEFAULT_GRAPH_LIMIT);
     } finally {
       setIsStatsLoading(false);
+    }
+  }
+
+  /**
+   * Load the deterministic clustered graph benchmark from static frontend assets.
+   *
+   * @returns Promise resolved after benchmark graph state updates.
+   */
+  async function loadBenchmarkGraph() {
+    setSelectedLimit(100);
+    setPendingLimit(100);
+    setMaxGraphLimit(100);
+    setBlogDetail(null);
+    setHighlightNodeId(undefined);
+    setIsRendering(false);
+    setRenderProgress(0);
+
+    try {
+      setIsStatsLoading(false);
+      setIsLoading(true);
+      const benchmarkGraph = await fetchBenchmarkGraphData();
+      setRenderProgress(0.12);
+      setIsRendering(true);
+      setGraphData(benchmarkGraph);
+    } catch {
+      setSelectedLimit(null);
+      setIsRendering(false);
+      setRenderProgress(0);
+      toast.error("Benchmark 图谱加载失败，请先运行生成脚本。");
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -107,6 +145,22 @@ export function VisualizationPage() {
    * @returns Promise resolved after all requested data is loaded.
    */
   async function openBlog(blogId: number, options: { loadNeighborhood: boolean }) {
+    if (isBenchmarkMode) {
+      const node = graphData.nodes.find((item) => item.id === blogId);
+      if (!node) {
+        return;
+      }
+      setBlogDetail({
+        ...node,
+        incomingLinks: node.incomingCount ?? 0,
+        outgoingLinks: node.outgoingCount ?? 0,
+        relatedNodes: [],
+        recommendedBlogs: [],
+      });
+      setHighlightNodeId(blogId);
+      return;
+    }
+
     try {
       const detail = await fetchBlogDetail(blogId);
       setBlogDetail(detail);
@@ -151,6 +205,7 @@ export function VisualizationPage() {
           data={graphData}
           onNodeClick={handleNodeClick}
           highlightNodeId={highlightNodeId}
+          useNodeIcons={!isBenchmarkMode}
           onRenderProgress={(progress) => setRenderProgress((current) => Math.max(current, progress))}
           onRenderComplete={() => {
             setRenderProgress(1);

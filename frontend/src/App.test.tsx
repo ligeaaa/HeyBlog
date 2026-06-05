@@ -206,6 +206,51 @@ beforeEach(() => {
         }),
       );
     }
+    if (url.pathname === "/benchmarks/blog-community-graph.json") {
+      return new Response(
+        JSON.stringify({
+          nodes: [
+            {
+              id: 1,
+              url: "https://benchmark.heyblog.local/indie-web-01/",
+              domain: "indie-web-01.benchmark.heyblog.local",
+              title: "Indie Web Notes 01",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+              degree: 2,
+              component_id: "indie-web",
+            },
+            {
+              id: 2,
+              url: "https://benchmark.heyblog.local/indie-web-02/",
+              domain: "indie-web-02.benchmark.heyblog.local",
+              title: "Indie Web Notes 02",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+              degree: 2,
+              component_id: "indie-web",
+            },
+          ],
+          edges: [
+            {
+              id: "benchmark-edge-001",
+              from_blog_id: 1,
+              to_blog_id: 2,
+              link_text: "blogroll",
+              link_url_raw: "https://benchmark.heyblog.local/indie-web-02/",
+            },
+          ],
+          meta: {
+            strategy: "synthetic-community-benchmark",
+            limit: 2,
+            total_nodes: 2,
+            total_edges: 1,
+          },
+        }),
+      );
+    }
     throw new Error(`Unhandled fetch: ${url.toString()}`);
   });
 
@@ -485,6 +530,22 @@ test("defaults visualization slider to two hundred when the blog count is larger
 
   expect(slider).toHaveAttribute("max", "500");
   expect(slider).toHaveValue("200");
+});
+
+test("loads the static clustered benchmark graph through the visualization route", async () => {
+  window.history.replaceState({}, "", "/visualization/benchmark");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/benchmarks/blog-community-graph.json"),
+      expect.anything(),
+    );
+  });
+  expect(screen.queryByRole("dialog", { name: "选择图谱规模" })).not.toBeInTheDocument();
+  expect(forceGraphProps.at(-1)!.graphData.nodes).toHaveLength(2);
+  expect(forceGraphProps.at(-1)!.graphData.links).toHaveLength(1);
 });
 
 test("adds a public filter stats route that renders success-source split", async () => {

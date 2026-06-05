@@ -2,14 +2,14 @@ import { RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
-import { resolveProxiedBlogIconUrls } from "../lib/icon";
+import { resolveIconProxyUrl } from "../lib/icon";
 import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
 export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
-const GRAPH_LINK_DISTANCE = 72;
-const GRAPH_LINK_STRENGTH = 0.42;
-const GRAPH_CHARGE_STRENGTH = -118;
-const GRAPH_CHARGE_DISTANCE_MAX = 820;
+const GRAPH_LINK_DISTANCE = 58;
+const GRAPH_LINK_STRENGTH = 0.56;
+const GRAPH_CHARGE_STRENGTH = -190;
+const GRAPH_CHARGE_DISTANCE_MAX = 720;
 
 interface GraphVisualizationProps {
   data: GraphData;
@@ -17,6 +17,7 @@ interface GraphVisualizationProps {
   highlightNodeId?: number;
   onRenderProgress?: (progress: number) => void;
   onRenderComplete?: () => void;
+  useNodeIcons?: boolean;
 }
 
 interface RenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
@@ -51,7 +52,15 @@ function targetIdOf(link: RenderLink): string {
   return typeof link.target === "object" ? link.target.id : String(link.target);
 }
 
-function buildGraphData(data: GraphData): RenderGraphData {
+function buildExplicitIconUrls(node: GraphNode, useNodeIcons: boolean): string[] {
+  const iconUrl = node.iconUrl?.trim();
+  if (!useNodeIcons || !iconUrl) {
+    return [];
+  }
+  return [resolveIconProxyUrl(iconUrl)];
+}
+
+function buildGraphData(data: GraphData, useNodeIcons: boolean): RenderGraphData {
   const nodesById = new Map<string, RenderNode>();
 
   for (const node of data.nodes) {
@@ -59,7 +68,7 @@ function buildGraphData(data: GraphData): RenderGraphData {
     if (!id) {
       continue;
     }
-    const iconUrls = resolveProxiedBlogIconUrls(node);
+    const iconUrls = buildExplicitIconUrls(node, useNodeIcons);
     nodesById.set(id, {
       ...node,
       id,
@@ -130,12 +139,6 @@ function colorForNode(node: RenderNode, highlightNodeId?: number, neighborIds?: 
   }
   if (highlightNodeId !== undefined) {
     return "#334155";
-  }
-  if ((node.incomingCount ?? 0) > (node.outgoingCount ?? 0)) {
-    return "#fbbf24";
-  }
-  if ((node.outgoingCount ?? 0) > 0) {
-    return "#818cf8";
   }
   return "#94a3b8";
 }
@@ -256,13 +259,14 @@ export function GraphVisualization({
   highlightNodeId,
   onRenderProgress,
   onRenderComplete,
+  useNodeIcons = true,
 }: GraphVisualizationProps) {
   const graphRef = useRef<ForceGraphMethods<RenderNode, RenderLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const renderTickRef = useRef(0);
   const [size, setSize] = useState({ width: 960, height: 720 });
   const [isMeasured, setIsMeasured] = useState(false);
-  const graphData = useMemo(() => buildGraphData(data), [data]);
+  const graphData = useMemo(() => buildGraphData(data, useNodeIcons), [data, useNodeIcons]);
   const neighborIds = useMemo(() => buildNeighborIds(graphData, highlightNodeId), [graphData, highlightNodeId]);
   const selectedGraphId = highlightNodeId === undefined ? undefined : String(highlightNodeId);
 

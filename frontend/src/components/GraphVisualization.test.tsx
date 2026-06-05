@@ -204,8 +204,7 @@ describe("GraphVisualization", () => {
               id: "2",
               blogId: 2,
               label: "Beta Blog",
-              iconUrl:
-                "/api/icons/proxy?url=https%3A%2F%2Ft2.gstatic.com%2FfaviconV2%3Fclient%3DSOCIAL%26type%3DFAVICON%26fallback_opts%3DTYPE%2CSIZE%2CURL%26url%3Dhttps%3A%2F%2Fbeta.example.com%26size%3D64",
+              iconUrl: undefined,
               val: 1,
             }),
           ]),
@@ -301,6 +300,20 @@ describe("GraphVisualization", () => {
     expect(nodeObject.userData.iconUrl).toBe("/api/icons/proxy?url=https%3A%2F%2Falpha.example.com%2Ffavicon.ico");
   });
 
+  test("renders iconless nodes as neutral gray spheres", () => {
+    render(<GraphVisualization data={forceGraphData} />);
+
+    const graphProps = forceGraphRenders.at(-1);
+    const iconlessNode = graphProps!.graphData.nodes[1];
+    const nodeObject = graphProps!.nodeThreeObject(iconlessNode);
+    const core = nodeObject.children[1] as any;
+
+    expect(iconlessNode.iconUrl).toBeUndefined();
+    expect(nodeObject.children).toHaveLength(2);
+    expect(nodeObject.userData.iconUrl).toBeUndefined();
+    expect(core.material.color.getHexString()).toBe("94a3b8");
+  });
+
   test("tunes forces for natural clusters instead of a centered sphere", () => {
     const graph = {
       d3Force: vi.fn((name: string, force?: unknown) => {
@@ -319,10 +332,10 @@ describe("GraphVisualization", () => {
     tuneNaturalClusterForces(graph as never);
 
     expect(forceCalls).toContainEqual(["center", null]);
-    expect(chargeForce.strength).toHaveBeenCalledWith(-118);
-    expect(chargeForce.distanceMax).toHaveBeenCalledWith(820);
-    expect(linkForce.distance).toHaveBeenCalledWith(72);
-    expect(linkForce.strength).toHaveBeenCalledWith(0.42);
+    expect(chargeForce.strength).toHaveBeenCalledWith(-190);
+    expect(chargeForce.distanceMax).toHaveBeenCalledWith(720);
+    expect(linkForce.distance).toHaveBeenCalledWith(58);
+    expect(linkForce.strength).toHaveBeenCalledWith(0.56);
     expect(d3ReheatSimulation).toHaveBeenCalled();
   });
 });

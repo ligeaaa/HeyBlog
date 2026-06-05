@@ -10,6 +10,7 @@ export interface GraphNode {
   description?: string | null;
   x?: number;
   y?: number;
+  z?: number;
   degree?: number;
   incomingCount?: number;
   outgoingCount?: number;

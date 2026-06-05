@@ -21,6 +21,7 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/random" element={<RandomBlogPage />} />
         <Route path="/visualization" element={<VisualizationPage />} />
+        <Route path="/visualization/benchmark" element={<VisualizationPage />} />
         <Route path="/filter-stats" element={<FilterStatsPage />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/profile" element={<ProfilePage />} />

@@ -8,7 +8,7 @@ import avatarImage from "../assets/images/avatar.png";
  */
 export function AboutPage() {
   return (
-    <div className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(125,211,252,0.22),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(244,114,182,0.14),_transparent_30%),linear-gradient(180deg,_#f8fbff_0%,_#ffffff_52%,_#f7fbff_100%)]">
+    <div className="h-screen overflow-hidden bg-slate-50">
       <Navigation />
 
       <main className="mx-auto flex h-full max-w-6xl items-center px-5 pb-5 pt-20 sm:px-8 sm:pt-24">
@@ -57,8 +57,8 @@ export function AboutPage() {
           </div>
 
           <div className="relative mx-auto flex min-h-0 w-full max-w-[280px] items-stretch sm:max-w-md lg:max-w-none">
-            <div className="absolute inset-x-10 bottom-8 h-24 rounded-full bg-sky-200/30 blur-3xl" />
-            <div className="relative flex w-full items-end justify-center overflow-hidden rounded-[32px] border border-slate-200 bg-gradient-to-b from-white/95 via-sky-50/75 to-rose-50/70 shadow-[0_24px_60px_rgba(15,23,42,0.12)]">
+            <div className="absolute inset-x-10 bottom-8 h-24 rounded-full bg-slate-200/45 blur-3xl" />
+            <div className="relative flex w-full items-end justify-center overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.12)]">
               <img
                 src={avatarImage}
                 alt="HeyBlog avatar"

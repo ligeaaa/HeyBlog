@@ -1,0 +1,4529 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "url": "https://benchmark.heyblog.local/indie-web-01/",
+      "domain": "indie-web-01.benchmark.heyblog.local",
+      "title": "Indie Web Notes 01",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 7,
+      "degree": 13,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -485.248,
+      "y": -260.0,
+      "z": -27.653
+    },
+    {
+      "id": 2,
+      "url": "https://benchmark.heyblog.local/indie-web-02/",
+      "domain": "indie-web-02.benchmark.heyblog.local",
+      "title": "Indie Web Notes 02",
+      "icon_url": null,
+      "incoming_count": 7,
+      "outgoing_count": 5,
+      "degree": 12,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -561.694,
+      "y": -221.805,
+      "z": 9.57
+    },
+    {
+      "id": 3,
+      "url": "https://benchmark.heyblog.local/indie-web-03/",
+      "domain": "indie-web-03.benchmark.heyblog.local",
+      "title": "Indie Web Notes 03",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 4,
+      "degree": 9,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -514.041,
+      "y": -327.899,
+      "z": -4.206
+    },
+    {
+      "id": 4,
+      "url": "https://benchmark.heyblog.local/indie-web-04/",
+      "domain": "indie-web-04.benchmark.heyblog.local",
+      "title": "Indie Web Notes 04",
+      "icon_url": null,
+      "incoming_count": 9,
+      "outgoing_count": 5,
+      "degree": 14,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -471.039,
+      "y": -196.138,
+      "z": 18.91
+    },
+    {
+      "id": 5,
+      "url": "https://benchmark.heyblog.local/indie-web-05/",
+      "domain": "indie-web-05.benchmark.heyblog.local",
+      "title": "Indie Web Notes 05",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -626.876,
+      "y": -278.905,
+      "z": -4.065
+    },
+    {
+      "id": 6,
+      "url": "https://benchmark.heyblog.local/indie-web-06/",
+      "domain": "indie-web-06.benchmark.heyblog.local",
+      "title": "Indie Web Notes 06",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 6,
+      "degree": 12,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -482.029,
+      "y": -284.154,
+      "z": -23.273
+    },
+    {
+      "id": 7,
+      "url": "https://benchmark.heyblog.local/indie-web-07/",
+      "domain": "indie-web-07.benchmark.heyblog.local",
+      "title": "Indie Web Notes 07",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -534.637,
+      "y": -205.551,
+      "z": -7.773
+    },
+    {
+      "id": 8,
+      "url": "https://benchmark.heyblog.local/indie-web-08/",
+      "domain": "indie-web-08.benchmark.heyblog.local",
+      "title": "Indie Web Notes 08",
+      "icon_url": null,
+      "incoming_count": 8,
+      "outgoing_count": 4,
+      "degree": 12,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -554.081,
+      "y": -325.621,
+      "z": -1.666
+    },
+    {
+      "id": 9,
+      "url": "https://benchmark.heyblog.local/indie-web-09/",
+      "domain": "indie-web-09.benchmark.heyblog.local",
+      "title": "Indie Web Notes 09",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -432.629,
+      "y": -228.092,
+      "z": -5.715
+    },
+    {
+      "id": 10,
+      "url": "https://benchmark.heyblog.local/indie-web-10/",
+      "domain": "indie-web-10.benchmark.heyblog.local",
+      "title": "Indie Web Notes 10",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 7,
+      "degree": 10,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -614.579,
+      "y": -220.959,
+      "z": -15.78
+    },
+    {
+      "id": 11,
+      "url": "https://benchmark.heyblog.local/indie-web-11/",
+      "domain": "indie-web-11.benchmark.heyblog.local",
+      "title": "Indie Web Notes 11",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 6,
+      "degree": 11,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -504.745,
+      "y": -292.6,
+      "z": -23.746
+    },
+    {
+      "id": 12,
+      "url": "https://benchmark.heyblog.local/indie-web-12/",
+      "domain": "indie-web-12.benchmark.heyblog.local",
+      "title": "Indie Web Notes 12",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 4,
+      "degree": 7,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -502.776,
+      "y": -205.087,
+      "z": -2.887
+    },
+    {
+      "id": 13,
+      "url": "https://benchmark.heyblog.local/indie-web-13/",
+      "domain": "indie-web-13.benchmark.heyblog.local",
+      "title": "Indie Web Notes 13",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 5,
+      "degree": 10,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -585.047,
+      "y": -297.696,
+      "z": 35.821
+    },
+    {
+      "id": 14,
+      "url": "https://benchmark.heyblog.local/indie-web-14/",
+      "domain": "indie-web-14.benchmark.heyblog.local",
+      "title": "Indie Web Notes 14",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 5,
+      "degree": 9,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -438.853,
+      "y": -277.84,
+      "z": -26.944
+    },
+    {
+      "id": 15,
+      "url": "https://benchmark.heyblog.local/indie-web-15/",
+      "domain": "indie-web-15.benchmark.heyblog.local",
+      "title": "Indie Web Notes 15",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 7,
+      "degree": 11,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -578.153,
+      "y": -177.283,
+      "z": 1.251
+    },
+    {
+      "id": 16,
+      "url": "https://benchmark.heyblog.local/indie-web-16/",
+      "domain": "indie-web-16.benchmark.heyblog.local",
+      "title": "Indie Web Notes 16",
+      "icon_url": null,
+      "incoming_count": 1,
+      "outgoing_count": 5,
+      "degree": 6,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -526.023,
+      "y": -306.476,
+      "z": 1.643
+    },
+    {
+      "id": 17,
+      "url": "https://benchmark.heyblog.local/indie-web-17/",
+      "domain": "indie-web-17.benchmark.heyblog.local",
+      "title": "Indie Web Notes 17",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 5,
+      "degree": 10,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -470.825,
+      "y": -218.555,
+      "z": -34.816
+    },
+    {
+      "id": 18,
+      "url": "https://benchmark.heyblog.local/indie-web-18/",
+      "domain": "indie-web-18.benchmark.heyblog.local",
+      "title": "Indie Web Notes 18",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 5,
+      "degree": 11,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -591.377,
+      "y": -257.048,
+      "z": 28.352
+    },
+    {
+      "id": 19,
+      "url": "https://benchmark.heyblog.local/indie-web-19/",
+      "domain": "indie-web-19.benchmark.heyblog.local",
+      "title": "Indie Web Notes 19",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 6,
+      "degree": 9,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -463.993,
+      "y": -315.734,
+      "z": -7.653
+    },
+    {
+      "id": 20,
+      "url": "https://benchmark.heyblog.local/indie-web-20/",
+      "domain": "indie-web-20.benchmark.heyblog.local",
+      "title": "Indie Web Notes 20",
+      "icon_url": null,
+      "incoming_count": 7,
+      "outgoing_count": 2,
+      "degree": 9,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -524.976,
+      "y": -152.383,
+      "z": -23.053
+    },
+    {
+      "id": 21,
+      "url": "https://benchmark.heyblog.local/indie-web-21/",
+      "domain": "indie-web-21.benchmark.heyblog.local",
+      "title": "Indie Web Notes 21",
+      "icon_url": null,
+      "incoming_count": 9,
+      "outgoing_count": 4,
+      "degree": 13,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -543.562,
+      "y": -288.235,
+      "z": 3.581
+    },
+    {
+      "id": 22,
+      "url": "https://benchmark.heyblog.local/indie-web-22/",
+      "domain": "indie-web-22.benchmark.heyblog.local",
+      "title": "Indie Web Notes 22",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 8,
+      "degree": 11,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -471.124,
+      "y": -253.424,
+      "z": 30.062
+    },
+    {
+      "id": 23,
+      "url": "https://benchmark.heyblog.local/indie-web-23/",
+      "domain": "indie-web-23.benchmark.heyblog.local",
+      "title": "Indie Web Notes 23",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -579.691,
+      "y": -218.469,
+      "z": 20.868
+    },
+    {
+      "id": 24,
+      "url": "https://benchmark.heyblog.local/indie-web-24/",
+      "domain": "indie-web-24.benchmark.heyblog.local",
+      "title": "Indie Web Notes 24",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 5,
+      "degree": 11,
+      "component_id": "indie-web",
+      "benchmark_community_label": "Indie Web",
+      "x": -502.561,
+      "y": -337.519,
+      "z": -32.523
+    },
+    {
+      "id": 25,
+      "url": "https://benchmark.heyblog.local/engineering-01/",
+      "domain": "engineering-01.benchmark.heyblog.local",
+      "title": "Engineering Notes 01",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 7,
+      "degree": 9,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 573.139,
+      "y": -167.265,
+      "z": -2.006
+    },
+    {
+      "id": 26,
+      "url": "https://benchmark.heyblog.local/engineering-02/",
+      "domain": "engineering-02.benchmark.heyblog.local",
+      "title": "Engineering Notes 02",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 1,
+      "degree": 5,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 472.691,
+      "y": -275.093,
+      "z": 28.025
+    },
+    {
+      "id": 27,
+      "url": "https://benchmark.heyblog.local/engineering-03/",
+      "domain": "engineering-03.benchmark.heyblog.local",
+      "title": "Engineering Notes 03",
+      "icon_url": null,
+      "incoming_count": 8,
+      "outgoing_count": 4,
+      "degree": 12,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 570.488,
+      "y": -283.327,
+      "z": 16.877
+    },
+    {
+      "id": 28,
+      "url": "https://benchmark.heyblog.local/engineering-04/",
+      "domain": "engineering-04.benchmark.heyblog.local",
+      "title": "Engineering Notes 04",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 3,
+      "degree": 8,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 490.999,
+      "y": -190.703,
+      "z": 12.287
+    },
+    {
+      "id": 29,
+      "url": "https://benchmark.heyblog.local/engineering-05/",
+      "domain": "engineering-05.benchmark.heyblog.local",
+      "title": "Engineering Notes 05",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 6,
+      "degree": 10,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 492.317,
+      "y": -336.967,
+      "z": 27.342
+    },
+    {
+      "id": 30,
+      "url": "https://benchmark.heyblog.local/engineering-06/",
+      "domain": "engineering-06.benchmark.heyblog.local",
+      "title": "Engineering Notes 06",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 4,
+      "degree": 7,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 614.342,
+      "y": -210.416,
+      "z": -20.321
+    },
+    {
+      "id": 31,
+      "url": "https://benchmark.heyblog.local/engineering-07/",
+      "domain": "engineering-07.benchmark.heyblog.local",
+      "title": "Engineering Notes 07",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 3,
+      "degree": 9,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 485.672,
+      "y": -250.951,
+      "z": 12.808
+    },
+    {
+      "id": 32,
+      "url": "https://benchmark.heyblog.local/engineering-08/",
+      "domain": "engineering-08.benchmark.heyblog.local",
+      "title": "Engineering Notes 08",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 6,
+      "degree": 10,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 553.668,
+      "y": -312.362,
+      "z": -12.726
+    },
+    {
+      "id": 33,
+      "url": "https://benchmark.heyblog.local/engineering-09/",
+      "domain": "engineering-09.benchmark.heyblog.local",
+      "title": "Engineering Notes 09",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 532.13,
+      "y": -189.422,
+      "z": 13.888
+    },
+    {
+      "id": 34,
+      "url": "https://benchmark.heyblog.local/engineering-10/",
+      "domain": "engineering-10.benchmark.heyblog.local",
+      "title": "Engineering Notes 10",
+      "icon_url": null,
+      "incoming_count": 8,
+      "outgoing_count": 3,
+      "degree": 11,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 446.316,
+      "y": -317.065,
+      "z": -8.99
+    },
+    {
+      "id": 35,
+      "url": "https://benchmark.heyblog.local/engineering-11/",
+      "domain": "engineering-11.benchmark.heyblog.local",
+      "title": "Engineering Notes 11",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 3,
+      "degree": 9,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 628.742,
+      "y": -269.009,
+      "z": 17.532
+    },
+    {
+      "id": 36,
+      "url": "https://benchmark.heyblog.local/engineering-12/",
+      "domain": "engineering-12.benchmark.heyblog.local",
+      "title": "Engineering Notes 12",
+      "icon_url": null,
+      "incoming_count": 8,
+      "outgoing_count": 8,
+      "degree": 16,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 492.373,
+      "y": -230.136,
+      "z": 30.217
+    },
+    {
+      "id": 37,
+      "url": "https://benchmark.heyblog.local/engineering-13/",
+      "domain": "engineering-13.benchmark.heyblog.local",
+      "title": "Engineering Notes 13",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 520.305,
+      "y": -322.624,
+      "z": -27.247
+    },
+    {
+      "id": 38,
+      "url": "https://benchmark.heyblog.local/engineering-14/",
+      "domain": "engineering-14.benchmark.heyblog.local",
+      "title": "Engineering Notes 14",
+      "icon_url": null,
+      "incoming_count": 1,
+      "outgoing_count": 4,
+      "degree": 5,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 565.794,
+      "y": -209.519,
+      "z": -18.772
+    },
+    {
+      "id": 39,
+      "url": "https://benchmark.heyblog.local/engineering-15/",
+      "domain": "engineering-15.benchmark.heyblog.local",
+      "title": "Engineering Notes 15",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 7,
+      "degree": 12,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 431.124,
+      "y": -268.237,
+      "z": 9.782
+    },
+    {
+      "id": 40,
+      "url": "https://benchmark.heyblog.local/engineering-16/",
+      "domain": "engineering-16.benchmark.heyblog.local",
+      "title": "Engineering Notes 16",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 6,
+      "degree": 9,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 595.39,
+      "y": -317.218,
+      "z": 6.472
+    },
+    {
+      "id": 41,
+      "url": "https://benchmark.heyblog.local/engineering-17/",
+      "domain": "engineering-17.benchmark.heyblog.local",
+      "title": "Engineering Notes 17",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 511.479,
+      "y": -213.161,
+      "z": -23.505
+    },
+    {
+      "id": 42,
+      "url": "https://benchmark.heyblog.local/engineering-18/",
+      "domain": "engineering-18.benchmark.heyblog.local",
+      "title": "Engineering Notes 18",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 5,
+      "degree": 7,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 486.51,
+      "y": -313.218,
+      "z": 21.707
+    },
+    {
+      "id": 43,
+      "url": "https://benchmark.heyblog.local/engineering-19/",
+      "domain": "engineering-19.benchmark.heyblog.local",
+      "title": "Engineering Notes 19",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 6,
+      "degree": 11,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 591.907,
+      "y": -240.293,
+      "z": 32.612
+    },
+    {
+      "id": 44,
+      "url": "https://benchmark.heyblog.local/engineering-20/",
+      "domain": "engineering-20.benchmark.heyblog.local",
+      "title": "Engineering Notes 20",
+      "icon_url": null,
+      "incoming_count": 8,
+      "outgoing_count": 7,
+      "degree": 15,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 443.241,
+      "y": -220.609,
+      "z": -6.126
+    },
+    {
+      "id": 45,
+      "url": "https://benchmark.heyblog.local/engineering-21/",
+      "domain": "engineering-21.benchmark.heyblog.local",
+      "title": "Engineering Notes 21",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 7,
+      "degree": 11,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 554.187,
+      "y": -352.213,
+      "z": -23.958
+    },
+    {
+      "id": 46,
+      "url": "https://benchmark.heyblog.local/engineering-22/",
+      "domain": "engineering-22.benchmark.heyblog.local",
+      "title": "Engineering Notes 22",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 4,
+      "degree": 9,
+      "component_id": "engineering",
+      "benchmark_community_label": "Engineering",
+      "x": 536.488,
+      "y": -219.498,
+      "z": -10.669
+    },
+    {
+      "id": 47,
+      "url": "https://benchmark.heyblog.local/design-01/",
+      "domain": "design-01.benchmark.heyblog.local",
+      "title": "Design Notes 01",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 2,
+      "degree": 5,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -570.698,
+      "y": 275.973,
+      "z": -15.539
+    },
+    {
+      "id": 48,
+      "url": "https://benchmark.heyblog.local/design-02/",
+      "domain": "design-02.benchmark.heyblog.local",
+      "title": "Design Notes 02",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 2,
+      "degree": 6,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -453.52,
+      "y": 279.503,
+      "z": -12.521
+    },
+    {
+      "id": 49,
+      "url": "https://benchmark.heyblog.local/design-03/",
+      "domain": "design-03.benchmark.heyblog.local",
+      "title": "Design Notes 03",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -561.402,
+      "y": 370.645,
+      "z": -6.008
+    },
+    {
+      "id": 50,
+      "url": "https://benchmark.heyblog.local/design-04/",
+      "domain": "design-04.benchmark.heyblog.local",
+      "title": "Design Notes 04",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 3,
+      "degree": 5,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -540.85,
+      "y": 202.907,
+      "z": 9.596
+    },
+    {
+      "id": 51,
+      "url": "https://benchmark.heyblog.local/design-05/",
+      "domain": "design-05.benchmark.heyblog.local",
+      "title": "Design Notes 05",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 3,
+      "degree": 5,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -482.696,
+      "y": 326.499,
+      "z": 10.269
+    },
+    {
+      "id": 52,
+      "url": "https://benchmark.heyblog.local/design-06/",
+      "domain": "design-06.benchmark.heyblog.local",
+      "title": "Design Notes 06",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 5,
+      "degree": 7,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -574.155,
+      "y": 306.749,
+      "z": -2.115
+    },
+    {
+      "id": 53,
+      "url": "https://benchmark.heyblog.local/design-07/",
+      "domain": "design-07.benchmark.heyblog.local",
+      "title": "Design Notes 07",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 3,
+      "degree": 7,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -471.145,
+      "y": 242.603,
+      "z": -1.46
+    },
+    {
+      "id": 54,
+      "url": "https://benchmark.heyblog.local/design-08/",
+      "domain": "design-08.benchmark.heyblog.local",
+      "title": "Design Notes 08",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 4,
+      "degree": 6,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -516.807,
+      "y": 387.548,
+      "z": 34.33
+    },
+    {
+      "id": 55,
+      "url": "https://benchmark.heyblog.local/design-09/",
+      "domain": "design-09.benchmark.heyblog.local",
+      "title": "Design Notes 09",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 2,
+      "degree": 5,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -586.781,
+      "y": 232.235,
+      "z": -21.918
+    },
+    {
+      "id": 56,
+      "url": "https://benchmark.heyblog.local/design-10/",
+      "domain": "design-10.benchmark.heyblog.local",
+      "title": "Design Notes 10",
+      "icon_url": null,
+      "incoming_count": 1,
+      "outgoing_count": 3,
+      "degree": 4,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -482.005,
+      "y": 301.943,
+      "z": 4.554
+    },
+    {
+      "id": 57,
+      "url": "https://benchmark.heyblog.local/design-11/",
+      "domain": "design-11.benchmark.heyblog.local",
+      "title": "Design Notes 11",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -560.363,
+      "y": 333.35,
+      "z": 29.597
+    },
+    {
+      "id": 58,
+      "url": "https://benchmark.heyblog.local/design-12/",
+      "domain": "design-12.benchmark.heyblog.local",
+      "title": "Design Notes 12",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 2,
+      "degree": 6,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -509.899,
+      "y": 227.603,
+      "z": -3.746
+    },
+    {
+      "id": 59,
+      "url": "https://benchmark.heyblog.local/design-13/",
+      "domain": "design-13.benchmark.heyblog.local",
+      "title": "Design Notes 13",
+      "icon_url": null,
+      "incoming_count": 7,
+      "outgoing_count": 4,
+      "degree": 11,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -474.537,
+      "y": 366.026,
+      "z": -35.333
+    },
+    {
+      "id": 60,
+      "url": "https://benchmark.heyblog.local/design-14/",
+      "domain": "design-14.benchmark.heyblog.local",
+      "title": "Design Notes 14",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 7,
+      "degree": 9,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -614.325,
+      "y": 278.296,
+      "z": 32.354
+    },
+    {
+      "id": 61,
+      "url": "https://benchmark.heyblog.local/design-15/",
+      "domain": "design-15.benchmark.heyblog.local",
+      "title": "Design Notes 15",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -485.328,
+      "y": 280.356,
+      "z": 27.902
+    },
+    {
+      "id": 62,
+      "url": "https://benchmark.heyblog.local/design-16/",
+      "domain": "design-16.benchmark.heyblog.local",
+      "title": "Design Notes 16",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 3,
+      "degree": 9,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -537.501,
+      "y": 353.946,
+      "z": 8.124
+    },
+    {
+      "id": 63,
+      "url": "https://benchmark.heyblog.local/design-17/",
+      "domain": "design-17.benchmark.heyblog.local",
+      "title": "Design Notes 17",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 3,
+      "degree": 9,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -551.293,
+      "y": 231.393,
+      "z": 31.6
+    },
+    {
+      "id": 64,
+      "url": "https://benchmark.heyblog.local/design-18/",
+      "domain": "design-18.benchmark.heyblog.local",
+      "title": "Design Notes 18",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 4,
+      "degree": 6,
+      "component_id": "design",
+      "benchmark_community_label": "Design",
+      "x": -441.014,
+      "y": 333.51,
+      "z": 15.436
+    },
+    {
+      "id": 65,
+      "url": "https://benchmark.heyblog.local/data-ai-01/",
+      "domain": "data-ai-01.benchmark.heyblog.local",
+      "title": "Data & AI Notes 01",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 5,
+      "degree": 11,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 422.243,
+      "y": 334.624,
+      "z": -11.591
+    },
+    {
+      "id": 66,
+      "url": "https://benchmark.heyblog.local/data-ai-02/",
+      "domain": "data-ai-02.benchmark.heyblog.local",
+      "title": "Data & AI Notes 02",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 5,
+      "degree": 10,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 536.171,
+      "y": 269.594,
+      "z": 1.955
+    },
+    {
+      "id": 67,
+      "url": "https://benchmark.heyblog.local/data-ai-03/",
+      "domain": "data-ai-03.benchmark.heyblog.local",
+      "title": "Data & AI Notes 03",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 6,
+      "degree": 9,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 533.193,
+      "y": 351.058,
+      "z": 9.399
+    },
+    {
+      "id": 68,
+      "url": "https://benchmark.heyblog.local/data-ai-04/",
+      "domain": "data-ai-04.benchmark.heyblog.local",
+      "title": "Data & AI Notes 04",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 6,
+      "degree": 10,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 458.789,
+      "y": 260.219,
+      "z": -29.844
+    },
+    {
+      "id": 69,
+      "url": "https://benchmark.heyblog.local/data-ai-05/",
+      "domain": "data-ai-05.benchmark.heyblog.local",
+      "title": "Data & AI Notes 05",
+      "icon_url": null,
+      "incoming_count": 9,
+      "outgoing_count": 6,
+      "degree": 15,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 611.447,
+      "y": 284.743,
+      "z": -20.898
+    },
+    {
+      "id": 70,
+      "url": "https://benchmark.heyblog.local/data-ai-06/",
+      "domain": "data-ai-06.benchmark.heyblog.local",
+      "title": "Data & AI Notes 06",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 7,
+      "degree": 11,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 461.87,
+      "y": 374.307,
+      "z": -11.953
+    },
+    {
+      "id": 71,
+      "url": "https://benchmark.heyblog.local/data-ai-07/",
+      "domain": "data-ai-07.benchmark.heyblog.local",
+      "title": "Data & AI Notes 07",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 4,
+      "degree": 8,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 516.969,
+      "y": 261.116,
+      "z": 6.55
+    },
+    {
+      "id": 72,
+      "url": "https://benchmark.heyblog.local/data-ai-08/",
+      "domain": "data-ai-08.benchmark.heyblog.local",
+      "title": "Data & AI Notes 08",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 4,
+      "degree": 7,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 567.287,
+      "y": 344.175,
+      "z": -24.876
+    },
+    {
+      "id": 73,
+      "url": "https://benchmark.heyblog.local/data-ai-09/",
+      "domain": "data-ai-09.benchmark.heyblog.local",
+      "title": "Data & AI Notes 09",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 3,
+      "degree": 7,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 451.144,
+      "y": 299.328,
+      "z": 33.496
+    },
+    {
+      "id": 74,
+      "url": "https://benchmark.heyblog.local/data-ai-10/",
+      "domain": "data-ai-10.benchmark.heyblog.local",
+      "title": "Data & AI Notes 10",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 5,
+      "degree": 10,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 588.21,
+      "y": 238.727,
+      "z": -15.243
+    },
+    {
+      "id": 75,
+      "url": "https://benchmark.heyblog.local/data-ai-11/",
+      "domain": "data-ai-11.benchmark.heyblog.local",
+      "title": "Data & AI Notes 11",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 2,
+      "degree": 7,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 510.386,
+      "y": 398.503,
+      "z": 17.685
+    },
+    {
+      "id": 76,
+      "url": "https://benchmark.heyblog.local/data-ai-12/",
+      "domain": "data-ai-12.benchmark.heyblog.local",
+      "title": "Data & AI Notes 12",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 3,
+      "degree": 7,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 497.126,
+      "y": 269.555,
+      "z": -14.242
+    },
+    {
+      "id": 77,
+      "url": "https://benchmark.heyblog.local/data-ai-13/",
+      "domain": "data-ai-13.benchmark.heyblog.local",
+      "title": "Data & AI Notes 13",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 4,
+      "degree": 9,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 572.02,
+      "y": 309.726,
+      "z": 23.079
+    },
+    {
+      "id": 78,
+      "url": "https://benchmark.heyblog.local/data-ai-14/",
+      "domain": "data-ai-14.benchmark.heyblog.local",
+      "title": "Data & AI Notes 14",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 5,
+      "degree": 9,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 456.631,
+      "y": 339.447,
+      "z": -4.464
+    },
+    {
+      "id": 79,
+      "url": "https://benchmark.heyblog.local/data-ai-15/",
+      "domain": "data-ai-15.benchmark.heyblog.local",
+      "title": "Data & AI Notes 15",
+      "icon_url": null,
+      "incoming_count": 7,
+      "outgoing_count": 5,
+      "degree": 12,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 541.957,
+      "y": 221.388,
+      "z": -13.295
+    },
+    {
+      "id": 80,
+      "url": "https://benchmark.heyblog.local/data-ai-16/",
+      "domain": "data-ai-16.benchmark.heyblog.local",
+      "title": "Data & AI Notes 16",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 4,
+      "degree": 7,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 567.816,
+      "y": 394.305,
+      "z": -35.145
+    },
+    {
+      "id": 81,
+      "url": "https://benchmark.heyblog.local/data-ai-17/",
+      "domain": "data-ai-17.benchmark.heyblog.local",
+      "title": "Data & AI Notes 17",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 5,
+      "degree": 11,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 479.297,
+      "y": 284.684,
+      "z": -0.06
+    },
+    {
+      "id": 82,
+      "url": "https://benchmark.heyblog.local/data-ai-18/",
+      "domain": "data-ai-18.benchmark.heyblog.local",
+      "title": "Data & AI Notes 18",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 3,
+      "degree": 6,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 568.43,
+      "y": 280.559,
+      "z": 3.997
+    },
+    {
+      "id": 83,
+      "url": "https://benchmark.heyblog.local/data-ai-19/",
+      "domain": "data-ai-19.benchmark.heyblog.local",
+      "title": "Data & AI Notes 19",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 6,
+      "degree": 10,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 487.855,
+      "y": 366.981,
+      "z": 33.056
+    },
+    {
+      "id": 84,
+      "url": "https://benchmark.heyblog.local/data-ai-20/",
+      "domain": "data-ai-20.benchmark.heyblog.local",
+      "title": "Data & AI Notes 20",
+      "icon_url": null,
+      "incoming_count": 6,
+      "outgoing_count": 3,
+      "degree": 9,
+      "component_id": "data-ai",
+      "benchmark_community_label": "Data & AI",
+      "x": 493.239,
+      "y": 211.673,
+      "z": 14.359
+    },
+    {
+      "id": 85,
+      "url": "https://benchmark.heyblog.local/culture-01/",
+      "domain": "culture-01.benchmark.heyblog.local",
+      "title": "Culture Notes 01",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 4,
+      "degree": 7,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 89.757,
+      "y": 93.193,
+      "z": 513.975
+    },
+    {
+      "id": 86,
+      "url": "https://benchmark.heyblog.local/culture-02/",
+      "domain": "culture-02.benchmark.heyblog.local",
+      "title": "Culture Notes 02",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 2,
+      "degree": 5,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -40.174,
+      "y": 48.422,
+      "z": 530.82
+    },
+    {
+      "id": 87,
+      "url": "https://benchmark.heyblog.local/culture-03/",
+      "domain": "culture-03.benchmark.heyblog.local",
+      "title": "Culture Notes 03",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 3,
+      "degree": 6,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 31.055,
+      "y": -3.269,
+      "z": 521.511
+    },
+    {
+      "id": 88,
+      "url": "https://benchmark.heyblog.local/culture-04/",
+      "domain": "culture-04.benchmark.heyblog.local",
+      "title": "Culture Notes 04",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 1,
+      "degree": 3,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 8.33,
+      "y": 109.602,
+      "z": 535.363
+    },
+    {
+      "id": 89,
+      "url": "https://benchmark.heyblog.local/culture-05/",
+      "domain": "culture-05.benchmark.heyblog.local",
+      "title": "Culture Notes 05",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 3,
+      "degree": 7,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -64.94,
+      "y": -15.824,
+      "z": 551.158
+    },
+    {
+      "id": 90,
+      "url": "https://benchmark.heyblog.local/culture-06/",
+      "domain": "culture-06.benchmark.heyblog.local",
+      "title": "Culture Notes 06",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 2,
+      "degree": 5,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 94.81,
+      "y": 37.006,
+      "z": 545.355
+    },
+    {
+      "id": 91,
+      "url": "https://benchmark.heyblog.local/culture-07/",
+      "domain": "culture-07.benchmark.heyblog.local",
+      "title": "Culture Notes 07",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 3,
+      "degree": 7,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -26.072,
+      "y": 65.444,
+      "z": 494.282
+    },
+    {
+      "id": 92,
+      "url": "https://benchmark.heyblog.local/culture-08/",
+      "domain": "culture-08.benchmark.heyblog.local",
+      "title": "Culture Notes 08",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 4,
+      "degree": 7,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 3.275,
+      "y": -18.463,
+      "z": 497.011
+    },
+    {
+      "id": 93,
+      "url": "https://benchmark.heyblog.local/culture-09/",
+      "domain": "culture-09.benchmark.heyblog.local",
+      "title": "Culture Notes 09",
+      "icon_url": null,
+      "incoming_count": 4,
+      "outgoing_count": 3,
+      "degree": 7,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 42.82,
+      "y": 92.343,
+      "z": 505.261
+    },
+    {
+      "id": 94,
+      "url": "https://benchmark.heyblog.local/culture-10/",
+      "domain": "culture-10.benchmark.heyblog.local",
+      "title": "Culture Notes 10",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 3,
+      "degree": 6,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -91.729,
+      "y": 26.746,
+      "z": 492.576
+    },
+    {
+      "id": 95,
+      "url": "https://benchmark.heyblog.local/culture-11/",
+      "domain": "culture-11.benchmark.heyblog.local",
+      "title": "Culture Notes 11",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 5,
+      "degree": 7,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 80.365,
+      "y": -14.76,
+      "z": 554.686
+    },
+    {
+      "id": 96,
+      "url": "https://benchmark.heyblog.local/culture-12/",
+      "domain": "culture-12.benchmark.heyblog.local",
+      "title": "Culture Notes 12",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 5,
+      "degree": 8,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -8.027,
+      "y": 74.124,
+      "z": 509.271
+    },
+    {
+      "id": 97,
+      "url": "https://benchmark.heyblog.local/culture-13/",
+      "domain": "culture-13.benchmark.heyblog.local",
+      "title": "Culture Notes 13",
+      "icon_url": null,
+      "incoming_count": 5,
+      "outgoing_count": 1,
+      "degree": 6,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -25.844,
+      "y": -6.138,
+      "z": 511.06
+    },
+    {
+      "id": 98,
+      "url": "https://benchmark.heyblog.local/culture-14/",
+      "domain": "culture-14.benchmark.heyblog.local",
+      "title": "Culture Notes 14",
+      "icon_url": null,
+      "incoming_count": 3,
+      "outgoing_count": 2,
+      "degree": 5,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 70.956,
+      "y": 63.402,
+      "z": 532.942
+    },
+    {
+      "id": 99,
+      "url": "https://benchmark.heyblog.local/culture-15/",
+      "domain": "culture-15.benchmark.heyblog.local",
+      "title": "Culture Notes 15",
+      "icon_url": null,
+      "incoming_count": 1,
+      "outgoing_count": 4,
+      "degree": 5,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": -82.37,
+      "y": 77.086,
+      "z": 554.04
+    },
+    {
+      "id": 100,
+      "url": "https://benchmark.heyblog.local/culture-16/",
+      "domain": "culture-16.benchmark.heyblog.local",
+      "title": "Culture Notes 16",
+      "icon_url": null,
+      "incoming_count": 2,
+      "outgoing_count": 3,
+      "degree": 5,
+      "component_id": "culture",
+      "benchmark_community_label": "Culture",
+      "x": 37.575,
+      "y": -47.38,
+      "z": 518.86
+    }
+  ],
+  "edges": [
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 2,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-001"
+    },
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 3,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-03/",
+      "id": "benchmark-edge-002"
+    },
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 7,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-07/",
+      "id": "benchmark-edge-003"
+    },
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-004"
+    },
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 10,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-10/",
+      "id": "benchmark-edge-005"
+    },
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 19,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-19/",
+      "id": "benchmark-edge-006"
+    },
+    {
+      "from_blog_id": 1,
+      "to_blog_id": 79,
+      "link_text": "community bridge",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-007"
+    },
+    {
+      "from_blog_id": 2,
+      "to_blog_id": 3,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-03/",
+      "id": "benchmark-edge-008"
+    },
+    {
+      "from_blog_id": 2,
+      "to_blog_id": 14,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-14/",
+      "id": "benchmark-edge-009"
+    },
+    {
+      "from_blog_id": 2,
+      "to_blog_id": 18,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-18/",
+      "id": "benchmark-edge-010"
+    },
+    {
+      "from_blog_id": 2,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-011"
+    },
+    {
+      "from_blog_id": 2,
+      "to_blog_id": 24,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-24/",
+      "id": "benchmark-edge-012"
+    },
+    {
+      "from_blog_id": 3,
+      "to_blog_id": 4,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-013"
+    },
+    {
+      "from_blog_id": 3,
+      "to_blog_id": 5,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-05/",
+      "id": "benchmark-edge-014"
+    },
+    {
+      "from_blog_id": 3,
+      "to_blog_id": 14,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-14/",
+      "id": "benchmark-edge-015"
+    },
+    {
+      "from_blog_id": 3,
+      "to_blog_id": 17,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-17/",
+      "id": "benchmark-edge-016"
+    },
+    {
+      "from_blog_id": 4,
+      "to_blog_id": 1,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-01/",
+      "id": "benchmark-edge-017"
+    },
+    {
+      "from_blog_id": 4,
+      "to_blog_id": 5,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-05/",
+      "id": "benchmark-edge-018"
+    },
+    {
+      "from_blog_id": 4,
+      "to_blog_id": 20,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-019"
+    },
+    {
+      "from_blog_id": 4,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-020"
+    },
+    {
+      "from_blog_id": 4,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-021"
+    },
+    {
+      "from_blog_id": 5,
+      "to_blog_id": 2,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-022"
+    },
+    {
+      "from_blog_id": 5,
+      "to_blog_id": 6,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-06/",
+      "id": "benchmark-edge-023"
+    },
+    {
+      "from_blog_id": 5,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-024"
+    },
+    {
+      "from_blog_id": 5,
+      "to_blog_id": 11,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-11/",
+      "id": "benchmark-edge-025"
+    },
+    {
+      "from_blog_id": 6,
+      "to_blog_id": 2,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-026"
+    },
+    {
+      "from_blog_id": 6,
+      "to_blog_id": 5,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-05/",
+      "id": "benchmark-edge-027"
+    },
+    {
+      "from_blog_id": 6,
+      "to_blog_id": 7,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-07/",
+      "id": "benchmark-edge-028"
+    },
+    {
+      "from_blog_id": 6,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-029"
+    },
+    {
+      "from_blog_id": 6,
+      "to_blog_id": 9,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-09/",
+      "id": "benchmark-edge-030"
+    },
+    {
+      "from_blog_id": 6,
+      "to_blog_id": 18,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-18/",
+      "id": "benchmark-edge-031"
+    },
+    {
+      "from_blog_id": 7,
+      "to_blog_id": 8,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-032"
+    },
+    {
+      "from_blog_id": 7,
+      "to_blog_id": 12,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-12/",
+      "id": "benchmark-edge-033"
+    },
+    {
+      "from_blog_id": 7,
+      "to_blog_id": 13,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-13/",
+      "id": "benchmark-edge-034"
+    },
+    {
+      "from_blog_id": 7,
+      "to_blog_id": 14,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-14/",
+      "id": "benchmark-edge-035"
+    },
+    {
+      "from_blog_id": 8,
+      "to_blog_id": 2,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-036"
+    },
+    {
+      "from_blog_id": 8,
+      "to_blog_id": 9,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-09/",
+      "id": "benchmark-edge-037"
+    },
+    {
+      "from_blog_id": 8,
+      "to_blog_id": 10,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-10/",
+      "id": "benchmark-edge-038"
+    },
+    {
+      "from_blog_id": 8,
+      "to_blog_id": 18,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-18/",
+      "id": "benchmark-edge-039"
+    },
+    {
+      "from_blog_id": 9,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-040"
+    },
+    {
+      "from_blog_id": 9,
+      "to_blog_id": 5,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-05/",
+      "id": "benchmark-edge-041"
+    },
+    {
+      "from_blog_id": 9,
+      "to_blog_id": 10,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-10/",
+      "id": "benchmark-edge-042"
+    },
+    {
+      "from_blog_id": 9,
+      "to_blog_id": 22,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-22/",
+      "id": "benchmark-edge-043"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 2,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-044"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 3,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-03/",
+      "id": "benchmark-edge-045"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-046"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 11,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-11/",
+      "id": "benchmark-edge-047"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 18,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-18/",
+      "id": "benchmark-edge-048"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-049"
+    },
+    {
+      "from_blog_id": 10,
+      "to_blog_id": 23,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-23/",
+      "id": "benchmark-edge-050"
+    },
+    {
+      "from_blog_id": 11,
+      "to_blog_id": 12,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-12/",
+      "id": "benchmark-edge-051"
+    },
+    {
+      "from_blog_id": 11,
+      "to_blog_id": 15,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-15/",
+      "id": "benchmark-edge-052"
+    },
+    {
+      "from_blog_id": 11,
+      "to_blog_id": 18,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-18/",
+      "id": "benchmark-edge-053"
+    },
+    {
+      "from_blog_id": 11,
+      "to_blog_id": 20,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-054"
+    },
+    {
+      "from_blog_id": 11,
+      "to_blog_id": 23,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-23/",
+      "id": "benchmark-edge-055"
+    },
+    {
+      "from_blog_id": 11,
+      "to_blog_id": 24,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-24/",
+      "id": "benchmark-edge-056"
+    },
+    {
+      "from_blog_id": 12,
+      "to_blog_id": 6,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-06/",
+      "id": "benchmark-edge-057"
+    },
+    {
+      "from_blog_id": 12,
+      "to_blog_id": 9,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-09/",
+      "id": "benchmark-edge-058"
+    },
+    {
+      "from_blog_id": 12,
+      "to_blog_id": 13,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-13/",
+      "id": "benchmark-edge-059"
+    },
+    {
+      "from_blog_id": 12,
+      "to_blog_id": 17,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-17/",
+      "id": "benchmark-edge-060"
+    },
+    {
+      "from_blog_id": 13,
+      "to_blog_id": 1,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-01/",
+      "id": "benchmark-edge-061"
+    },
+    {
+      "from_blog_id": 13,
+      "to_blog_id": 3,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-03/",
+      "id": "benchmark-edge-062"
+    },
+    {
+      "from_blog_id": 13,
+      "to_blog_id": 14,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-14/",
+      "id": "benchmark-edge-063"
+    },
+    {
+      "from_blog_id": 13,
+      "to_blog_id": 19,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-19/",
+      "id": "benchmark-edge-064"
+    },
+    {
+      "from_blog_id": 13,
+      "to_blog_id": 20,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-065"
+    },
+    {
+      "from_blog_id": 14,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-066"
+    },
+    {
+      "from_blog_id": 14,
+      "to_blog_id": 6,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-06/",
+      "id": "benchmark-edge-067"
+    },
+    {
+      "from_blog_id": 14,
+      "to_blog_id": 11,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-11/",
+      "id": "benchmark-edge-068"
+    },
+    {
+      "from_blog_id": 14,
+      "to_blog_id": 15,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-15/",
+      "id": "benchmark-edge-069"
+    },
+    {
+      "from_blog_id": 14,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-070"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 1,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-01/",
+      "id": "benchmark-edge-071"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 2,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-072"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-073"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-074"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 13,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-13/",
+      "id": "benchmark-edge-075"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 16,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-16/",
+      "id": "benchmark-edge-076"
+    },
+    {
+      "from_blog_id": 15,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-077"
+    },
+    {
+      "from_blog_id": 16,
+      "to_blog_id": 6,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-06/",
+      "id": "benchmark-edge-078"
+    },
+    {
+      "from_blog_id": 16,
+      "to_blog_id": 7,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-07/",
+      "id": "benchmark-edge-079"
+    },
+    {
+      "from_blog_id": 16,
+      "to_blog_id": 12,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-12/",
+      "id": "benchmark-edge-080"
+    },
+    {
+      "from_blog_id": 16,
+      "to_blog_id": 13,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-13/",
+      "id": "benchmark-edge-081"
+    },
+    {
+      "from_blog_id": 16,
+      "to_blog_id": 17,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-17/",
+      "id": "benchmark-edge-082"
+    },
+    {
+      "from_blog_id": 17,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-083"
+    },
+    {
+      "from_blog_id": 17,
+      "to_blog_id": 11,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-11/",
+      "id": "benchmark-edge-084"
+    },
+    {
+      "from_blog_id": 17,
+      "to_blog_id": 15,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-15/",
+      "id": "benchmark-edge-085"
+    },
+    {
+      "from_blog_id": 17,
+      "to_blog_id": 18,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-18/",
+      "id": "benchmark-edge-086"
+    },
+    {
+      "from_blog_id": 17,
+      "to_blog_id": 20,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-087"
+    },
+    {
+      "from_blog_id": 18,
+      "to_blog_id": 1,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-01/",
+      "id": "benchmark-edge-088"
+    },
+    {
+      "from_blog_id": 18,
+      "to_blog_id": 19,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-19/",
+      "id": "benchmark-edge-089"
+    },
+    {
+      "from_blog_id": 18,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-090"
+    },
+    {
+      "from_blog_id": 18,
+      "to_blog_id": 22,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-22/",
+      "id": "benchmark-edge-091"
+    },
+    {
+      "from_blog_id": 18,
+      "to_blog_id": 23,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-23/",
+      "id": "benchmark-edge-092"
+    },
+    {
+      "from_blog_id": 19,
+      "to_blog_id": 3,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-03/",
+      "id": "benchmark-edge-093"
+    },
+    {
+      "from_blog_id": 19,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-094"
+    },
+    {
+      "from_blog_id": 19,
+      "to_blog_id": 6,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-06/",
+      "id": "benchmark-edge-095"
+    },
+    {
+      "from_blog_id": 19,
+      "to_blog_id": 7,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-07/",
+      "id": "benchmark-edge-096"
+    },
+    {
+      "from_blog_id": 19,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-097"
+    },
+    {
+      "from_blog_id": 19,
+      "to_blog_id": 20,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-098"
+    },
+    {
+      "from_blog_id": 20,
+      "to_blog_id": 1,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-01/",
+      "id": "benchmark-edge-099"
+    },
+    {
+      "from_blog_id": 20,
+      "to_blog_id": 21,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-100"
+    },
+    {
+      "from_blog_id": 21,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-101"
+    },
+    {
+      "from_blog_id": 21,
+      "to_blog_id": 17,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-17/",
+      "id": "benchmark-edge-102"
+    },
+    {
+      "from_blog_id": 21,
+      "to_blog_id": 22,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-22/",
+      "id": "benchmark-edge-103"
+    },
+    {
+      "from_blog_id": 21,
+      "to_blog_id": 24,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-24/",
+      "id": "benchmark-edge-104"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 2,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-02/",
+      "id": "benchmark-edge-105"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 8,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-08/",
+      "id": "benchmark-edge-106"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 11,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-11/",
+      "id": "benchmark-edge-107"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 13,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-13/",
+      "id": "benchmark-edge-108"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 17,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-17/",
+      "id": "benchmark-edge-109"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-110"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 23,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-23/",
+      "id": "benchmark-edge-111"
+    },
+    {
+      "from_blog_id": 22,
+      "to_blog_id": 24,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-24/",
+      "id": "benchmark-edge-112"
+    },
+    {
+      "from_blog_id": 23,
+      "to_blog_id": 6,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-06/",
+      "id": "benchmark-edge-113"
+    },
+    {
+      "from_blog_id": 23,
+      "to_blog_id": 20,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-114"
+    },
+    {
+      "from_blog_id": 23,
+      "to_blog_id": 21,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-21/",
+      "id": "benchmark-edge-115"
+    },
+    {
+      "from_blog_id": 23,
+      "to_blog_id": 24,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-24/",
+      "id": "benchmark-edge-116"
+    },
+    {
+      "from_blog_id": 24,
+      "to_blog_id": 1,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-01/",
+      "id": "benchmark-edge-117"
+    },
+    {
+      "from_blog_id": 24,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-118"
+    },
+    {
+      "from_blog_id": 24,
+      "to_blog_id": 9,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-09/",
+      "id": "benchmark-edge-119"
+    },
+    {
+      "from_blog_id": 24,
+      "to_blog_id": 15,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-15/",
+      "id": "benchmark-edge-120"
+    },
+    {
+      "from_blog_id": 24,
+      "to_blog_id": 20,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-20/",
+      "id": "benchmark-edge-121"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 24,
+      "link_text": "community bridge",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-24/",
+      "id": "benchmark-edge-122"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 26,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-02/",
+      "id": "benchmark-edge-123"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 28,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-04/",
+      "id": "benchmark-edge-124"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 39,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-15/",
+      "id": "benchmark-edge-125"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 43,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-19/",
+      "id": "benchmark-edge-126"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-127"
+    },
+    {
+      "from_blog_id": 25,
+      "to_blog_id": 46,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-22/",
+      "id": "benchmark-edge-128"
+    },
+    {
+      "from_blog_id": 26,
+      "to_blog_id": 27,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-129"
+    },
+    {
+      "from_blog_id": 27,
+      "to_blog_id": 28,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-04/",
+      "id": "benchmark-edge-130"
+    },
+    {
+      "from_blog_id": 27,
+      "to_blog_id": 33,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-09/",
+      "id": "benchmark-edge-131"
+    },
+    {
+      "from_blog_id": 27,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-132"
+    },
+    {
+      "from_blog_id": 27,
+      "to_blog_id": 45,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-21/",
+      "id": "benchmark-edge-133"
+    },
+    {
+      "from_blog_id": 28,
+      "to_blog_id": 29,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-05/",
+      "id": "benchmark-edge-134"
+    },
+    {
+      "from_blog_id": 28,
+      "to_blog_id": 30,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-06/",
+      "id": "benchmark-edge-135"
+    },
+    {
+      "from_blog_id": 28,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-136"
+    },
+    {
+      "from_blog_id": 29,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-137"
+    },
+    {
+      "from_blog_id": 29,
+      "to_blog_id": 30,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-06/",
+      "id": "benchmark-edge-138"
+    },
+    {
+      "from_blog_id": 29,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-139"
+    },
+    {
+      "from_blog_id": 29,
+      "to_blog_id": 37,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-13/",
+      "id": "benchmark-edge-140"
+    },
+    {
+      "from_blog_id": 29,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-141"
+    },
+    {
+      "from_blog_id": 29,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-142"
+    },
+    {
+      "from_blog_id": 30,
+      "to_blog_id": 26,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-02/",
+      "id": "benchmark-edge-143"
+    },
+    {
+      "from_blog_id": 30,
+      "to_blog_id": 31,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-07/",
+      "id": "benchmark-edge-144"
+    },
+    {
+      "from_blog_id": 30,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-145"
+    },
+    {
+      "from_blog_id": 30,
+      "to_blog_id": 37,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-13/",
+      "id": "benchmark-edge-146"
+    },
+    {
+      "from_blog_id": 31,
+      "to_blog_id": 32,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-08/",
+      "id": "benchmark-edge-147"
+    },
+    {
+      "from_blog_id": 31,
+      "to_blog_id": 40,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-16/",
+      "id": "benchmark-edge-148"
+    },
+    {
+      "from_blog_id": 31,
+      "to_blog_id": 45,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-21/",
+      "id": "benchmark-edge-149"
+    },
+    {
+      "from_blog_id": 32,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-150"
+    },
+    {
+      "from_blog_id": 32,
+      "to_blog_id": 31,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-07/",
+      "id": "benchmark-edge-151"
+    },
+    {
+      "from_blog_id": 32,
+      "to_blog_id": 33,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-09/",
+      "id": "benchmark-edge-152"
+    },
+    {
+      "from_blog_id": 32,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-153"
+    },
+    {
+      "from_blog_id": 32,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-154"
+    },
+    {
+      "from_blog_id": 32,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-155"
+    },
+    {
+      "from_blog_id": 33,
+      "to_blog_id": 34,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-156"
+    },
+    {
+      "from_blog_id": 33,
+      "to_blog_id": 35,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-11/",
+      "id": "benchmark-edge-157"
+    },
+    {
+      "from_blog_id": 33,
+      "to_blog_id": 37,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-13/",
+      "id": "benchmark-edge-158"
+    },
+    {
+      "from_blog_id": 33,
+      "to_blog_id": 46,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-22/",
+      "id": "benchmark-edge-159"
+    },
+    {
+      "from_blog_id": 34,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-160"
+    },
+    {
+      "from_blog_id": 34,
+      "to_blog_id": 31,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-07/",
+      "id": "benchmark-edge-161"
+    },
+    {
+      "from_blog_id": 34,
+      "to_blog_id": 35,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-11/",
+      "id": "benchmark-edge-162"
+    },
+    {
+      "from_blog_id": 35,
+      "to_blog_id": 29,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-05/",
+      "id": "benchmark-edge-163"
+    },
+    {
+      "from_blog_id": 35,
+      "to_blog_id": 36,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-164"
+    },
+    {
+      "from_blog_id": 35,
+      "to_blog_id": 59,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-165"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 25,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-01/",
+      "id": "benchmark-edge-166"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 31,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-07/",
+      "id": "benchmark-edge-167"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-168"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 37,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-13/",
+      "id": "benchmark-edge-169"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 39,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-15/",
+      "id": "benchmark-edge-170"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 43,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-19/",
+      "id": "benchmark-edge-171"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-172"
+    },
+    {
+      "from_blog_id": 36,
+      "to_blog_id": 46,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-22/",
+      "id": "benchmark-edge-173"
+    },
+    {
+      "from_blog_id": 37,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-174"
+    },
+    {
+      "from_blog_id": 37,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-175"
+    },
+    {
+      "from_blog_id": 37,
+      "to_blog_id": 38,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-14/",
+      "id": "benchmark-edge-176"
+    },
+    {
+      "from_blog_id": 37,
+      "to_blog_id": 40,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-16/",
+      "id": "benchmark-edge-177"
+    },
+    {
+      "from_blog_id": 38,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-178"
+    },
+    {
+      "from_blog_id": 38,
+      "to_blog_id": 39,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-15/",
+      "id": "benchmark-edge-179"
+    },
+    {
+      "from_blog_id": 38,
+      "to_blog_id": 41,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-17/",
+      "id": "benchmark-edge-180"
+    },
+    {
+      "from_blog_id": 38,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-181"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 26,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-02/",
+      "id": "benchmark-edge-182"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-183"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 28,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-04/",
+      "id": "benchmark-edge-184"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 29,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-05/",
+      "id": "benchmark-edge-185"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-186"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 40,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-16/",
+      "id": "benchmark-edge-187"
+    },
+    {
+      "from_blog_id": 39,
+      "to_blog_id": 46,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-22/",
+      "id": "benchmark-edge-188"
+    },
+    {
+      "from_blog_id": 40,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-189"
+    },
+    {
+      "from_blog_id": 40,
+      "to_blog_id": 32,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-08/",
+      "id": "benchmark-edge-190"
+    },
+    {
+      "from_blog_id": 40,
+      "to_blog_id": 33,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-09/",
+      "id": "benchmark-edge-191"
+    },
+    {
+      "from_blog_id": 40,
+      "to_blog_id": 35,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-11/",
+      "id": "benchmark-edge-192"
+    },
+    {
+      "from_blog_id": 40,
+      "to_blog_id": 41,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-17/",
+      "id": "benchmark-edge-193"
+    },
+    {
+      "from_blog_id": 40,
+      "to_blog_id": 43,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-19/",
+      "id": "benchmark-edge-194"
+    },
+    {
+      "from_blog_id": 41,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-195"
+    },
+    {
+      "from_blog_id": 41,
+      "to_blog_id": 39,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-15/",
+      "id": "benchmark-edge-196"
+    },
+    {
+      "from_blog_id": 41,
+      "to_blog_id": 42,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-18/",
+      "id": "benchmark-edge-197"
+    },
+    {
+      "from_blog_id": 41,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-198"
+    },
+    {
+      "from_blog_id": 42,
+      "to_blog_id": 28,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-04/",
+      "id": "benchmark-edge-199"
+    },
+    {
+      "from_blog_id": 42,
+      "to_blog_id": 31,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-07/",
+      "id": "benchmark-edge-200"
+    },
+    {
+      "from_blog_id": 42,
+      "to_blog_id": 41,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-17/",
+      "id": "benchmark-edge-201"
+    },
+    {
+      "from_blog_id": 42,
+      "to_blog_id": 43,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-19/",
+      "id": "benchmark-edge-202"
+    },
+    {
+      "from_blog_id": 42,
+      "to_blog_id": 44,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-203"
+    },
+    {
+      "from_blog_id": 43,
+      "to_blog_id": 27,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-03/",
+      "id": "benchmark-edge-204"
+    },
+    {
+      "from_blog_id": 43,
+      "to_blog_id": 32,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-08/",
+      "id": "benchmark-edge-205"
+    },
+    {
+      "from_blog_id": 43,
+      "to_blog_id": 35,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-11/",
+      "id": "benchmark-edge-206"
+    },
+    {
+      "from_blog_id": 43,
+      "to_blog_id": 44,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-20/",
+      "id": "benchmark-edge-207"
+    },
+    {
+      "from_blog_id": 43,
+      "to_blog_id": 45,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-21/",
+      "id": "benchmark-edge-208"
+    },
+    {
+      "from_blog_id": 43,
+      "to_blog_id": 77,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-13/",
+      "id": "benchmark-edge-209"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 4,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/indie-web-04/",
+      "id": "benchmark-edge-210"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 28,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-04/",
+      "id": "benchmark-edge-211"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 31,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-07/",
+      "id": "benchmark-edge-212"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-213"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 39,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-15/",
+      "id": "benchmark-edge-214"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 43,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-19/",
+      "id": "benchmark-edge-215"
+    },
+    {
+      "from_blog_id": 44,
+      "to_blog_id": 45,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-21/",
+      "id": "benchmark-edge-216"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 26,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-02/",
+      "id": "benchmark-edge-217"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 30,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-06/",
+      "id": "benchmark-edge-218"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 32,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-08/",
+      "id": "benchmark-edge-219"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 33,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-09/",
+      "id": "benchmark-edge-220"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 35,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-11/",
+      "id": "benchmark-edge-221"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 36,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-12/",
+      "id": "benchmark-edge-222"
+    },
+    {
+      "from_blog_id": 45,
+      "to_blog_id": 46,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-22/",
+      "id": "benchmark-edge-223"
+    },
+    {
+      "from_blog_id": 46,
+      "to_blog_id": 25,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-01/",
+      "id": "benchmark-edge-224"
+    },
+    {
+      "from_blog_id": 46,
+      "to_blog_id": 35,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-11/",
+      "id": "benchmark-edge-225"
+    },
+    {
+      "from_blog_id": 46,
+      "to_blog_id": 41,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-17/",
+      "id": "benchmark-edge-226"
+    },
+    {
+      "from_blog_id": 46,
+      "to_blog_id": 42,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-18/",
+      "id": "benchmark-edge-227"
+    },
+    {
+      "from_blog_id": 47,
+      "to_blog_id": 48,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-02/",
+      "id": "benchmark-edge-228"
+    },
+    {
+      "from_blog_id": 47,
+      "to_blog_id": 77,
+      "link_text": "community bridge",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-13/",
+      "id": "benchmark-edge-229"
+    },
+    {
+      "from_blog_id": 48,
+      "to_blog_id": 49,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-03/",
+      "id": "benchmark-edge-230"
+    },
+    {
+      "from_blog_id": 48,
+      "to_blog_id": 61,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-15/",
+      "id": "benchmark-edge-231"
+    },
+    {
+      "from_blog_id": 49,
+      "to_blog_id": 50,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-04/",
+      "id": "benchmark-edge-232"
+    },
+    {
+      "from_blog_id": 49,
+      "to_blog_id": 55,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-09/",
+      "id": "benchmark-edge-233"
+    },
+    {
+      "from_blog_id": 49,
+      "to_blog_id": 58,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-12/",
+      "id": "benchmark-edge-234"
+    },
+    {
+      "from_blog_id": 49,
+      "to_blog_id": 62,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-16/",
+      "id": "benchmark-edge-235"
+    },
+    {
+      "from_blog_id": 50,
+      "to_blog_id": 29,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-05/",
+      "id": "benchmark-edge-236"
+    },
+    {
+      "from_blog_id": 50,
+      "to_blog_id": 51,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-05/",
+      "id": "benchmark-edge-237"
+    },
+    {
+      "from_blog_id": 50,
+      "to_blog_id": 57,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-11/",
+      "id": "benchmark-edge-238"
+    },
+    {
+      "from_blog_id": 51,
+      "to_blog_id": 52,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-06/",
+      "id": "benchmark-edge-239"
+    },
+    {
+      "from_blog_id": 51,
+      "to_blog_id": 60,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-14/",
+      "id": "benchmark-edge-240"
+    },
+    {
+      "from_blog_id": 51,
+      "to_blog_id": 62,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-16/",
+      "id": "benchmark-edge-241"
+    },
+    {
+      "from_blog_id": 52,
+      "to_blog_id": 48,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-02/",
+      "id": "benchmark-edge-242"
+    },
+    {
+      "from_blog_id": 52,
+      "to_blog_id": 53,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-07/",
+      "id": "benchmark-edge-243"
+    },
+    {
+      "from_blog_id": 52,
+      "to_blog_id": 58,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-12/",
+      "id": "benchmark-edge-244"
+    },
+    {
+      "from_blog_id": 52,
+      "to_blog_id": 59,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-245"
+    },
+    {
+      "from_blog_id": 52,
+      "to_blog_id": 63,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-17/",
+      "id": "benchmark-edge-246"
+    },
+    {
+      "from_blog_id": 53,
+      "to_blog_id": 47,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-01/",
+      "id": "benchmark-edge-247"
+    },
+    {
+      "from_blog_id": 53,
+      "to_blog_id": 54,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-08/",
+      "id": "benchmark-edge-248"
+    },
+    {
+      "from_blog_id": 53,
+      "to_blog_id": 57,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-11/",
+      "id": "benchmark-edge-249"
+    },
+    {
+      "from_blog_id": 54,
+      "to_blog_id": 52,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-06/",
+      "id": "benchmark-edge-250"
+    },
+    {
+      "from_blog_id": 54,
+      "to_blog_id": 55,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-09/",
+      "id": "benchmark-edge-251"
+    },
+    {
+      "from_blog_id": 54,
+      "to_blog_id": 63,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-17/",
+      "id": "benchmark-edge-252"
+    },
+    {
+      "from_blog_id": 54,
+      "to_blog_id": 70,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-06/",
+      "id": "benchmark-edge-253"
+    },
+    {
+      "from_blog_id": 55,
+      "to_blog_id": 50,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-04/",
+      "id": "benchmark-edge-254"
+    },
+    {
+      "from_blog_id": 55,
+      "to_blog_id": 56,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-10/",
+      "id": "benchmark-edge-255"
+    },
+    {
+      "from_blog_id": 56,
+      "to_blog_id": 49,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-03/",
+      "id": "benchmark-edge-256"
+    },
+    {
+      "from_blog_id": 56,
+      "to_blog_id": 57,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-11/",
+      "id": "benchmark-edge-257"
+    },
+    {
+      "from_blog_id": 56,
+      "to_blog_id": 62,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-16/",
+      "id": "benchmark-edge-258"
+    },
+    {
+      "from_blog_id": 57,
+      "to_blog_id": 58,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-12/",
+      "id": "benchmark-edge-259"
+    },
+    {
+      "from_blog_id": 57,
+      "to_blog_id": 59,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-260"
+    },
+    {
+      "from_blog_id": 57,
+      "to_blog_id": 61,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-15/",
+      "id": "benchmark-edge-261"
+    },
+    {
+      "from_blog_id": 57,
+      "to_blog_id": 62,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-16/",
+      "id": "benchmark-edge-262"
+    },
+    {
+      "from_blog_id": 58,
+      "to_blog_id": 53,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-07/",
+      "id": "benchmark-edge-263"
+    },
+    {
+      "from_blog_id": 58,
+      "to_blog_id": 59,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-264"
+    },
+    {
+      "from_blog_id": 59,
+      "to_blog_id": 48,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-02/",
+      "id": "benchmark-edge-265"
+    },
+    {
+      "from_blog_id": 59,
+      "to_blog_id": 53,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-07/",
+      "id": "benchmark-edge-266"
+    },
+    {
+      "from_blog_id": 59,
+      "to_blog_id": 60,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-14/",
+      "id": "benchmark-edge-267"
+    },
+    {
+      "from_blog_id": 59,
+      "to_blog_id": 63,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-17/",
+      "id": "benchmark-edge-268"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 47,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-01/",
+      "id": "benchmark-edge-269"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 48,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-02/",
+      "id": "benchmark-edge-270"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 49,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-03/",
+      "id": "benchmark-edge-271"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 57,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-11/",
+      "id": "benchmark-edge-272"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 61,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-15/",
+      "id": "benchmark-edge-273"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 62,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-16/",
+      "id": "benchmark-edge-274"
+    },
+    {
+      "from_blog_id": 60,
+      "to_blog_id": 63,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-17/",
+      "id": "benchmark-edge-275"
+    },
+    {
+      "from_blog_id": 61,
+      "to_blog_id": 51,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-05/",
+      "id": "benchmark-edge-276"
+    },
+    {
+      "from_blog_id": 61,
+      "to_blog_id": 54,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-08/",
+      "id": "benchmark-edge-277"
+    },
+    {
+      "from_blog_id": 61,
+      "to_blog_id": 59,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-278"
+    },
+    {
+      "from_blog_id": 61,
+      "to_blog_id": 62,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-16/",
+      "id": "benchmark-edge-279"
+    },
+    {
+      "from_blog_id": 62,
+      "to_blog_id": 53,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-07/",
+      "id": "benchmark-edge-280"
+    },
+    {
+      "from_blog_id": 62,
+      "to_blog_id": 63,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-17/",
+      "id": "benchmark-edge-281"
+    },
+    {
+      "from_blog_id": 62,
+      "to_blog_id": 64,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-18/",
+      "id": "benchmark-edge-282"
+    },
+    {
+      "from_blog_id": 63,
+      "to_blog_id": 34,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/engineering-10/",
+      "id": "benchmark-edge-283"
+    },
+    {
+      "from_blog_id": 63,
+      "to_blog_id": 61,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-15/",
+      "id": "benchmark-edge-284"
+    },
+    {
+      "from_blog_id": 63,
+      "to_blog_id": 64,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-18/",
+      "id": "benchmark-edge-285"
+    },
+    {
+      "from_blog_id": 64,
+      "to_blog_id": 47,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/design-01/",
+      "id": "benchmark-edge-286"
+    },
+    {
+      "from_blog_id": 64,
+      "to_blog_id": 49,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-03/",
+      "id": "benchmark-edge-287"
+    },
+    {
+      "from_blog_id": 64,
+      "to_blog_id": 58,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-12/",
+      "id": "benchmark-edge-288"
+    },
+    {
+      "from_blog_id": 64,
+      "to_blog_id": 59,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-289"
+    },
+    {
+      "from_blog_id": 65,
+      "to_blog_id": 66,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-02/",
+      "id": "benchmark-edge-290"
+    },
+    {
+      "from_blog_id": 65,
+      "to_blog_id": 75,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-11/",
+      "id": "benchmark-edge-291"
+    },
+    {
+      "from_blog_id": 65,
+      "to_blog_id": 77,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-13/",
+      "id": "benchmark-edge-292"
+    },
+    {
+      "from_blog_id": 65,
+      "to_blog_id": 82,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-18/",
+      "id": "benchmark-edge-293"
+    },
+    {
+      "from_blog_id": 65,
+      "to_blog_id": 86,
+      "link_text": "community bridge",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-02/",
+      "id": "benchmark-edge-294"
+    },
+    {
+      "from_blog_id": 66,
+      "to_blog_id": 65,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-01/",
+      "id": "benchmark-edge-295"
+    },
+    {
+      "from_blog_id": 66,
+      "to_blog_id": 67,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-03/",
+      "id": "benchmark-edge-296"
+    },
+    {
+      "from_blog_id": 66,
+      "to_blog_id": 74,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-10/",
+      "id": "benchmark-edge-297"
+    },
+    {
+      "from_blog_id": 66,
+      "to_blog_id": 76,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-12/",
+      "id": "benchmark-edge-298"
+    },
+    {
+      "from_blog_id": 66,
+      "to_blog_id": 79,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-299"
+    },
+    {
+      "from_blog_id": 67,
+      "to_blog_id": 65,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-01/",
+      "id": "benchmark-edge-300"
+    },
+    {
+      "from_blog_id": 67,
+      "to_blog_id": 68,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-04/",
+      "id": "benchmark-edge-301"
+    },
+    {
+      "from_blog_id": 67,
+      "to_blog_id": 72,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-08/",
+      "id": "benchmark-edge-302"
+    },
+    {
+      "from_blog_id": 67,
+      "to_blog_id": 75,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-11/",
+      "id": "benchmark-edge-303"
+    },
+    {
+      "from_blog_id": 67,
+      "to_blog_id": 81,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-17/",
+      "id": "benchmark-edge-304"
+    },
+    {
+      "from_blog_id": 67,
+      "to_blog_id": 83,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-19/",
+      "id": "benchmark-edge-305"
+    },
+    {
+      "from_blog_id": 68,
+      "to_blog_id": 65,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-01/",
+      "id": "benchmark-edge-306"
+    },
+    {
+      "from_blog_id": 68,
+      "to_blog_id": 69,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-307"
+    },
+    {
+      "from_blog_id": 68,
+      "to_blog_id": 74,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-10/",
+      "id": "benchmark-edge-308"
+    },
+    {
+      "from_blog_id": 68,
+      "to_blog_id": 79,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-309"
+    },
+    {
+      "from_blog_id": 68,
+      "to_blog_id": 81,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-17/",
+      "id": "benchmark-edge-310"
+    },
+    {
+      "from_blog_id": 68,
+      "to_blog_id": 84,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-20/",
+      "id": "benchmark-edge-311"
+    },
+    {
+      "from_blog_id": 69,
+      "to_blog_id": 66,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-02/",
+      "id": "benchmark-edge-312"
+    },
+    {
+      "from_blog_id": 69,
+      "to_blog_id": 68,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-04/",
+      "id": "benchmark-edge-313"
+    },
+    {
+      "from_blog_id": 69,
+      "to_blog_id": 70,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-06/",
+      "id": "benchmark-edge-314"
+    },
+    {
+      "from_blog_id": 69,
+      "to_blog_id": 73,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-09/",
+      "id": "benchmark-edge-315"
+    },
+    {
+      "from_blog_id": 69,
+      "to_blog_id": 77,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-13/",
+      "id": "benchmark-edge-316"
+    },
+    {
+      "from_blog_id": 69,
+      "to_blog_id": 83,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-19/",
+      "id": "benchmark-edge-317"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 65,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-01/",
+      "id": "benchmark-edge-318"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 67,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-03/",
+      "id": "benchmark-edge-319"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 68,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-04/",
+      "id": "benchmark-edge-320"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-321"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 71,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-07/",
+      "id": "benchmark-edge-322"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 80,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-16/",
+      "id": "benchmark-edge-323"
+    },
+    {
+      "from_blog_id": 70,
+      "to_blog_id": 83,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-19/",
+      "id": "benchmark-edge-324"
+    },
+    {
+      "from_blog_id": 71,
+      "to_blog_id": 66,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-02/",
+      "id": "benchmark-edge-325"
+    },
+    {
+      "from_blog_id": 71,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-326"
+    },
+    {
+      "from_blog_id": 71,
+      "to_blog_id": 72,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-08/",
+      "id": "benchmark-edge-327"
+    },
+    {
+      "from_blog_id": 71,
+      "to_blog_id": 79,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-328"
+    },
+    {
+      "from_blog_id": 72,
+      "to_blog_id": 70,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-06/",
+      "id": "benchmark-edge-329"
+    },
+    {
+      "from_blog_id": 72,
+      "to_blog_id": 73,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-09/",
+      "id": "benchmark-edge-330"
+    },
+    {
+      "from_blog_id": 72,
+      "to_blog_id": 82,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-18/",
+      "id": "benchmark-edge-331"
+    },
+    {
+      "from_blog_id": 72,
+      "to_blog_id": 84,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-20/",
+      "id": "benchmark-edge-332"
+    },
+    {
+      "from_blog_id": 73,
+      "to_blog_id": 68,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-04/",
+      "id": "benchmark-edge-333"
+    },
+    {
+      "from_blog_id": 73,
+      "to_blog_id": 71,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-07/",
+      "id": "benchmark-edge-334"
+    },
+    {
+      "from_blog_id": 73,
+      "to_blog_id": 74,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-10/",
+      "id": "benchmark-edge-335"
+    },
+    {
+      "from_blog_id": 74,
+      "to_blog_id": 67,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-03/",
+      "id": "benchmark-edge-336"
+    },
+    {
+      "from_blog_id": 74,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-337"
+    },
+    {
+      "from_blog_id": 74,
+      "to_blog_id": 73,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-09/",
+      "id": "benchmark-edge-338"
+    },
+    {
+      "from_blog_id": 74,
+      "to_blog_id": 75,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-11/",
+      "id": "benchmark-edge-339"
+    },
+    {
+      "from_blog_id": 74,
+      "to_blog_id": 81,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-17/",
+      "id": "benchmark-edge-340"
+    },
+    {
+      "from_blog_id": 75,
+      "to_blog_id": 71,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-07/",
+      "id": "benchmark-edge-341"
+    },
+    {
+      "from_blog_id": 75,
+      "to_blog_id": 76,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-12/",
+      "id": "benchmark-edge-342"
+    },
+    {
+      "from_blog_id": 76,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-343"
+    },
+    {
+      "from_blog_id": 76,
+      "to_blog_id": 77,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-13/",
+      "id": "benchmark-edge-344"
+    },
+    {
+      "from_blog_id": 76,
+      "to_blog_id": 84,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-20/",
+      "id": "benchmark-edge-345"
+    },
+    {
+      "from_blog_id": 77,
+      "to_blog_id": 71,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-07/",
+      "id": "benchmark-edge-346"
+    },
+    {
+      "from_blog_id": 77,
+      "to_blog_id": 78,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-14/",
+      "id": "benchmark-edge-347"
+    },
+    {
+      "from_blog_id": 77,
+      "to_blog_id": 81,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-17/",
+      "id": "benchmark-edge-348"
+    },
+    {
+      "from_blog_id": 77,
+      "to_blog_id": 84,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-20/",
+      "id": "benchmark-edge-349"
+    },
+    {
+      "from_blog_id": 78,
+      "to_blog_id": 66,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-02/",
+      "id": "benchmark-edge-350"
+    },
+    {
+      "from_blog_id": 78,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-351"
+    },
+    {
+      "from_blog_id": 78,
+      "to_blog_id": 74,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-10/",
+      "id": "benchmark-edge-352"
+    },
+    {
+      "from_blog_id": 78,
+      "to_blog_id": 79,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-353"
+    },
+    {
+      "from_blog_id": 78,
+      "to_blog_id": 92,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-08/",
+      "id": "benchmark-edge-354"
+    },
+    {
+      "from_blog_id": 79,
+      "to_blog_id": 70,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-06/",
+      "id": "benchmark-edge-355"
+    },
+    {
+      "from_blog_id": 79,
+      "to_blog_id": 76,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-12/",
+      "id": "benchmark-edge-356"
+    },
+    {
+      "from_blog_id": 79,
+      "to_blog_id": 80,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-16/",
+      "id": "benchmark-edge-357"
+    },
+    {
+      "from_blog_id": 79,
+      "to_blog_id": 81,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-17/",
+      "id": "benchmark-edge-358"
+    },
+    {
+      "from_blog_id": 79,
+      "to_blog_id": 84,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-20/",
+      "id": "benchmark-edge-359"
+    },
+    {
+      "from_blog_id": 80,
+      "to_blog_id": 63,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-17/",
+      "id": "benchmark-edge-360"
+    },
+    {
+      "from_blog_id": 80,
+      "to_blog_id": 76,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-12/",
+      "id": "benchmark-edge-361"
+    },
+    {
+      "from_blog_id": 80,
+      "to_blog_id": 78,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-14/",
+      "id": "benchmark-edge-362"
+    },
+    {
+      "from_blog_id": 80,
+      "to_blog_id": 81,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-17/",
+      "id": "benchmark-edge-363"
+    },
+    {
+      "from_blog_id": 81,
+      "to_blog_id": 65,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-01/",
+      "id": "benchmark-edge-364"
+    },
+    {
+      "from_blog_id": 81,
+      "to_blog_id": 69,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-05/",
+      "id": "benchmark-edge-365"
+    },
+    {
+      "from_blog_id": 81,
+      "to_blog_id": 78,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-14/",
+      "id": "benchmark-edge-366"
+    },
+    {
+      "from_blog_id": 81,
+      "to_blog_id": 80,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-16/",
+      "id": "benchmark-edge-367"
+    },
+    {
+      "from_blog_id": 81,
+      "to_blog_id": 82,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-18/",
+      "id": "benchmark-edge-368"
+    },
+    {
+      "from_blog_id": 82,
+      "to_blog_id": 75,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-11/",
+      "id": "benchmark-edge-369"
+    },
+    {
+      "from_blog_id": 82,
+      "to_blog_id": 79,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-370"
+    },
+    {
+      "from_blog_id": 82,
+      "to_blog_id": 83,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-19/",
+      "id": "benchmark-edge-371"
+    },
+    {
+      "from_blog_id": 83,
+      "to_blog_id": 72,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-08/",
+      "id": "benchmark-edge-372"
+    },
+    {
+      "from_blog_id": 83,
+      "to_blog_id": 73,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-09/",
+      "id": "benchmark-edge-373"
+    },
+    {
+      "from_blog_id": 83,
+      "to_blog_id": 74,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-10/",
+      "id": "benchmark-edge-374"
+    },
+    {
+      "from_blog_id": 83,
+      "to_blog_id": 75,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-11/",
+      "id": "benchmark-edge-375"
+    },
+    {
+      "from_blog_id": 83,
+      "to_blog_id": 79,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-15/",
+      "id": "benchmark-edge-376"
+    },
+    {
+      "from_blog_id": 83,
+      "to_blog_id": 84,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-20/",
+      "id": "benchmark-edge-377"
+    },
+    {
+      "from_blog_id": 84,
+      "to_blog_id": 65,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-01/",
+      "id": "benchmark-edge-378"
+    },
+    {
+      "from_blog_id": 84,
+      "to_blog_id": 66,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-02/",
+      "id": "benchmark-edge-379"
+    },
+    {
+      "from_blog_id": 84,
+      "to_blog_id": 78,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/data-ai-14/",
+      "id": "benchmark-edge-380"
+    },
+    {
+      "from_blog_id": 85,
+      "to_blog_id": 55,
+      "link_text": "community bridge",
+      "link_url_raw": "https://benchmark.heyblog.local/design-09/",
+      "id": "benchmark-edge-381"
+    },
+    {
+      "from_blog_id": 85,
+      "to_blog_id": 86,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-02/",
+      "id": "benchmark-edge-382"
+    },
+    {
+      "from_blog_id": 85,
+      "to_blog_id": 87,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-03/",
+      "id": "benchmark-edge-383"
+    },
+    {
+      "from_blog_id": 85,
+      "to_blog_id": 89,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-05/",
+      "id": "benchmark-edge-384"
+    },
+    {
+      "from_blog_id": 86,
+      "to_blog_id": 87,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-03/",
+      "id": "benchmark-edge-385"
+    },
+    {
+      "from_blog_id": 86,
+      "to_blog_id": 96,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-12/",
+      "id": "benchmark-edge-386"
+    },
+    {
+      "from_blog_id": 87,
+      "to_blog_id": 88,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-04/",
+      "id": "benchmark-edge-387"
+    },
+    {
+      "from_blog_id": 87,
+      "to_blog_id": 93,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-09/",
+      "id": "benchmark-edge-388"
+    },
+    {
+      "from_blog_id": 87,
+      "to_blog_id": 98,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-14/",
+      "id": "benchmark-edge-389"
+    },
+    {
+      "from_blog_id": 88,
+      "to_blog_id": 89,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-05/",
+      "id": "benchmark-edge-390"
+    },
+    {
+      "from_blog_id": 89,
+      "to_blog_id": 86,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-02/",
+      "id": "benchmark-edge-391"
+    },
+    {
+      "from_blog_id": 89,
+      "to_blog_id": 88,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-04/",
+      "id": "benchmark-edge-392"
+    },
+    {
+      "from_blog_id": 89,
+      "to_blog_id": 90,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-06/",
+      "id": "benchmark-edge-393"
+    },
+    {
+      "from_blog_id": 90,
+      "to_blog_id": 91,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-07/",
+      "id": "benchmark-edge-394"
+    },
+    {
+      "from_blog_id": 90,
+      "to_blog_id": 93,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-09/",
+      "id": "benchmark-edge-395"
+    },
+    {
+      "from_blog_id": 91,
+      "to_blog_id": 85,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-01/",
+      "id": "benchmark-edge-396"
+    },
+    {
+      "from_blog_id": 91,
+      "to_blog_id": 92,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-08/",
+      "id": "benchmark-edge-397"
+    },
+    {
+      "from_blog_id": 91,
+      "to_blog_id": 94,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-10/",
+      "id": "benchmark-edge-398"
+    },
+    {
+      "from_blog_id": 92,
+      "to_blog_id": 90,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-06/",
+      "id": "benchmark-edge-399"
+    },
+    {
+      "from_blog_id": 92,
+      "to_blog_id": 93,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-09/",
+      "id": "benchmark-edge-400"
+    },
+    {
+      "from_blog_id": 92,
+      "to_blog_id": 97,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-13/",
+      "id": "benchmark-edge-401"
+    },
+    {
+      "from_blog_id": 92,
+      "to_blog_id": 100,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-16/",
+      "id": "benchmark-edge-402"
+    },
+    {
+      "from_blog_id": 93,
+      "to_blog_id": 59,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/design-13/",
+      "id": "benchmark-edge-403"
+    },
+    {
+      "from_blog_id": 93,
+      "to_blog_id": 92,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-08/",
+      "id": "benchmark-edge-404"
+    },
+    {
+      "from_blog_id": 93,
+      "to_blog_id": 94,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-10/",
+      "id": "benchmark-edge-405"
+    },
+    {
+      "from_blog_id": 94,
+      "to_blog_id": 89,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-05/",
+      "id": "benchmark-edge-406"
+    },
+    {
+      "from_blog_id": 94,
+      "to_blog_id": 95,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-11/",
+      "id": "benchmark-edge-407"
+    },
+    {
+      "from_blog_id": 94,
+      "to_blog_id": 97,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-13/",
+      "id": "benchmark-edge-408"
+    },
+    {
+      "from_blog_id": 95,
+      "to_blog_id": 89,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-05/",
+      "id": "benchmark-edge-409"
+    },
+    {
+      "from_blog_id": 95,
+      "to_blog_id": 91,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-07/",
+      "id": "benchmark-edge-410"
+    },
+    {
+      "from_blog_id": 95,
+      "to_blog_id": 94,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-10/",
+      "id": "benchmark-edge-411"
+    },
+    {
+      "from_blog_id": 95,
+      "to_blog_id": 96,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-12/",
+      "id": "benchmark-edge-412"
+    },
+    {
+      "from_blog_id": 95,
+      "to_blog_id": 97,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-13/",
+      "id": "benchmark-edge-413"
+    },
+    {
+      "from_blog_id": 96,
+      "to_blog_id": 85,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-01/",
+      "id": "benchmark-edge-414"
+    },
+    {
+      "from_blog_id": 96,
+      "to_blog_id": 87,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-03/",
+      "id": "benchmark-edge-415"
+    },
+    {
+      "from_blog_id": 96,
+      "to_blog_id": 93,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-09/",
+      "id": "benchmark-edge-416"
+    },
+    {
+      "from_blog_id": 96,
+      "to_blog_id": 97,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-13/",
+      "id": "benchmark-edge-417"
+    },
+    {
+      "from_blog_id": 96,
+      "to_blog_id": 98,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-14/",
+      "id": "benchmark-edge-418"
+    },
+    {
+      "from_blog_id": 97,
+      "to_blog_id": 98,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-14/",
+      "id": "benchmark-edge-419"
+    },
+    {
+      "from_blog_id": 98,
+      "to_blog_id": 91,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-07/",
+      "id": "benchmark-edge-420"
+    },
+    {
+      "from_blog_id": 98,
+      "to_blog_id": 99,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-15/",
+      "id": "benchmark-edge-421"
+    },
+    {
+      "from_blog_id": 99,
+      "to_blog_id": 90,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-06/",
+      "id": "benchmark-edge-422"
+    },
+    {
+      "from_blog_id": 99,
+      "to_blog_id": 91,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-07/",
+      "id": "benchmark-edge-423"
+    },
+    {
+      "from_blog_id": 99,
+      "to_blog_id": 96,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-12/",
+      "id": "benchmark-edge-424"
+    },
+    {
+      "from_blog_id": 99,
+      "to_blog_id": 100,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-16/",
+      "id": "benchmark-edge-425"
+    },
+    {
+      "from_blog_id": 100,
+      "to_blog_id": 85,
+      "link_text": "blogroll",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-01/",
+      "id": "benchmark-edge-426"
+    },
+    {
+      "from_blog_id": 100,
+      "to_blog_id": 95,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-11/",
+      "id": "benchmark-edge-427"
+    },
+    {
+      "from_blog_id": 100,
+      "to_blog_id": 97,
+      "link_text": "friend link",
+      "link_url_raw": "https://benchmark.heyblog.local/culture-13/",
+      "id": "benchmark-edge-428"
+    }
+  ],
+  "meta": {
+    "strategy": "synthetic-community-benchmark",
+    "limit": 100,
+    "source": "scripts/generate_visualization_benchmark.py",
+    "generated_at": "2026-06-05T18:43:51.851750+00:00",
+    "total_nodes": 100,
+    "total_edges": 428,
+    "selected_nodes": 100,
+    "selected_edges": 428,
+    "available_nodes": 100,
+    "available_edges": 428,
+    "benchmark": {
+      "seed": 42,
+      "model": "seeded stochastic block model inspired by LFR mixing-parameter benchmarks",
+      "community_sizes": {
+        "indie-web": 24,
+        "engineering": 22,
+        "design": 18,
+        "data-ai": 20,
+        "culture": 16
+      },
+      "intra_probability": 0.34,
+      "inter_probability": 0.002,
+      "estimated_mixing_rate": 0.006,
+      "layout": "fixed separated community centers with deterministic jitter"
+    }
+  }
+}
