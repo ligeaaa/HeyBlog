@@ -30,6 +30,7 @@ runtime-models = [
 ]
 dev = [
   "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
 ]
 
 [tool.pytest.ini_options]

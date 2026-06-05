@@ -1894,7 +1894,6 @@ def test_repository_blog_label_counts_use_all_persisted_url_labels(tmp_path: Pat
     blog_tag = repository.create_blog_label_tag(name="blog")
     company_tag = repository.create_blog_label_tag(name="company")
     other_tag = repository.create_blog_label_tag(name="other")
-    unknown_tag = repository.create_blog_label_tag(name="unknown")
     timestamp = repository_module.now_utc()
     with session_scope(repository.session_factory) as session:
         session.add_all(
