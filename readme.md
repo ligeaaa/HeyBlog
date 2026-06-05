@@ -23,6 +23,8 @@
 
 2026年6月3日，一觉醒来从 9 star变成了11 star，突破两位数，开心
 
+2026年6月6日，发现有13人注册了用户，有点想哭，开心
+
 
 ## 文档导航
 
@@ -36,6 +38,10 @@
 - [爬虫与 URL 过滤逻辑](doc/crawler-url-filtering.md)：crawler 执行链路、URL 过滤和模型共识
 
 ## Quick Start
+
+### 0. 推荐
+启动codex、claude code或任意vibecoding工具，然后：请完整阅读该项目确保你了解该项目，然后配置合理的.env文件后docker本地部署
+
 
 ### 1. 仅 API / 后端最小路径
 
