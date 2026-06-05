@@ -261,144 +261,42 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("renders paginated home cards, reloads from server for filters, and refreshes statuses by polling", async () => {
+test("renders the home summary without queue metrics, status filters, or catalog cards", async () => {
   render(<App />);
 
   await waitFor(() => {
     expect(screen.getByRole("heading", { name: "HeyBlog!" })).toBeInTheDocument();
   });
   expect(screen.getByText("基于友链爬取所有博客！")).toBeInTheDocument();
+  expect(screen.getByText("总节点数")).toBeInTheDocument();
+  expect(screen.getByText("总连接数")).toBeInTheDocument();
+  expect(screen.getByText("34")).toBeInTheDocument();
+  expect(screen.getByText("10")).toBeInTheDocument();
+  expect(screen.queryByText("待处理队列")).not.toBeInTheDocument();
+  expect(screen.queryByText("处理中 / 失败")).not.toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
 
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=PROCESSING"),
-    expect.anything(),
-  );
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=WAITING"),
-    expect.anything(),
-  );
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=FINISHED"),
-    expect.anything(),
-  );
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=FAILED"),
-    expect.anything(),
-  );
-  expect(screen.getByText("Processing Blog")).toBeInTheDocument();
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.getByText("Waiting Blog")).toBeInTheDocument();
-  expect(screen.getByText("当前显示第 1 / 2 页，本页 30 个，共 34 个博客")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "PROCESSING" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "FAILED" })).toBeInTheDocument();
-  const titles = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
-  expect(titles.slice(0, 4)).toEqual(["Processing Blog", "Newest Processing Blog", "Waiting Blog", "Newest Waiting Blog"]);
-
-  fireEvent.click(screen.getByRole("button", { name: "FAILED" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_desc&status=FAILED"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Failed Blog")).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/catalog"), expect.anything());
+  expect(screen.queryByRole("button", { name: "ALL" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "PROCESSING" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "WAITING" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "FINISHED" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "FAILED" })).not.toBeInTheDocument();
   expect(screen.queryByText("Processing Blog")).not.toBeInTheDocument();
-  expect(screen.getByText("当前显示第 1 / 1 页，本页 1 个，共 1 个博客")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "WAITING" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=WAITING"),
-      expect.anything(),
-    );
-  });
-  const waitingTitles = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
-  expect(waitingTitles.slice(0, 2)).toEqual(["Waiting Blog", "Newest Waiting Blog"]);
-
-  fireEvent.click(screen.getByRole("button", { name: "ALL" }));
-
-  await waitFor(() => {
-    expect(screen.getByText("Processing Blog")).toBeInTheDocument();
-  });
-
-  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=60&sort=id_asc&status=PROCESSING"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Failed Blog")).toBeInTheDocument();
-  expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "PROCESSING" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_desc&status=PROCESSING"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.getByText("Processing Blog")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "ALL" }));
-
-  await waitFor(() => {
-    expect(screen.getByText("Waiting Blog")).toBeInTheDocument();
-  });
-
-  catalogItems = catalogItems.map((item) =>
-    item.id === 1 ? { ...item, crawl_status: "FINISHED", status_code: 200, last_crawled_at: "2026-04-17T10:00:00Z" } : item,
-  );
-  statusPayload = {
-    ...statusPayload,
-    pending_tasks: 2,
-    processing_tasks: 1,
-    finished_tasks: 31,
-  };
+  expect(screen.queryByText("Waiting Blog")).not.toBeInTheDocument();
+  expect(screen.queryByText("Finished Blog")).not.toBeInTheDocument();
+  expect(screen.queryByText("Failed Blog")).not.toBeInTheDocument();
+  expect(screen.queryByPlaceholderText(/输入 URL 或标题进行搜索/i)).not.toBeInTheDocument();
 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
   });
 
   await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=PROCESSING"),
-      expect.anything(),
-    );
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/stats"), expect.anything());
   });
-
-  fireEvent.click(screen.getByRole("button", { name: "PROCESSING" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_desc&status=PROCESSING"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.queryByText("Processing Blog")).not.toBeInTheDocument();
-
-  fireEvent.change(screen.getByPlaceholderText(/输入 URL 或标题进行搜索/i), {
-    target: { value: "Newest" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /搜索博客/i }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&q=Newest&sort=id_desc&status=PROCESSING"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.queryByText("Processing Blog")).not.toBeInTheDocument();
-  expect(screen.queryByText("Newest Waiting Blog")).not.toBeInTheDocument();
-  expect(screen.queryByText("Waiting Blog")).not.toBeInTheDocument();
-  expect(screen.getByText("搜索词: Newest")).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/catalog"), expect.anything());
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
 });
 
 test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {
