@@ -424,6 +424,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 当前前端使用方式：
 
+- 首页搜索框使用 `page=1&page_size=30&url=<输入 URL>&sort=id_desc` 查询已发现博客，并把返回项渲染为可滚动结果列表。
+
 #### `GET /api/icons/proxy`
 
 用途：把已知 icon URL 作为同源图片返回，供 3D 图谱 WebGL texture 加载使用。

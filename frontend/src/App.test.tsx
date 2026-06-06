@@ -122,15 +122,20 @@ beforeEach(() => {
       const pageSize = Number(url.searchParams.get("page_size") || "30");
       const status = url.searchParams.get("status");
       const query = (url.searchParams.get("q") || "").trim().toLowerCase();
+      const urlQuery = (url.searchParams.get("url") || "").trim().toLowerCase();
       const sort = url.searchParams.get("sort") || "id_asc";
       const filteredItems = sortCatalogItems(
         (status ? catalogItems.filter((item) => item.crawl_status === status) : catalogItems).filter((item) => {
-          if (!query) {
+          if (!query && !urlQuery) {
             return true;
           }
           const title = String(item.title ?? "").toLowerCase();
           const blogUrl = String(item.url ?? "").toLowerCase();
-          return title.includes(query) || blogUrl.includes(query);
+          const normalizedUrl = String(item.normalized_url ?? "").toLowerCase();
+          return (
+            (!query || title.includes(query) || blogUrl.includes(query)) &&
+            (!urlQuery || blogUrl.includes(urlQuery) || normalizedUrl.includes(urlQuery))
+          );
         }),
         sort,
       );
@@ -317,7 +322,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("renders the home summary without queue metrics, status filters, or catalog cards", async () => {
+test("renders the home summary with URL search while keeping queue metrics and catalog cards hidden", async () => {
   render(<App />);
 
   await waitFor(() => {
@@ -342,7 +347,7 @@ test("renders the home summary without queue metrics, status filters, or catalog
   expect(screen.queryByText("Waiting Blog")).not.toBeInTheDocument();
   expect(screen.queryByText("Finished Blog")).not.toBeInTheDocument();
   expect(screen.queryByText("Failed Blog")).not.toBeInTheDocument();
-  expect(screen.queryByPlaceholderText(/输入 URL 或标题进行搜索/i)).not.toBeInTheDocument();
+  expect(screen.getByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！")).toBeInTheDocument();
 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
@@ -353,6 +358,36 @@ test("renders the home summary without queue metrics, status filters, or catalog
   });
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/catalog"), expect.anything());
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
+});
+
+test("lets home users search normalized URLs and open a blank blog detail route", async () => {
+  render(<App />);
+
+  const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
+  fireEvent.change(input, { target: { value: "finished-blog.example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    const searchCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([input]) => String(input).includes("/api/blogs/catalog?"));
+    expect(searchCall).toBeDefined();
+    const requestUrl = new URL(String(searchCall![0]), "http://localhost");
+    expect(requestUrl.searchParams.get("page")).toBe("1");
+    expect(requestUrl.searchParams.get("page_size")).toBe("30");
+    expect(requestUrl.searchParams.get("url")).toBe("finished-blog.example.com");
+    expect(requestUrl.searchParams.get("sort")).toBe("id_desc");
+  });
+  expect(screen.getByText("1 个匹配")).toBeInTheDocument();
+  expect(screen.getByText("Finished Blog")).toBeInTheDocument();
+  expect(screen.getByText("https://finished-blog.example.com/")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /Finished Blog/i }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/blogs/3");
+  });
+  expect(screen.queryByRole("heading", { name: "HeyBlog!" })).not.toBeInTheDocument();
 });
 
 test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {

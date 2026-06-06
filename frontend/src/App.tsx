@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AboutPage } from "./pages/AboutPage";
 import { AdminPage } from "./pages/AdminPage";
+import { BlogDetailPage } from "./pages/BlogDetailPage";
 import { FilterStatsPage } from "./pages/FilterStatsPage";
 import { HomePage } from "./pages/HomePage";
 import { ProfilePage } from "./pages/ProfilePage";
@@ -19,6 +20,7 @@ export default function App() {
       <Toaster position="top-right" richColors />
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/blogs/:blogId" element={<BlogDetailPage />} />
         <Route path="/random" element={<RandomBlogPage />} />
         <Route path="/visualization" element={<VisualizationPage />} />
         <Route path="/visualization/benchmark" element={<VisualizationPage />} />
