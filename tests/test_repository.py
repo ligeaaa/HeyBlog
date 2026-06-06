@@ -6,6 +6,7 @@ import sys
 import pyarrow.parquet as pq
 import pytest
 from sqlalchemy import event
+from sqlalchemy import func
 from sqlalchemy import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -19,6 +20,7 @@ from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import SeedModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
 
@@ -74,13 +76,16 @@ def test_build_repository_enables_schema_sync_for_dsn(monkeypatch: pytest.Monkey
     }
 
 
-def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
-    """Reset should wipe graph data and restart primary keys."""
+def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -> None:
+    """Reset should wipe graph data while retaining durable seed records."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
     first_blog_id, inserted = repository.upsert_blog(
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
+        accepted_by="seed",
+        seed_source_path="seed.csv",
+        seed_source_row=2,
     )
     assert inserted is True
     second_blog_id, inserted = repository.upsert_blog(
@@ -108,6 +113,7 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
     assert result["blogs_deleted"] == 2
     assert result["edges_deleted"] == 1
     assert result["logs_deleted"] == 0
+    assert result["seeds_preserved"] == 1
     assert result["ingestion_requests_deleted"] == 0
     assert result["blog_link_labels_deleted"] == 0
     assert result["blog_label_tags_deleted"] == 0
@@ -118,6 +124,11 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
     assert repository.list_logs() == []
     assert repository.stats()["total_blogs"] == 0
     assert repository.stats()["total_edges"] == 0
+    with session_scope(repository.session_factory) as session:
+        seed = session.scalar(select(SeedModel))
+        assert seed is not None
+        assert seed.normalized_url == "https://blog.example.com/"
+        assert seed.blog_id is None
 
     new_blog_id, inserted = repository.upsert_blog(
         url="https://reset.example.com/",
@@ -1104,6 +1115,52 @@ def test_repository_claims_waiting_blogs_in_id_order(tmp_path: Path) -> None:
     assert second_claim is not None
     assert first_claim["id"] == first_blog_id
     assert second_claim["id"] == second_blog_id
+
+
+def test_repository_creates_user_seed_as_accepted_waiting_blog(tmp_path: Path) -> None:
+    """User seeds should be accepted as blogs while remaining crawlable."""
+    repository = repository_module.build_repository(
+        db_path=tmp_path / "db.sqlite",
+        settings=Settings(
+            db_path=tmp_path / "db.sqlite",
+            seed_path=tmp_path / "seed.csv",
+            export_dir=tmp_path / "exports",
+            decision_model_consensus_enabled=False,
+        ),
+    )
+
+    result = repository.create_user_seed(homepage_url="https://user-blog.example.com/")
+
+    assert result["status"] == "QUEUED"
+    blog = repository.get_blog(result["blog_id"])
+    assert blog is not None
+    assert blog["acceptance_status"] == "ACCEPTED"
+    assert blog["accepted_by"] == "user"
+    assert blog["crawl_status"] == "WAITING"
+    seeds = repository.list_seeds()
+    assert len(seeds) == 1
+    assert seeds[0]["normalized_url"] == "https://user-blog.example.com/"
+    assert seeds[0]["source_path"] == "user"
+    assert seeds[0]["blog_id"] == result["blog_id"]
+    claimed = repository.get_next_waiting_blog()
+    assert claimed is not None
+    assert claimed["id"] == result["blog_id"]
+
+
+def test_repository_user_seed_runs_rule_filters_only(tmp_path: Path) -> None:
+    """User seed submission should reject deterministic rule failures."""
+    repository = repository_module.build_repository(
+        db_path=tmp_path / "db.sqlite",
+        settings=Settings(
+            db_path=tmp_path / "db.sqlite",
+            seed_path=tmp_path / "seed.csv",
+            export_dir=tmp_path / "exports",
+            decision_model_consensus_enabled=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="rule:non_root_path"):
+        repository.create_user_seed(homepage_url="https://user-blog.example.com/posts/1")
 
 
 def test_repository_claims_priority_blogs_by_request_priority(tmp_path: Path) -> None:

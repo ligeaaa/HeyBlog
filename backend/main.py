@@ -53,6 +53,10 @@ class CreateIngestionRequest(BaseModel):
     email: str
 
 
+class CreateUserSeedRequest(BaseModel):
+    homepage_url: str
+
+
 class UserAuthRequest(BaseModel):
     email: str
     password: str
@@ -843,6 +847,21 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             message="ingestion request created",
             stage="ingestion",
             run_id=result.get("request_id"),
+            url=payload.homepage_url,
+        )
+        return result
+
+    @app.post("/api/blogs/user-seeds")
+    def create_user_seed(payload: CreateUserSeedRequest) -> dict[str, Any]:
+        result = _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_user_seed(**payload.model_dump())
+        )
+        log_event(
+            LOGGER,
+            event="blog.user_seed.created",
+            message="user seed created",
+            stage="ingestion",
+            run_id=result.get("blog_id"),
             url=payload.homepage_url,
         )
         return result

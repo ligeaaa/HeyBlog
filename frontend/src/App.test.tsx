@@ -151,7 +151,7 @@ beforeEach(() => {
     total_edges: 10,
   };
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     if (url.pathname === "/api/blogs/catalog") {
       const page = Number(url.searchParams.get("page") || "1");
@@ -187,6 +187,27 @@ beforeEach(() => {
           has_next: offset + pageSize < filteredItems.length,
           has_prev: page > 1,
           sort,
+        }),
+      );
+    }
+    if (url.pathname === "/api/blogs/user-seeds") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      const submittedUrl = String(body.homepage_url || "https://missing-blog.example.com/");
+      if (submittedUrl === "https://blog.sayori.org/") {
+        return new Response(JSON.stringify({ detail: "rule:blocked_tld" }), { status: 422 });
+      }
+      const item = {
+        ...makeCatalogItem(444, "WAITING", "Missing Blog"),
+        url: submittedUrl,
+        normalized_url: submittedUrl,
+        domain: submittedUrl.replace(/^https?:\/\//, "").replace(/\/$/, ""),
+      };
+      return new Response(
+        JSON.stringify({
+          status: "QUEUED",
+          blog_id: item.id,
+          inserted: true,
+          blog: item,
         }),
       );
     }
@@ -449,6 +470,69 @@ test("lets home users search normalized URLs and open the blog detail route", as
   expect(screen.getByRole("heading", { name: "直接相关博客" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "推荐博客" })).toBeInTheDocument();
   expect(screen.getByText("通过 Mutual Blog 关联")).toBeInTheDocument();
+});
+
+test("submits a user seed when home URL search has no matches", async () => {
+  render(<App />);
+
+  const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
+  fireEvent.change(input, { target: { value: "missing-blog.example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+  });
+  expect(screen.getByText("missing-blog.example.com")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "不是" }));
+
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" }),
+    ).not.toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+  const seedInput = screen.getByLabelText("请输入完整博客链接");
+  expect(seedInput).toHaveAttribute("placeholder", "https://blog.example.com");
+  fireEvent.change(seedInput, { target: { value: "https://missing-blog.example.com/" } });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+
+  await waitFor(() => {
+    const submitCall = vi.mocked(fetch).mock.calls.find(([input]) => String(input).includes("/api/blogs/user-seeds"));
+    expect(submitCall).toBeDefined();
+    expect(JSON.parse(String(submitCall![1]?.body))).toEqual({
+      homepage_url: "https://missing-blog.example.com/",
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+test("shows the exact rule-filter reason when user seed submission fails", async () => {
+  render(<App />);
+
+  const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
+  fireEvent.change(input, { target: { value: "blog.sayori.org" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+  fireEvent.change(screen.getByLabelText("请输入完整博客链接"), {
+    target: { value: "https://blog.sayori.org/" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+
+  expect(await screen.findByText("规则过滤未通过：域名后缀被屏蔽（rule:blocked_tld）")).toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
 });
 
 test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {

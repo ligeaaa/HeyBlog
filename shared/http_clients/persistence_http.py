@@ -171,6 +171,8 @@ class PersistenceHttpClient:
         email: str | None = None,
         feed_url: str | None = None,
         accepted_by: str | None = None,
+        seed_source_path: str | None = None,
+        seed_source_row: int | None = None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -181,9 +183,23 @@ class PersistenceHttpClient:
                 "email": email,
                 "feed_url": feed_url,
                 "accepted_by": accepted_by,
+                "seed_source_path": seed_source_path,
+                "seed_source_row": seed_source_row,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
+
+    def list_seeds(self) -> list[dict[str, Any]]:
+        """Fetch durable seed rows from persistence in replay order.
+
+        Args:
+            None.
+
+        Returns:
+            Seed payloads ordered by insertion ID.
+        """
+
+        return self._get("/internal/seeds")
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
         return self._post(
@@ -191,6 +207,23 @@ class PersistenceHttpClient:
             {
                 "homepage_url": homepage_url,
                 "email": email,
+            },
+        )
+
+    def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
+        """Create or refresh a user-submitted crawler seed.
+
+        Args:
+            homepage_url: Complete user-submitted blog homepage URL.
+
+        Returns:
+            Accepted seed payload returned by persistence.
+        """
+
+        return self._post(
+            "/internal/user-seeds",
+            {
+                "homepage_url": homepage_url,
             },
         )
 

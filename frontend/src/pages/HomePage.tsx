@@ -2,8 +2,9 @@ import { GitBranch, Loader2, Network, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { MissingBlogConfirmDialog } from "../components/MissingBlogConfirmDialog";
 import { Navigation } from "../components/Navigation";
-import { fetchBlogsCatalog, fetchStats } from "../lib/api";
+import { fetchBlogsCatalog, fetchStats, submitUserSeed } from "../lib/api";
 import { resolveBlogIconUrls } from "../lib/icon";
 import type { BlogCatalogItem, StatsData } from "../types/graph";
 
@@ -59,6 +60,7 @@ export function HomePage() {
   const [lastSearchQuery, setLastSearchQuery] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [missingBlogUrl, setMissingBlogUrl] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
 
@@ -163,6 +165,7 @@ export function HomePage() {
       setLastSearchQuery("");
       setSearchResults([]);
       setSearchTotalItems(0);
+      setMissingBlogUrl(null);
       return;
     }
 
@@ -178,6 +181,7 @@ export function HomePage() {
       setSearchTotalItems(page.totalItems);
       setLastSearchQuery(query);
       setHasSearched(true);
+      setMissingBlogUrl(page.items.length === 0 ? query : null);
     } catch {
       toast.error("博客搜索失败，请稍后重试。");
     } finally {
@@ -194,6 +198,23 @@ export function HomePage() {
     navigate(`/blogs/${blog.id}`);
   }
 
+  /**
+   * Submit a user-confirmed missing blog URL as an accepted crawler seed.
+   *
+   * @param url Complete blog URL typed by the user.
+   * @returns Promise resolved after the submission is persisted.
+   */
+  async function handleSubmitMissingBlog(url: string) {
+    try {
+      await submitUserSeed({ url });
+      toast.success("已加入博客网络，等待爬虫抓取友链。");
+      setMissingBlogUrl(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "提交失败：未知错误";
+      toast.error(message);
+    }
+  }
+
   if (isInitialLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-white">
@@ -208,6 +229,13 @@ export function HomePage() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-white">
       <Navigation />
+      {missingBlogUrl ? (
+        <MissingBlogConfirmDialog
+          url={missingBlogUrl}
+          onCancel={() => setMissingBlogUrl(null)}
+          onSubmit={handleSubmitMissingBlog}
+        />
+      ) : null}
 
       <main className="mx-auto max-w-7xl px-6 pb-16 pt-24 sm:px-8">
         <section className="mb-14">

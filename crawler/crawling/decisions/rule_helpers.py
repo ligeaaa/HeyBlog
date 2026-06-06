@@ -43,7 +43,7 @@ PATH_BLOCKLIST = {
     "/rss",
     "/search",
 }
-BLOCKED_TLDS = (".gov", ".gov.cn", ".org", ".edu")
+BLOCKED_TLDS = (".gov", ".gov.cn", ".edu")
 FILE_SUFFIX_BLOCKLIST = (
     ".7z",
     ".css",

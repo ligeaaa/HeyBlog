@@ -25,6 +25,24 @@ import type {
   UserProfile,
 } from "../types/graph";
 
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+
+  /**
+   * Capture one failed API response with the backend detail payload intact.
+   *
+   * @param status HTTP response status.
+   * @param detail Backend error detail payload, when available.
+   */
+  constructor(status: number, detail: unknown) {
+    super(typeof detail === "string" && detail ? detail : `api_error_${status}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 interface BackendGraphNode {
   id: number;
   blog_id?: number;
@@ -499,7 +517,14 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    throw new Error(`api_error_${response.status}`);
+    let detail: unknown = null;
+    try {
+      const payload = await response.json();
+      detail = (payload as { detail?: unknown }).detail ?? payload;
+    } catch {
+      detail = await response.text().catch(() => null);
+    }
+    throw new ApiError(response.status, detail);
   }
   return (await response.json()) as T;
 }
@@ -777,6 +802,66 @@ export async function submitBlogInfo(data: {
     }),
   });
 }
+
+/**
+ * Submit one user seed URL so it can be accepted and queued for crawling.
+ *
+ * @param data User-provided complete blog URL.
+ * @returns Accepted blog seed summary.
+ */
+export async function submitUserSeed(data: { url: string }): Promise<{ status: string; blogId: number }> {
+  if (!data.url.trim()) {
+    throw new Error("url_required");
+  }
+  let payload: { status: string; blog_id: number };
+  try {
+    payload = await apiJson<{ status: string; blog_id: number }>("/api/blogs/user-seeds", {
+      method: "POST",
+      body: JSON.stringify({
+        homepage_url: data.url.trim(),
+      }),
+    });
+  } catch (error) {
+    throw new Error(describeUserSeedError(error));
+  }
+  return {
+    status: payload.status,
+    blogId: payload.blog_id,
+  };
+}
+
+function describeUserSeedError(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return error instanceof Error ? error.message : "提交失败：未知错误";
+  }
+  const detail = typeof error.detail === "string" ? error.detail : "";
+  const ruleReason = USER_SEED_RULE_REASON_MESSAGES[detail];
+  if (ruleReason) {
+    return `规则过滤未通过：${ruleReason}（${detail}）`;
+  }
+  if (detail === "Unsupported homepage URL") {
+    return "URL 无法识别：请输入完整的 http 或 https 博客首页链接。";
+  }
+  if (detail) {
+    return `提交失败：${detail}`;
+  }
+  return `提交失败：接口返回 ${error.status}`;
+}
+
+const USER_SEED_RULE_REASON_MESSAGES: Record<string, string> = {
+  "rule:duplicate_url": "该 URL 已经存在于发现记录中",
+  "rule:non_http_scheme": "链接不是 http 或 https 协议",
+  "rule:same_domain": "链接与来源域名相同",
+  "rule:exact_url_blocked": "链接命中精确 URL 黑名单",
+  "rule:prefix_blocked": "链接命中 URL 前缀黑名单",
+  "rule:platform_blocked": "域名属于已屏蔽的平台站点",
+  "rule:domain_blocked": "域名命中自定义屏蔽列表",
+  "rule:blocked_tld": "域名后缀被屏蔽",
+  "rule:non_root_path": "链接不是博客首页根路径",
+  "rule:non_root_location": "链接包含查询参数或锚点",
+  "rule:asset_suffix": "链接指向静态资源文件",
+  "rule:blocked_path": "链接路径属于登录、搜索、RSS、管理页等非博客首页",
+};
 
 export async function registerUser(data: { email: string; password: string }): Promise<AuthSession> {
   const payload = await apiJson<BackendAuthSession>("/api/auth/register", {

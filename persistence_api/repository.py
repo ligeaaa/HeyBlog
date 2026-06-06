@@ -47,10 +47,12 @@ from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import SeedModel
 from persistence_api.models import UserModel
 from persistence_api.models import UserSessionModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.decisions.chain import build_url_decision_chain
+from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
 from crawler.crawling.normalization import BlogIdentityResolution
 from crawler.crawling.normalization import normalize_url
@@ -642,6 +644,38 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     "ON ingestion_requests (identity_key)"
                 )
             )
+        if "seeds" not in existing_tables:
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        "CREATE TABLE seeds ("
+                        "id SERIAL PRIMARY KEY, "
+                        "url TEXT NOT NULL, "
+                        "normalized_url TEXT NOT NULL UNIQUE, "
+                        "domain TEXT NOT NULL, "
+                        "source_path TEXT, "
+                        "source_row INTEGER, "
+                        "blog_id INTEGER REFERENCES blogs(blog_id) ON DELETE SET NULL, "
+                        "imported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+            else:
+                connection.execute(
+                    text(
+                        "CREATE TABLE seeds ("
+                        "id INTEGER PRIMARY KEY, "
+                        "url TEXT NOT NULL, "
+                        "normalized_url TEXT NOT NULL UNIQUE, "
+                        "domain TEXT NOT NULL, "
+                        "source_path TEXT, "
+                        "source_row INTEGER, "
+                        "blog_id INTEGER REFERENCES blogs(blog_id) ON DELETE SET NULL, "
+                        "imported_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_seeds_normalized_url ON seeds (normalized_url)"))
         if "blog_labels" not in existing_tables:
             if connection.dialect.name == "postgresql":
                 connection.execute(
@@ -1239,6 +1273,29 @@ def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     }
 
 
+def _seed_payload(model: SeedModel) -> dict[str, Any]:
+    """Serialize one durable seed row for crawler bootstrap.
+
+    Args:
+        model: Seed ORM row to serialize.
+
+    Returns:
+        Plain JSON-compatible seed payload.
+    """
+
+    return {
+        "id": int(model.id),
+        "url": str(model.url),
+        "normalized_url": str(model.normalized_url),
+        "domain": str(model.domain),
+        "source_path": model.source_path,
+        "source_row": model.source_row,
+        "blog_id": model.blog_id,
+        "imported_at": _iso(model.imported_at),
+        "updated_at": _iso(model.updated_at),
+    }
+
+
 def _ingestion_request_payload(
     model: IngestionRequestModel,
     *,
@@ -1682,13 +1739,19 @@ class RepositoryProtocol(Protocol):
         email: str | None = None,
         feed_url: str | None = None,
         accepted_by: str | None = None,
+        seed_source_path: str | None = None,
+        seed_source_row: int | None = None,
     ) -> tuple[int, bool]: ...
+
+    def list_seeds(self) -> list[dict[str, Any]]: ...
 
     def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None: ...
 
     def get_next_priority_blog(self) -> dict[str, Any] | None: ...
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]: ...
+
+    def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]: ...
 
     def register_user(self, *, email: str, password: str) -> dict[str, Any]: ...
 
@@ -2532,6 +2595,8 @@ class SQLAlchemyRepository:
         email: str | None = None,
         feed_url: str | None = None,
         accepted_by: str | None = None,
+        seed_source_path: str | None = None,
+        seed_source_row: int | None = None,
     ) -> tuple[int, bool]:
         with session_scope(self.session_factory) as session:
             blog, inserted = self._upsert_blog_in_session(
@@ -2543,7 +2608,87 @@ class SQLAlchemyRepository:
                 feed_url=feed_url,
                 accepted_by=accepted_by,
             )
+            if accepted_by == "seed":
+                self._upsert_seed_in_session(
+                    session,
+                    url=url,
+                    normalized_url=str(blog.normalized_url),
+                    domain=str(blog.domain),
+                    blog_id=int(_business_blog_id(blog)),
+                    source_path=seed_source_path,
+                    source_row=seed_source_row,
+                )
             return int(_business_blog_id(blog)), inserted
+
+    def _upsert_seed_in_session(
+        self,
+        session: Session,
+        *,
+        url: str,
+        normalized_url: str,
+        domain: str,
+        blog_id: int,
+        source_path: str | None = None,
+        source_row: int | None = None,
+    ) -> SeedModel:
+        """Create or refresh the durable seed row for one imported URL.
+
+        Args:
+            session: Active SQLAlchemy session that already contains the blog
+                upsert for the same import.
+            url: Original URL from the seed CSV row.
+            normalized_url: Stored blog normalized URL after identity
+                canonicalization.
+            domain: Stored blog domain.
+            blog_id: Business blog identifier linked from the seed row.
+            source_path: Optional CSV path used for traceability.
+            source_row: Optional one-based CSV data row number.
+
+        Returns:
+            The created or updated seed row.
+        """
+
+        imported_at = now_utc()
+        seed = session.scalar(select(SeedModel).where(SeedModel.normalized_url == normalized_url))
+        if seed is None:
+            seed = SeedModel(
+                url=url,
+                normalized_url=normalized_url,
+                domain=domain,
+                source_path=source_path,
+                source_row=source_row,
+                blog_id=blog_id,
+                imported_at=imported_at,
+                updated_at=imported_at,
+            )
+            session.add(seed)
+            session.flush()
+            return seed
+
+        seed.url = url
+        seed.domain = domain
+        seed.blog_id = blog_id
+        seed.source_path = source_path
+        seed.source_row = source_row
+        seed.updated_at = imported_at
+        return seed
+
+    def list_seeds(self) -> list[dict[str, Any]]:
+        """Return all durable seed rows in deterministic insertion order.
+
+        Args:
+            None.
+
+        Returns:
+            Seed payloads ordered by primary key for bootstrap replay.
+        """
+
+        with session_scope(self.session_factory) as session:
+            return self._ordered_row_payloads(
+                session,
+                statement=select(SeedModel).order_by(SeedModel.id.asc()),
+                serializer=_seed_payload,
+            )
 
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
         requested_url, normalized_url, domain, identity_key, reason_codes, ruleset_version = normalize_homepage_url(
@@ -2652,6 +2797,67 @@ class SQLAlchemyRepository:
                 request,
                 serializer=_ingestion_request_payload,
             )
+
+    def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
+        """Accept one user-submitted URL as a crawler seed after rule checks.
+
+        Args:
+            homepage_url: Complete blog homepage URL provided by a public user.
+
+        Returns:
+            Payload describing the accepted blog and whether a row was inserted.
+
+        Raises:
+            ValueError: Raised when URL normalization fails or deterministic
+                rule filters reject the URL.
+        """
+
+        requested_url, normalized_url, domain, _identity_key, _reason_codes, _ruleset_version = normalize_homepage_url(
+            homepage_url
+        )
+        settings = self._decision_scan_settings()
+        decision_chain = build_url_decision_chain(settings)
+        candidate = UrlCandidateContext(
+            source_blog_id=0,
+            source_domain="",
+            normalized_url=normalized_url,
+            link_text="user",
+            context_text="user-submitted seed",
+        )
+        for rule_filter in decision_chain.rule_filters:
+            decision = rule_filter.apply(candidate)
+            if not decision.accepted:
+                raise ValueError(str(decision.status or "rule_filter_rejected"))
+
+        with session_scope(self.session_factory) as session:
+            blog, inserted = self._upsert_blog_in_session(
+                session,
+                url=requested_url,
+                normalized_url=normalized_url,
+                domain=domain,
+                accepted_by="user",
+            )
+            if blog.crawl_status == CrawlStatus.FAILED:
+                blog.crawl_status = CrawlStatus.WAITING
+                blog.crawl_error_kind = None
+                blog.crawl_error_message = None
+            blog.updated_at = now_utc()
+            self._upsert_seed_in_session(
+                session,
+                url=requested_url,
+                normalized_url=str(blog.normalized_url),
+                domain=str(blog.domain),
+                blog_id=int(_business_blog_id(blog)),
+                source_path="user",
+                source_row=None,
+            )
+            blog_view = _BlogPayloadView.from_model(blog)
+            return {
+                "status": "QUEUED" if blog.crawl_status == CrawlStatus.WAITING else "EXISTING",
+                "blog_id": int(_business_blog_id(blog)),
+                "inserted": inserted,
+                "blog": blog_view.as_blog_payload() if blog_view is not None else None,
+            }
 
     def _create_user_session_payload(self, session: Session, user: UserModel) -> dict[str, Any]:
         """Create one session row and return the auth response payload.
@@ -4562,24 +4768,17 @@ class SQLAlchemyRepository:
             user_labels_preserved = _count_selectable_rows(session, BlogUserLabelModel)
             user_label_selections_preserved = _count_selectable_rows(session, BlogUserLabelSelectionModel)
             label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
+            seeds_preserved = _count_selectable_rows(session, SeedModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
             scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
             scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
-            if self.dialect_name == "postgresql":
-                session.execute(
-                    text(
-                        "TRUNCATE TABLE blog_dedup_scan_run_items, blog_dedup_scan_runs, "
-                        "raw_discovered_urls, ingestion_requests, edges, blogs "
-                        "RESTART IDENTITY CASCADE"
-                    )
-                )
-            else:
-                session.query(BlogDedupScanRunItemModel).delete()
-                session.query(BlogDedupScanRunModel).delete()
-                session.query(RawDiscoveredUrlModel).delete()
-                session.query(IngestionRequestModel).delete()
-                session.query(EdgeModel).delete()
-                session.query(BlogModel).delete()
+            session.query(SeedModel).update({SeedModel.blog_id: None})
+            session.query(BlogDedupScanRunItemModel).delete()
+            session.query(BlogDedupScanRunModel).delete()
+            session.query(RawDiscoveredUrlModel).delete()
+            session.query(IngestionRequestModel).delete()
+            session.query(EdgeModel).delete()
+            session.query(BlogModel).delete()
             return {
                 "ok": True,
                 "blogs_deleted": blogs_deleted,
@@ -4596,6 +4795,7 @@ class SQLAlchemyRepository:
                 "blog_label_subjects_preserved": 0,
                 "blog_link_labels_preserved": labels_preserved,
                 "blog_label_tags_preserved": label_tags_preserved,
+                "seeds_preserved": seeds_preserved,
                 "raw_discovered_urls_deleted": raw_urls_deleted,
                 "blog_dedup_scan_items_deleted": scan_items_deleted,
                 "blog_dedup_scan_runs_deleted": scan_runs_deleted,

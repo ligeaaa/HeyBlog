@@ -69,6 +69,31 @@ class BlogModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class SeedModel(Base):
+    """Seed URL imported from a configured seed CSV file.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One durable seed record keyed by normalized URL and linked to the blog
+        row created or reused during CSV bootstrap.
+    """
+
+    __tablename__ = "seeds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class IngestionRequestModel(Base):
     """User-triggered priority ingestion request."""
 

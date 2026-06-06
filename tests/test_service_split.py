@@ -1453,6 +1453,21 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "matched_blog": None,
                 "blog": None,
             },
+            "create_user_seed": lambda self, homepage_url: {
+                "status": "QUEUED",
+                "blog_id": 44,
+                "inserted": True,
+                "blog": {
+                    "id": 44,
+                    "blog_id": 44,
+                    "url": homepage_url,
+                    "normalized_url": homepage_url,
+                    "domain": "queued-user.example",
+                    "acceptance_status": "ACCEPTED",
+                    "accepted_by": "user",
+                    "crawl_status": "WAITING",
+                },
+            },
             "get_ingestion_request": lambda self, request_id, request_token: {
                 "id": request_id,
                 "request_id": request_id,
@@ -1722,6 +1737,15 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     ingestion_status = client.get("/api/ingestion-requests/9?request_token=token-123")
     assert ingestion_status.status_code == 200
     assert ingestion_status.json()["status"] == "QUEUED"
+
+    user_seed = client.post(
+        "/api/blogs/user-seeds",
+        json={"homepage_url": "https://queued-user.example/"},
+    )
+    assert user_seed.status_code == 200
+    assert user_seed.json()["blog_id"] == 44
+    assert user_seed.json()["blog"]["accepted_by"] == "user"
+    assert user_seed.json()["blog"]["crawl_status"] == "WAITING"
 
     priority_ingestion = client.get("/api/ingestion-requests")
     assert priority_ingestion.status_code == 200
@@ -2042,6 +2066,11 @@ def test_backend_lookup_and_priority_list_surface_upstream_validation_errors() -
             response = httpx.Response(503, request=request, json={"detail": "upstream_unavailable"})
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
+        def create_user_seed(self, *, homepage_url: str) -> dict[str, object]:
+            request = httpx.Request("POST", "http://persistence/internal/user-seeds")
+            response = httpx.Response(422, request=request, json={"detail": "rule:blocked_tld"})
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+
         def get_blog(self, blog_id: int) -> None:
             return None
 
@@ -2084,6 +2113,10 @@ def test_backend_lookup_and_priority_list_surface_upstream_validation_errors() -
     priority = client.get("/api/ingestion-requests")
     assert priority.status_code == 503
     assert priority.json()["detail"] == "upstream_unavailable"
+
+    user_seed = client.post("/api/blogs/user-seeds", json={"homepage_url": "https://blog.sayori.org/"})
+    assert user_seed.status_code == 422
+    assert user_seed.json()["detail"] == "rule:blocked_tld"
 
 
 def test_backend_graph_neighbors_surfaces_upstream_not_found() -> None:

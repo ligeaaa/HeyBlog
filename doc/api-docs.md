@@ -74,6 +74,7 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `POST /api/auth/logout`
 - `GET /api/me/label-selections`
 - `GET /api/blogs/catalog`
+- `POST /api/blogs/user-seeds`
 - `POST /api/blogs/{blog_id}/user-labels`
 - `GET /api/blogs/lookup`
 - `GET /api/blogs/{blog_id}`
@@ -425,6 +426,52 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 当前前端使用方式：
 
 - 首页搜索框使用 `page=1&page_size=30&url=<输入 URL>&sort=id_desc` 查询已发现博客，并把返回项渲染为可滚动结果列表。
+
+#### `POST /api/blogs/user-seeds`
+
+用途：当首页 URL 搜索没有命中时，允许用户提交一个完整博客链接作为用户来源 seed。该接口只执行确定性规则过滤，跳过 RSS discovery 与模型共识；规则通过后会把 URL 同时写入 `blogs` 与 `seeds`。
+
+请求体：
+
+```json
+{
+  "homepage_url": "https://blog.example.com"
+}
+```
+
+成功语义：
+
+- URL 先按当前 identity/canonicalization 规则归一化
+- 只运行过滤链中的 rule filters；不会因为缺少 RSS、模型未加载或模型判非博客而拒绝
+- 规则通过后，`blogs.acceptance_status = ACCEPTED`
+- `blogs.accepted_by = user`
+- 新建或历史 `FAILED` 博客会处于 `crawl_status = WAITING`，因此可被 crawler 领取并抓取友链
+- 已经 `FINISHED` 的博客不会被强制重置为 `WAITING`
+- 同一 URL 会 upsert 到 `seeds` 表，当前用 `source_path = user` 标记用户来源
+
+成功响应示例：
+
+```json
+{
+  "status": "QUEUED",
+  "blog_id": 123,
+  "inserted": true,
+  "blog": {
+    "id": 123,
+    "blog_id": 123,
+    "url": "https://blog.example.com/",
+    "normalized_url": "https://blog.example.com/",
+    "domain": "blog.example.com",
+    "acceptance_status": "ACCEPTED",
+    "accepted_by": "user",
+    "crawl_status": "WAITING"
+  }
+}
+```
+
+错误语义：
+
+- URL 格式无法归一化或规则过滤拒绝时返回 `422`
 
 #### `GET /api/icons/proxy`
 
@@ -1086,15 +1133,23 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 #### `POST /api/admin/crawl/bootstrap`
 
-用途：从 `seed.csv` 导入种子博客。
+用途：导入种子博客。若 `seeds` 表已有记录，则直接以 `seeds` 表为来源回灌 `blogs`；仅当 `seeds` 表为空时才从 `seed.csv` 初始化。
 
 调用链：
 
 - `backend` -> `crawler /internal/crawl/bootstrap`
 
+持久化行为：
+
+- 每个 seed URL 会 upsert 到 `blogs`，并标记 `accepted_by=seed`
+- 当 `seeds` 表为空时，会从 `seed.csv` 读取非空 URL，并同步 upsert 到 `seeds` 表，记录原始 URL、规范化 URL、domain、关联 `blog_id`、来源 CSV 路径与 CSV 数据行号
+- 当 `seeds` 表不为空时，导入动作直接 replay `seeds` 表记录到 `blogs`，不会读取 `seed.csv`
+- `seeds.normalized_url` 唯一；重复导入同一个 seed 会刷新记录，不会创建重复 seed 行
+- 管理员数据库 reset 会保留 `seeds` 表数据，只清空其旧 `blog_id` 关联；下一次导入会重新把 seed 行关联到新建或复用的 blog
+
 响应字段：
 
-- `seed_path`: 实际导入的种子文件路径
+- `seed_path`: 配置的种子 CSV 文件路径；当 `seeds` 表不为空时，该字段仅表示 fallback CSV 路径
 - `imported`: 新导入的 blog 数量
 
 #### `POST /api/admin/crawl/run`
@@ -1371,7 +1426,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 ### `POST /internal/crawl/bootstrap`
 
-用途：导入种子数据。
+用途：导入种子数据。该流程优先 replay `seeds` 表到 `blogs`；只有 `seeds` 表为空时才读取 seed CSV 并同步维护 `blogs` 与 `seeds`。
 
 实际执行：`CrawlPipeline.bootstrap_seeds()`
 
@@ -2080,8 +2135,9 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 管理员前端/调用方 -> `POST /api/admin/crawl/bootstrap`
 - `backend` -> `crawler /internal/crawl/bootstrap`
-- `crawler` 读取 `seed.csv`
-- `crawler` -> `persistence-api /internal/blogs/upsert`
+- `crawler` -> `persistence-api /internal/seeds` 检查是否已有持久化 seed
+- 若已有 seed：`crawler` replay `seeds` 表到 `blogs`
+- 若没有 seed：`crawler` 读取 `seed.csv`，再通过 `persistence-api /internal/blogs/upsert` 同时写入/刷新 `blogs` 与 `seeds`
 - `crawler` -> 结构化日志管线
 
 #### 单次 crawl 运行

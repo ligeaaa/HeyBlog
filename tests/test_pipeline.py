@@ -5,6 +5,7 @@ from typing import Any
 from typing import Callable
 
 import pytest
+from sqlalchemy import func
 from sqlalchemy import select
 
 from crawler.crawling.fetching.base import FetchAttempt
@@ -13,6 +14,7 @@ from crawler.crawling.pipeline import CrawlPipeline
 from persistence_api.db import session_scope
 from persistence_api.models import BlogModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import SeedModel
 from persistence_api.repository import Repository
 from shared.config import Settings
 
@@ -110,6 +112,83 @@ def seed_blog(repository: Repository) -> dict[str, Any]:
     blog = repository.get_blog(blog_id)
     assert blog is not None
     return blog
+
+
+def test_bootstrap_seeds_persists_seed_rows_with_blog_links(tmp_path: Path) -> None:
+    """Seed CSV bootstrap should maintain a durable seed table alongside blogs."""
+    pipeline, repository = build_pipeline(tmp_path)
+    seed_path = tmp_path / "seed.csv"
+    seed_path.write_text(
+        "url\nhttps://one.example.com/\n\nhttps://two.example.com/\n",
+        encoding="utf-8",
+    )
+
+    result = pipeline.bootstrap_seeds(seed_path)
+
+    assert result == {"seed_path": str(seed_path), "imported": 2}
+    with session_scope(repository.session_factory) as session:
+        seeds = session.scalars(select(SeedModel).order_by(SeedModel.id)).all()
+        assert [(seed.url, seed.normalized_url, seed.source_path, seed.source_row) for seed in seeds] == [
+            (
+                "https://one.example.com/",
+                "https://one.example.com/",
+                str(seed_path),
+                2,
+            ),
+            (
+                "https://two.example.com/",
+                "https://two.example.com/",
+                str(seed_path),
+                3,
+            ),
+        ]
+        assert all(seed.blog_id is not None for seed in seeds)
+
+
+def test_bootstrap_seeds_does_not_reread_csv_after_seed_table_exists(tmp_path: Path) -> None:
+    """Re-importing after seed table initialization should not read CSV again."""
+    pipeline, repository = build_pipeline(tmp_path)
+    seed_path = tmp_path / "seed.csv"
+    seed_path.write_text("url\nhttps://one.example.com/\n", encoding="utf-8")
+    assert pipeline.bootstrap_seeds(seed_path)["imported"] == 1
+
+    seed_path.write_text("url\nhttps://one.example.com/?utm_source=ignored\n", encoding="utf-8")
+    result = pipeline.bootstrap_seeds(seed_path)
+
+    assert result == {"seed_path": str(seed_path), "imported": 0}
+    with session_scope(repository.session_factory) as session:
+        seeds = session.scalars(select(SeedModel)).all()
+        assert len(seeds) == 1
+        assert seeds[0].url == "https://one.example.com/"
+        assert seeds[0].normalized_url == "https://one.example.com/"
+        assert session.scalar(select(func.count()).select_from(BlogModel)) == 1
+
+
+def test_bootstrap_seeds_replays_seed_table_before_reading_csv(tmp_path: Path) -> None:
+    """When durable seeds exist, bootstrap should use them instead of the CSV file."""
+    pipeline, repository = build_pipeline(tmp_path)
+    seed_path = tmp_path / "seed.csv"
+    seed_path.write_text("url\nhttps://csv-only.example.com/\n", encoding="utf-8")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://table-seed.example.com/",
+        normalized_url="https://table-seed.example.com/",
+        domain="table-seed.example.com",
+        accepted_by="seed",
+        seed_source_path="seed.csv",
+        seed_source_row=2,
+    )
+    assert inserted is True
+    repository.reset()
+
+    result = pipeline.bootstrap_seeds(seed_path)
+
+    assert result == {"seed_path": str(seed_path), "imported": 1}
+    with session_scope(repository.session_factory) as session:
+        blog_urls = session.scalars(select(BlogModel.normalized_url).order_by(BlogModel.id)).all()
+        assert blog_urls == ["https://table-seed.example.com/"]
+        seed = session.scalar(select(SeedModel))
+        assert seed is not None
+        assert seed.blog_id == blog_id
 
 
 def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:

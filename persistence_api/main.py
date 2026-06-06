@@ -50,11 +50,17 @@ class UpsertBlogRequest(BaseModel):
     email: str | None = None
     feed_url: str | None = None
     accepted_by: str | None = None
+    seed_source_path: str | None = None
+    seed_source_row: int | None = None
 
 
 class CreateIngestionRequest(BaseModel):
     homepage_url: str
     email: str
+
+
+class CreateUserSeedRequest(BaseModel):
+    homepage_url: str
 
 
 class UserAuthRequest(BaseModel):
@@ -514,6 +520,13 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             status_code=422,
         )
 
+    @app.post("/internal/user-seeds")
+    def create_user_seed(payload: CreateUserSeedRequest) -> dict[str, Any]:
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.create_user_seed(**payload.model_dump()),
+            status_code=422,
+        )
+
     @app.get("/internal/ingestion-requests/{request_id}")
     def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
         return _require_payload(
@@ -566,6 +579,11 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def upsert_blog(payload: UpsertBlogRequest) -> dict[str, Any]:
         blog_id, inserted = get_state().repository.upsert_blog(**payload.model_dump())
         return {"id": blog_id, "inserted": inserted}
+
+    @app.get("/internal/seeds")
+    def list_seeds() -> list[dict[str, Any]]:
+        """Return durable seed rows for crawler bootstrap replay."""
+        return get_state().repository.list_seeds()
 
     @app.get("/internal/blogs/by-normalized-url")
     def find_blog_by_normalized_url(normalized_url: str) -> dict[str, int | None]:
