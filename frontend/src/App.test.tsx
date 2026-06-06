@@ -40,6 +40,42 @@ function makeCatalogItem(id: number, crawlStatus: string, title: string) {
   };
 }
 
+function makeDetailPayload(item: Record<string, unknown>) {
+  const relatedBlog = makeCatalogItem(88, "FINISHED", "Related Blog");
+  const recommendedBlog = makeCatalogItem(89, "FINISHED", "Recommended Blog");
+  const viaBlog = makeCatalogItem(90, "FINISHED", "Mutual Blog");
+  return {
+    ...item,
+    icon_url: `https://${String(item.domain)}/favicon.ico`,
+    incoming_edges: [
+      {
+        id: "incoming-1",
+        from_blog_id: relatedBlog.id,
+        to_blog_id: item.id,
+        link_text: "friend",
+        link_url_raw: item.url,
+        neighbor_blog: relatedBlog,
+      },
+    ],
+    outgoing_edges: [
+      {
+        id: "outgoing-1",
+        from_blog_id: item.id,
+        to_blog_id: relatedBlog.id,
+        link_text: "blogroll",
+        link_url_raw: relatedBlog.url,
+        neighbor_blog: relatedBlog,
+      },
+    ],
+    recommended_blogs: [
+      {
+        ...recommendedBlog,
+        via_blogs: [viaBlog],
+      },
+    ],
+  };
+}
+
 function sortCatalogItems(items: Array<Record<string, unknown>>, sort: string) {
   const copied = [...items];
   if (sort === "id_desc") {
@@ -153,6 +189,14 @@ beforeEach(() => {
           sort,
         }),
       );
+    }
+    const blogDetailMatch = url.pathname.match(/^\/api\/blogs\/(\d+)$/);
+    if (blogDetailMatch) {
+      const detailItem = catalogItems.find((item) => Number(item.id) === Number(blogDetailMatch[1]));
+      if (!detailItem) {
+        return new Response(JSON.stringify({ detail: "not_found" }), { status: 404 });
+      }
+      return new Response(JSON.stringify(makeDetailPayload(detailItem)));
     }
     if (url.pathname === "/api/status") {
       return new Response(JSON.stringify(statusPayload));
@@ -360,7 +404,10 @@ test("renders the home summary with URL search while keeping queue metrics and c
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
 });
 
-test("lets home users search normalized URLs and open a blank blog detail route", async () => {
+test("lets home users search normalized URLs and open the blog detail route", async () => {
+  catalogItems = catalogItems.map((item) =>
+    Number(item.id) === 3 ? { ...item, icon_url: "https://finished-blog.example.com/favicon.ico" } : item,
+  );
   render(<App />);
 
   const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
@@ -381,6 +428,10 @@ test("lets home users search normalized URLs and open a blank blog detail route"
   expect(screen.getByText("1 个匹配")).toBeInTheDocument();
   expect(screen.getByText("Finished Blog")).toBeInTheDocument();
   expect(screen.getByText("https://finished-blog.example.com/")).toBeInTheDocument();
+  expect(screen.getByAltText("finished-blog.example.com icon")).toHaveAttribute(
+    "src",
+    "https://finished-blog.example.com/favicon.ico",
+  );
 
   fireEvent.click(screen.getByRole("button", { name: /Finished Blog/i }));
 
@@ -388,6 +439,16 @@ test("lets home users search normalized URLs and open a blank blog detail route"
     expect(window.location.pathname).toBe("/blogs/3");
   });
   expect(screen.queryByRole("heading", { name: "HeyBlog!" })).not.toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "Finished Blog" })).toBeInTheDocument();
+  });
+  expect(screen.getByAltText("finished-blog.example.com icon")).toHaveAttribute(
+    "src",
+    "https://finished-blog.example.com/favicon.ico",
+  );
+  expect(screen.getByRole("heading", { name: "直接相关博客" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "推荐博客" })).toBeInTheDocument();
+  expect(screen.getByText("通过 Mutual Blog 关联")).toBeInTheDocument();
 });
 
 test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {

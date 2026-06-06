@@ -4,10 +4,44 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
 import { fetchBlogsCatalog, fetchStats } from "../lib/api";
+import { resolveBlogIconUrls } from "../lib/icon";
 import type { BlogCatalogItem, StatsData } from "../types/graph";
 
 const HOME_REFRESH_INTERVAL_MS = 5000;
 const HOME_SEARCH_PAGE_SIZE = 30;
+
+/**
+ * Render the icon used in one homepage search result row.
+ *
+ * @param props Blog catalog item used for icon resolution.
+ * @returns Blog icon image or text fallback.
+ */
+function SearchResultIcon({ blog }: { blog: BlogCatalogItem }) {
+  const iconUrls = resolveBlogIconUrls(blog);
+  const [iconIndex, setIconIndex] = useState(0);
+  const iconUrl = iconUrls[iconIndex];
+
+  useEffect(() => {
+    setIconIndex(0);
+  }, [blog.id, blog.iconUrl, blog.url, blog.domain]);
+
+  return (
+    <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100 text-base font-semibold text-slate-500 ring-1 ring-slate-200">
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt={`${blog.domain} icon`}
+          className="h-full w-full object-cover"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setIconIndex((currentIndex) => currentIndex + 1)}
+        />
+      ) : (
+        <span>{(blog.domain || "?").slice(0, 1).toUpperCase()}</span>
+      )}
+    </div>
+  );
+}
 
 /**
  * Render the public home page summary without the status-filtered blog catalog.
@@ -225,9 +259,12 @@ export function HomePage() {
                       className="block w-full border-b border-slate-100 px-4 py-4 text-left transition-colors last:border-b-0 hover:bg-sky-50 focus:bg-sky-50 focus:outline-none"
                     >
                       <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="truncate text-base text-slate-950">{blog.title || blog.domain}</div>
-                          <div className="mt-1 truncate text-sm text-slate-500">{blog.normalizedUrl}</div>
+                        <div className="flex min-w-0 items-center gap-3">
+                          <SearchResultIcon blog={blog} />
+                          <div className="min-w-0">
+                            <div className="truncate text-base text-slate-950">{blog.title || blog.domain}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{blog.normalizedUrl}</div>
+                          </div>
                         </div>
                         <span className="flex-shrink-0 rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-500">
                           {blog.crawlStatus}
