@@ -11,6 +11,7 @@ import type { BlogDetail, GraphData, GraphNode } from "../types/graph";
 
 const DEFAULT_GRAPH_LIMIT = 200;
 const ESTIMATED_RENDER_TICKS_PER_SECOND = 60;
+type GraphDisplayMode = "compact" | "full";
 
 /**
  * Format a force-layout tick estimate as an approximate render duration.
@@ -21,6 +22,39 @@ const ESTIMATED_RENDER_TICKS_PER_SECOND = 60;
 function formatEstimatedRenderTime(ticks: number): string {
   const seconds = Math.max(1, Math.ceil(ticks / ESTIMATED_RENDER_TICKS_PER_SECOND));
   return `约 ${seconds} 秒`;
+}
+
+/**
+ * Keep only graph nodes connected to at least two distinct other nodes.
+ *
+ * @param graph Raw graph returned by the backend.
+ * @returns Compact graph with filtered nodes and only edges between kept nodes.
+ */
+export function compactGraphData(graph: GraphData): GraphData {
+  const neighborIdsByNodeId = new Map<number, Set<number>>();
+  for (const node of graph.nodes) {
+    neighborIdsByNodeId.set(node.id, new Set());
+  }
+
+  for (const edge of graph.edges) {
+    if (!neighborIdsByNodeId.has(edge.source) || !neighborIdsByNodeId.has(edge.target) || edge.source === edge.target) {
+      continue;
+    }
+    neighborIdsByNodeId.get(edge.source)?.add(edge.target);
+    neighborIdsByNodeId.get(edge.target)?.add(edge.source);
+  }
+
+  const keptNodeIds = new Set(
+    Array.from(neighborIdsByNodeId.entries())
+      .filter(([, neighborIds]) => neighborIds.size >= 2)
+      .map(([nodeId]) => nodeId),
+  );
+
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((node) => keptNodeIds.has(node.id)),
+    edges: graph.edges.filter((edge) => keptNodeIds.has(edge.source) && keptNodeIds.has(edge.target)),
+  };
 }
 
 /**
@@ -42,7 +76,12 @@ export function VisualizationPage() {
   const [maxGraphLimit, setMaxGraphLimit] = useState(0);
   const [pendingLimit, setPendingLimit] = useState(DEFAULT_GRAPH_LIMIT);
   const [selectedLimit, setSelectedLimit] = useState<number | null>(null);
+  const [graphDisplayMode, setGraphDisplayMode] = useState<GraphDisplayMode>("compact");
   const [highlightNodeId, setHighlightNodeId] = useState<number | undefined>();
+  const visibleGraphData = useMemo(
+    () => (graphDisplayMode === "compact" ? compactGraphData(graphData) : graphData),
+    [graphData, graphDisplayMode],
+  );
   const shouldShowProgressOverlay = isLoading || isRendering;
   const progressPercent = useMemo(() => {
     const loadingFloor = isLoading ? 0.08 : 0;
@@ -100,6 +139,7 @@ export function VisualizationPage() {
    * @returns Promise resolved after benchmark graph state updates.
    */
   async function loadBenchmarkGraph() {
+    setGraphDisplayMode("full");
     setSelectedLimit(100);
     setPendingLimit(100);
     setMaxGraphLimit(100);
@@ -167,7 +207,7 @@ export function VisualizationPage() {
    */
   async function openBlog(blogId: number, options: { loadNeighborhood: boolean }) {
     if (isBenchmarkMode) {
-      const node = graphData.nodes.find((item) => item.id === blogId);
+      const node = visibleGraphData.nodes.find((item) => item.id === blogId);
       if (!node) {
         return;
       }
@@ -223,7 +263,7 @@ export function VisualizationPage() {
 
       <div className="relative min-h-0 flex-1">
         <GraphVisualization
-          data={graphData}
+          data={visibleGraphData}
           onNodeClick={handleNodeClick}
           highlightNodeId={highlightNodeId}
           useNodeIcons={!isBenchmarkMode}
@@ -260,6 +300,28 @@ export function VisualizationPage() {
                     <div className="flex items-end justify-between gap-4">
                       <div className="text-sm text-slate-500">节点数量</div>
                       <div className="text-3xl font-semibold tabular-nums text-slate-950">{pendingLimit}</div>
+                    </div>
+                    <div className="mt-5 grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setGraphDisplayMode("compact")}
+                        className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                          graphDisplayMode === "compact" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white"
+                        }`}
+                        aria-pressed={graphDisplayMode === "compact"}
+                      >
+                        精简
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGraphDisplayMode("full")}
+                        className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                          graphDisplayMode === "full" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white"
+                        }`}
+                        aria-pressed={graphDisplayMode === "full"}
+                      >
+                        全
+                      </button>
                     </div>
                     <input
                       type="range"

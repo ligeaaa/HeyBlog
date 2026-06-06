@@ -194,11 +194,67 @@ beforeEach(() => {
               domain: "graph.example.com",
               title: "Graph Example",
               icon_url: null,
+              incoming_count: 2,
+              outgoing_count: 1,
+            },
+            {
+              id: 2,
+              url: "https://two.example.com/",
+              domain: "two.example.com",
+              title: "Two Example",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+            },
+            {
+              id: 3,
+              url: "https://three.example.com/",
+              domain: "three.example.com",
+              title: "Three Example",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+            },
+            {
+              id: 4,
+              url: "https://leaf.example.com/",
+              domain: "leaf.example.com",
+              title: "Leaf Example",
+              icon_url: null,
               incoming_count: 0,
-              outgoing_count: 0,
+              outgoing_count: 1,
             },
           ],
-          edges: [],
+          edges: [
+            {
+              id: "edge-1-2",
+              from_blog_id: 1,
+              to_blog_id: 2,
+              link_text: null,
+              link_url_raw: "https://two.example.com/",
+            },
+            {
+              id: "edge-2-3",
+              from_blog_id: 2,
+              to_blog_id: 3,
+              link_text: null,
+              link_url_raw: "https://three.example.com/",
+            },
+            {
+              id: "edge-3-1",
+              from_blog_id: 3,
+              to_blog_id: 1,
+              link_text: null,
+              link_url_raw: "https://graph.example.com/",
+            },
+            {
+              id: "edge-1-4",
+              from_blog_id: 1,
+              to_blog_id: 4,
+              link_text: null,
+              link_url_raw: "https://leaf.example.com/",
+            },
+          ],
           meta: {
             strategy: "degree",
             limit: 200,
@@ -349,6 +405,8 @@ test("lets visualization users choose a graph size with a blog-count slider", as
   expect(screen.queryByText(/显示实际下载大小/)).not.toBeInTheDocument();
   expect(screen.queryByText("该功能仍不成熟！")).not.toBeInTheDocument();
   expect(screen.queryByText("数据统计")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "精简" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "全" })).toHaveAttribute("aria-pressed", "false");
 
   fireEvent.change(slider, { target: { value: "20" } });
   expect(slider).toHaveValue("20");
@@ -362,9 +420,13 @@ test("lets visualization users choose a graph size with a blog-count slider", as
     expect.stringContaining("/api/graph/views/core?strategy=seed&limit=20"),
     expect.anything(),
   );
+  expect(forceGraphProps.at(-1)!.graphData.nodes.map((node: { id: string }) => node.id)).toEqual(["1", "2", "3"]);
+  expect(forceGraphProps.at(-1)!.graphData.links).toHaveLength(3);
   expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
-  expect(screen.getByText("预计需要 120 ticks")).toBeInTheDocument();
-  expect(screen.getByText("预估所需渲染时间：约 2 秒")).toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.getByText("预计需要 126 ticks")).toBeInTheDocument();
+  });
+  expect(screen.getByText("预估所需渲染时间：约 3 秒")).toBeInTheDocument();
   act(() => {
     forceGraphProps.at(-1)!.onEngineTick();
     forceGraphProps.at(-1)!.onEngineTick();
@@ -380,6 +442,23 @@ test("lets visualization users choose a graph size with a blog-count slider", as
   expect(screen.queryByText("全图最大节点数")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /刷新全图|返回全图/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /搜索博客/i })).not.toBeInTheDocument();
+});
+
+test("lets visualization users load the full graph without compact filtering", async () => {
+  window.history.replaceState({}, "", "/visualization");
+
+  render(<App />);
+
+  const fullButton = await screen.findByRole("button", { name: "全" });
+  fireEvent.click(fullButton);
+  expect(fullButton).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
+
+  await waitFor(() => {
+    expect(forceGraphProps.at(-1)!.graphData.nodes).toHaveLength(4);
+  });
+  expect(forceGraphProps.at(-1)!.graphData.links).toHaveLength(4);
 });
 
 test("ignores stale cached visualization graph data and reloads sampled sizes online", async () => {
