@@ -6,6 +6,10 @@ import { resolveIconProxyUrl } from "../lib/icon";
 import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
 
 export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
+const GRAPH_RENDER_MIN_STABILITY_TICKS = 80;
+const GRAPH_RENDER_STABLE_SAMPLE_TICKS = 20;
+const GRAPH_RENDER_AVERAGE_MOVEMENT_THRESHOLD = 0.15;
+const GRAPH_RENDER_MAX_MOVEMENT_THRESHOLD = 1;
 const GRAPH_LINK_DISTANCE = 58;
 const GRAPH_LINK_STRENGTH = 0.56;
 const GRAPH_CHARGE_STRENGTH = -190;
@@ -17,6 +21,7 @@ interface GraphVisualizationProps {
   highlightNodeId?: number;
   onRenderProgress?: (progress: number) => void;
   onRenderComplete?: () => void;
+  onRenderTickEstimate?: (ticks: number) => void;
   useNodeIcons?: boolean;
 }
 
@@ -40,8 +45,101 @@ interface RenderGraphData {
   links: RenderLink[];
 }
 
+interface NodePosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface MovementSample {
+  averageMovement: number;
+  maxMovement: number;
+  measuredNodes: number;
+}
+
 function nodeTitle(node: GraphNode): string {
   return node.title?.trim() || node.domain || node.url || `Blog ${node.id}`;
+}
+
+/**
+ * Keep one numeric value above an inclusive minimum.
+ *
+ * @param value Candidate value.
+ * @param min Inclusive minimum.
+ * @returns Value constrained to at least min.
+ */
+function clampMin(value: number, min: number): number {
+  return Math.max(min, value);
+}
+
+/**
+ * Estimate the maximum force-layout duration from graph size.
+ *
+ * @param nodeCount Number of renderable graph nodes.
+ * @param edgeCount Number of renderable graph links.
+ * @returns Cooldown tick upper bound used by the force graph engine.
+ */
+export function estimateGraphRenderCooldownTicks(nodeCount: number, edgeCount: number): number {
+  const safeNodeCount = Math.max(0, nodeCount);
+  const safeEdgeCount = Math.max(0, edgeCount);
+  const edgeDensity = safeEdgeCount / Math.max(1, safeNodeCount);
+  const estimatedTicks = Math.round(
+    80 + 12 * Math.sqrt(safeNodeCount) + 4 * Math.sqrt(safeEdgeCount) + Math.min(180, edgeDensity * 18),
+  );
+
+  return clampMin(estimatedTicks, GRAPH_RENDER_COOLDOWN_TICKS);
+}
+
+/**
+ * Capture the current 3D positions for nodes that have been placed by d3.
+ *
+ * @param nodes Render nodes from the active graph payload.
+ * @returns Map keyed by render node id with current coordinates.
+ */
+function snapshotNodePositions(nodes: RenderNode[]): Map<string, NodePosition> {
+  const positions = new Map<string, NodePosition>();
+  for (const node of nodes) {
+    if (node.x === undefined || node.y === undefined || node.z === undefined) {
+      continue;
+    }
+    positions.set(node.id, { x: node.x, y: node.y, z: node.z });
+  }
+  return positions;
+}
+
+/**
+ * Measure node displacement since the previous force tick.
+ *
+ * @param nodes Render nodes from the active graph payload.
+ * @param previousPositions Position snapshot from the previous tick.
+ * @returns Average and maximum displacement, or undefined when no positions are available.
+ */
+function measureNodeMovement(nodes: RenderNode[], previousPositions: Map<string, NodePosition>): MovementSample | undefined {
+  let totalMovement = 0;
+  let maxMovement = 0;
+  let measuredNodes = 0;
+
+  for (const node of nodes) {
+    const previous = previousPositions.get(node.id);
+    if (!previous || node.x === undefined || node.y === undefined || node.z === undefined) {
+      continue;
+    }
+
+    const movement = Math.hypot(node.x - previous.x, node.y - previous.y, node.z - previous.z);
+    totalMovement += movement;
+    maxMovement = Math.max(maxMovement, movement);
+    measuredNodes += 1;
+  }
+
+  if (measuredNodes === 0) {
+    return undefined;
+  }
+
+  return {
+    averageMovement: totalMovement / measuredNodes,
+    maxMovement,
+    measuredNodes,
+  };
 }
 
 function sourceIdOf(link: RenderLink): string {
@@ -259,14 +357,23 @@ export function GraphVisualization({
   highlightNodeId,
   onRenderProgress,
   onRenderComplete,
+  onRenderTickEstimate,
   useNodeIcons = true,
 }: GraphVisualizationProps) {
   const graphRef = useRef<ForceGraphMethods<RenderNode, RenderLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const renderTickRef = useRef(0);
+  const stableTickRef = useRef(0);
+  const earlyStopRequestedRef = useRef(false);
+  const previousPositionsRef = useRef<Map<string, NodePosition>>(new Map());
   const [size, setSize] = useState({ width: 960, height: 720 });
   const [isMeasured, setIsMeasured] = useState(false);
   const graphData = useMemo(() => buildGraphData(data, useNodeIcons), [data, useNodeIcons]);
+  const estimatedCooldownTicks = useMemo(
+    () => estimateGraphRenderCooldownTicks(graphData.nodes.length, graphData.links.length),
+    [graphData.links.length, graphData.nodes.length],
+  );
+  const [cooldownTicks, setCooldownTicks] = useState(estimatedCooldownTicks);
   const neighborIds = useMemo(() => buildNeighborIds(graphData, highlightNodeId), [graphData, highlightNodeId]);
   const selectedGraphId = highlightNodeId === undefined ? undefined : String(highlightNodeId);
 
@@ -288,7 +395,12 @@ export function GraphVisualization({
 
   useEffect(() => {
     renderTickRef.current = 0;
-  }, [graphData]);
+    stableTickRef.current = 0;
+    earlyStopRequestedRef.current = false;
+    previousPositionsRef.current = snapshotNodePositions(graphData.nodes);
+    setCooldownTicks(estimatedCooldownTicks);
+    onRenderTickEstimate?.(estimatedCooldownTicks);
+  }, [estimatedCooldownTicks, graphData, onRenderTickEstimate]);
 
   useEffect(() => {
     const graph = graphRef.current;
@@ -338,8 +450,27 @@ export function GraphVisualization({
 
   const handleEngineTick = useCallback(() => {
     renderTickRef.current += 1;
-    onRenderProgress?.(Math.min(renderTickRef.current / GRAPH_RENDER_COOLDOWN_TICKS, 0.98));
-  }, [onRenderProgress]);
+    const movement = measureNodeMovement(graphData.nodes, previousPositionsRef.current);
+    previousPositionsRef.current = snapshotNodePositions(graphData.nodes);
+
+    if (
+      movement &&
+      renderTickRef.current >= GRAPH_RENDER_MIN_STABILITY_TICKS &&
+      movement.averageMovement < GRAPH_RENDER_AVERAGE_MOVEMENT_THRESHOLD &&
+      movement.maxMovement < GRAPH_RENDER_MAX_MOVEMENT_THRESHOLD
+    ) {
+      stableTickRef.current += 1;
+    } else {
+      stableTickRef.current = 0;
+    }
+
+    if (!earlyStopRequestedRef.current && stableTickRef.current >= GRAPH_RENDER_STABLE_SAMPLE_TICKS) {
+      earlyStopRequestedRef.current = true;
+      setCooldownTicks((current) => Math.min(current, renderTickRef.current));
+    }
+
+    onRenderProgress?.(Math.min(renderTickRef.current / cooldownTicks, 0.98));
+  }, [cooldownTicks, graphData.nodes, onRenderProgress]);
 
   const handleEngineStop = useCallback(() => {
     onRenderProgress?.(1);
@@ -394,7 +525,7 @@ export function GraphVisualization({
           }}
           d3VelocityDecay={0.38}
           d3AlphaDecay={0.025}
-          cooldownTicks={GRAPH_RENDER_COOLDOWN_TICKS}
+          cooldownTicks={cooldownTicks}
           onEngineTick={handleEngineTick}
           onEngineStop={handleEngineStop}
           controlType="orbit"

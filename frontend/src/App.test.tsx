@@ -363,6 +363,8 @@ test("lets visualization users choose a graph size with a blog-count slider", as
     expect.anything(),
   );
   expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
+  expect(screen.getByText("预计需要 120 ticks")).toBeInTheDocument();
+  expect(screen.getByText("预估所需渲染时间：约 2 秒")).toBeInTheDocument();
   act(() => {
     forceGraphProps.at(-1)!.onEngineTick();
     forceGraphProps.at(-1)!.onEngineTick();

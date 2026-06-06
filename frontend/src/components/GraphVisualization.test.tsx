@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { GraphVisualization } from "./GraphVisualization";
+import { estimateGraphRenderCooldownTicks, GraphVisualization } from "./GraphVisualization";
 import { tuneNaturalClusterForces } from "./GraphVisualization";
 import type { ForwardedRef } from "react";
 import type { GraphData } from "../types/graph";
@@ -50,6 +50,7 @@ const { chargeForce, d3ReheatSimulation, forceCalls, forceGraphRenders, ForceGra
           })),
           controls: vi.fn(() => ({ update: vi.fn() })),
           cameraPosition: vi.fn(),
+          refresh: vi.fn(),
         };
         if (typeof resolvedRef === "function") {
           resolvedRef(graphInstance);
@@ -181,6 +182,12 @@ afterEach(() => {
 });
 
 describe("GraphVisualization", () => {
+  test("estimates larger render cooldowns for bigger or denser graphs", () => {
+    expect(estimateGraphRenderCooldownTicks(2, 1)).toBe(120);
+    expect(estimateGraphRenderCooldownTicks(100, 500)).toBeGreaterThan(120);
+    expect(estimateGraphRenderCooldownTicks(10000, 100000)).toBeGreaterThan(720);
+  });
+
   test("passes cleaned node-link data into the 3D force graph", () => {
     render(<GraphVisualization data={forceGraphData} />);
 
@@ -279,6 +286,40 @@ describe("GraphVisualization", () => {
 
     expect(graphProps!.linkWidth(defaultLink)).toBe(1.6);
     expect(graphProps!.linkColor(defaultLink)).toBe("rgba(224, 242, 254, 0.78)");
+  });
+
+  test("uses dynamic cooldown ticks and completes early after stable movement", () => {
+    const handleProgress = vi.fn();
+    const handleComplete = vi.fn();
+    const graphWithPositions: GraphData = {
+      nodes: forceGraphData.nodes.map((node, index) => ({
+        ...node,
+        x: index * 10,
+        y: 0,
+        z: 0,
+      })),
+      edges: forceGraphData.edges,
+    };
+
+    render(
+      <GraphVisualization data={graphWithPositions} onRenderProgress={handleProgress} onRenderComplete={handleComplete} />,
+    );
+
+    const initialProps = forceGraphRenders.at(-1)!;
+    expect(initialProps.cooldownTicks).toBe(estimateGraphRenderCooldownTicks(2, 1));
+
+    act(() => {
+      for (let index = 0; index < 100; index += 1) {
+        initialProps.onEngineTick();
+      }
+    });
+
+    const stableProps = forceGraphRenders.at(-1)!;
+    expect(stableProps.cooldownTicks).toBe(100);
+    stableProps.onEngineStop();
+
+    expect(handleProgress).toHaveBeenLastCalledWith(1);
+    expect(handleComplete).toHaveBeenCalled();
   });
 
   test("exposes icon-only zoom and reset controls", () => {

@@ -10,6 +10,18 @@ import { fetchBlogDetail, fetchGraphData, fetchStats, fetchSubgraph } from "../l
 import type { BlogDetail, GraphData, GraphNode } from "../types/graph";
 
 const DEFAULT_GRAPH_LIMIT = 200;
+const ESTIMATED_RENDER_TICKS_PER_SECOND = 60;
+
+/**
+ * Format a force-layout tick estimate as an approximate render duration.
+ *
+ * @param ticks Estimated force-layout tick count.
+ * @returns Human-readable duration label.
+ */
+function formatEstimatedRenderTime(ticks: number): string {
+  const seconds = Math.max(1, Math.ceil(ticks / ESTIMATED_RENDER_TICKS_PER_SECOND));
+  return `约 ${seconds} 秒`;
+}
 
 /**
  * Render the dedicated graph exploration route.
@@ -26,6 +38,7 @@ export function VisualizationPage() {
   const [isStatsLoading, setIsStatsLoading] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
+  const [estimatedRenderTicks, setEstimatedRenderTicks] = useState<number | null>(null);
   const [maxGraphLimit, setMaxGraphLimit] = useState(0);
   const [pendingLimit, setPendingLimit] = useState(DEFAULT_GRAPH_LIMIT);
   const [selectedLimit, setSelectedLimit] = useState<number | null>(null);
@@ -35,6 +48,10 @@ export function VisualizationPage() {
     const loadingFloor = isLoading ? 0.08 : 0;
     return Math.round(Math.max(loadingFloor, renderProgress) * 100);
   }, [isLoading, renderProgress]);
+  const estimatedRenderTime = useMemo(
+    () => (estimatedRenderTicks ? formatEstimatedRenderTime(estimatedRenderTicks) : null),
+    [estimatedRenderTicks],
+  );
 
   useEffect(() => {
     if (isBenchmarkMode) {
@@ -90,6 +107,7 @@ export function VisualizationPage() {
     setHighlightNodeId(undefined);
     setIsRendering(false);
     setRenderProgress(0);
+    setEstimatedRenderTicks(null);
 
     try {
       setIsStatsLoading(false);
@@ -102,6 +120,7 @@ export function VisualizationPage() {
       setSelectedLimit(null);
       setIsRendering(false);
       setRenderProgress(0);
+      setEstimatedRenderTicks(null);
       toast.error("Benchmark 图谱加载失败，请先运行生成脚本。");
     } finally {
       setIsLoading(false);
@@ -120,6 +139,7 @@ export function VisualizationPage() {
     setHighlightNodeId(undefined);
     setIsRendering(false);
     setRenderProgress(0);
+    setEstimatedRenderTicks(null);
 
     try {
       setIsLoading(true);
@@ -131,6 +151,7 @@ export function VisualizationPage() {
       setSelectedLimit(null);
       setIsRendering(false);
       setRenderProgress(0);
+      setEstimatedRenderTicks(null);
       toast.error("图谱加载失败，请刷新页面重试。");
     } finally {
       setIsLoading(false);
@@ -207,6 +228,7 @@ export function VisualizationPage() {
           highlightNodeId={highlightNodeId}
           useNodeIcons={!isBenchmarkMode}
           onRenderProgress={(progress) => setRenderProgress((current) => Math.max(current, progress))}
+          onRenderTickEstimate={setEstimatedRenderTicks}
           onRenderComplete={() => {
             setRenderProgress(1);
             setIsRendering(false);
@@ -273,6 +295,12 @@ export function VisualizationPage() {
                   <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
                   {isLoading ? "正在加载图谱数据..." : "正在计算 3D 力导布局..."}
                 </div>
+                {!isLoading && estimatedRenderTicks ? (
+                  <div className="mt-3 space-y-1 text-sm tabular-nums text-slate-500">
+                    <div>预计需要 {estimatedRenderTicks} ticks</div>
+                    {estimatedRenderTime ? <div>预估所需渲染时间：{estimatedRenderTime}</div> : null}
+                  </div>
+                ) : null}
                 <div
                   className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100"
                   role="progressbar"
