@@ -48,11 +48,6 @@ class RunBatchRequest(BaseModel):
     max_nodes: int
 
 
-class CreateIngestionRequest(BaseModel):
-    homepage_url: str
-    email: str
-
-
 class CreateUserSeedRequest(BaseModel):
     homepage_url: str
 
@@ -404,98 +399,6 @@ def build_backend_state(settings: Settings | None = None) -> BackendState:
         admin_token=resolved.admin_token,
         admin_dev_bypass=resolved.admin_dev_bypass,
     )
-
-
-def _execute_blog_dedup_scan_in_background(
-    state: BackendState,
-    *,
-    run_id: int,
-    crawler_was_running: bool,
-) -> None:
-    restart_attempted = False
-    restart_succeeded = False
-    search_reindexed = False
-    error_message: str | None = None
-    try:
-        state.persistence.execute_blog_dedup_scan_run(run_id=run_id)
-        search_reindexed = _best_effort_search_reindex(state.search)
-    except httpx.HTTPStatusError as exc:
-        error_message = str(_upstream_error_detail(exc))
-    except Exception as exc:  # noqa: BLE001
-        error_message = str(exc)
-    finally:
-        if crawler_was_running:
-            restart_attempted = True
-            try:
-                state.crawler.start()
-                restart_succeeded = True
-            except Exception:  # noqa: BLE001
-                restart_succeeded = False
-        try:
-            state.persistence.finalize_blog_dedup_scan_run(
-                run_id=run_id,
-                crawler_restart_attempted=restart_attempted,
-                crawler_restart_succeeded=restart_succeeded,
-                search_reindexed=search_reindexed,
-                error_message=error_message,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        state.maintenance_in_progress = False
-
-
-def _start_maintenance_background_task(
-    state: BackendState,
-    *,
-    prepare_run: Callable[[bool], tuple[dict[str, Any], dict[str, Any]]],
-    on_http_error: Callable[[httpx.HTTPStatusError], NoReturn],
-    on_http_exception: Callable[[HTTPException], NoReturn],
-    on_unexpected_error: Callable[[Exception], NoReturn],
-    target: Callable[..., None],
-) -> dict[str, Any]:
-    """Start one maintenance-mode background task with shared exception handling."""
-    crawler_was_running = _enter_maintenance(state)
-    try:
-        payload, thread_kwargs = prepare_run(crawler_was_running)
-    except httpx.HTTPStatusError as exc:
-        on_http_error(exc)
-    except HTTPException as exc:
-        on_http_exception(exc)
-    except Exception as exc:  # noqa: BLE001
-        on_unexpected_error(exc)
-    Thread(
-        target=target,
-        kwargs={"state": state, **thread_kwargs},
-        daemon=True,
-    ).start()
-    return payload
-
-
-def _build_maintenance_start_error_handlers(
-    *,
-    cleanup: Callable[[str], None],
-    unexpected_detail: str,
-) -> tuple[
-    Callable[[httpx.HTTPStatusError], NoReturn],
-    Callable[[HTTPException], NoReturn],
-    Callable[[Exception], NoReturn],
-]:
-    """Build the shared error-handler skeleton for maintenance start routes."""
-
-    def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
-        detail = _upstream_error_detail(exc)
-        cleanup(str(detail))
-        _raise_upstream_http_error(exc, detail_override=detail)
-
-    def on_http_exception(exc: HTTPException) -> NoReturn:
-        cleanup(str(exc.detail))
-        raise exc
-
-    def on_unexpected_error(exc: Exception) -> NoReturn:
-        cleanup(str(exc))
-        raise HTTPException(status_code=500, detail=unexpected_detail) from exc
-
-    return on_http_error, on_http_exception, on_unexpected_error
 
 
 def create_app(state: BackendState | None = None) -> FastAPI:
@@ -897,21 +800,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: state.crawler.run(max_nodes=max_nodes),
         )
 
-    @app.post("/api/ingestion-requests")
-    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
-        result = _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.create_ingestion_request(**payload.model_dump())
-        )
-        log_event(
-            LOGGER,
-            event="ingestion.request.created",
-            message="ingestion request created",
-            stage="ingestion",
-            run_id=result.get("request_id"),
-            url=payload.homepage_url,
-        )
-        return result
-
     @app.post("/api/blogs/user-seeds")
     def create_user_seed(payload: CreateUserSeedRequest) -> dict[str, Any]:
         result = _call_upstream_with_http_error_translation(
@@ -926,77 +814,6 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             url=payload.homepage_url,
         )
         return result
-
-    @app.get("/api/ingestion-requests")
-    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.list_priority_ingestion_requests()
-        )
-
-    @app.get("/api/ingestion-requests/{request_id}")
-    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.get_ingestion_request(
-                request_id=request_id,
-                request_token=request_token,
-            )
-        )
-
-    @app.post("/api/admin/blog-dedup-scans")
-    def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        state = get_state()
-
-        def prepare_run(crawler_was_running: bool) -> tuple[dict[str, Any], dict[str, Any]]:
-            _stop_active_crawler(
-                state,
-                crawler_was_running=crawler_was_running,
-                wait_for_idle=ensure_runtime_idle,
-            )
-            payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-            log_event(
-                LOGGER,
-                event="maintenance.blog_dedup.started",
-                message="blog dedup scan started",
-                stage="blog_dedup",
-                run_id=int(payload["id"]),
-                crawler_was_running=crawler_was_running,
-            )
-            return payload, {
-                "run_id": int(payload["id"]),
-                "crawler_was_running": crawler_was_running,
-            }
-
-        def cleanup(_: str) -> None:
-            _leave_maintenance(state)
-
-        on_http_error, on_http_exception, on_unexpected_error = _build_maintenance_start_error_handlers(
-            cleanup=cleanup,
-            unexpected_detail="blog_dedup_scan_failed",
-        )
-
-        return _start_maintenance_background_task(
-            state,
-            prepare_run=prepare_run,
-            on_http_error=on_http_error,
-            on_http_exception=on_http_exception,
-            on_unexpected_error=on_unexpected_error,
-            target=_execute_blog_dedup_scan_in_background,
-        )
-
-    @app.get("/api/admin/blog-dedup-scans/latest")
-    def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.latest_blog_dedup_scan_run()
-        )
-
-    @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
-    def get_blog_dedup_scan_run_items(
-        run_id: int,
-        _: None = Depends(require_admin_access),
-    ) -> list[dict[str, Any]]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.list_blog_dedup_scan_run_items(run_id)
-        )
 
     @app.get("/api/admin/runtime/status")
     def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:

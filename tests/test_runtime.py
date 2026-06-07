@@ -30,36 +30,6 @@ class QueueRepository:
         return {"raw_discovered_urls": self.raw_discovered_urls}
 
 
-class PriorityQueueRepository:
-    """Support separate priority and normal queues for fairness tests."""
-
-    def __init__(self, *, priority_blog_ids: list[int], normal_blog_ids: list[int]) -> None:
-        self.priority_blog_ids = list(priority_blog_ids)
-        self.normal_blog_ids = list(normal_blog_ids)
-        self.lock = Lock()
-        self.claim_order: list[int] = []
-
-    def get_next_priority_blog(self) -> dict[str, object] | None:
-        with self.lock:
-            if not self.priority_blog_ids:
-                return None
-            blog_id = self.priority_blog_ids.pop(0)
-            self.claim_order.append(blog_id)
-            return {"id": blog_id, "url": f"https://priority{blog_id}.example.com/"}
-
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, object] | None:
-        with self.lock:
-            if self.normal_blog_ids:
-                blog_id = self.normal_blog_ids.pop(0)
-                self.claim_order.append(blog_id)
-                return {"id": blog_id, "url": f"https://blog{blog_id}.example.com/"}
-            if include_priority and self.priority_blog_ids:
-                blog_id = self.priority_blog_ids.pop(0)
-                self.claim_order.append(blog_id)
-                return {"id": blog_id, "url": f"https://priority{blog_id}.example.com/"}
-            return None
-
-
 class BlockingQueuePipeline:
     """Pipeline stub that blocks one claimed blog until the test releases it."""
 
@@ -160,9 +130,9 @@ class ExplodingPipeline:
 
 
 class RecordingPipeline:
-    """A fast pipeline that records claim order for fairness assertions."""
+    """A fast pipeline that records claim order for queue assertions."""
 
-    def __init__(self, repository: PriorityQueueRepository) -> None:
+    def __init__(self, repository: QueueRepository) -> None:
         self.repository = repository
         self.processed_ids: list[int] = []
 
@@ -308,30 +278,15 @@ def test_runtime_records_fatal_worker_errors_and_clears_stale_current_task_field
     assert snapshot["workers"][0]["current_url"] is None
 
 
-def test_runtime_prioritizes_seed_requests_before_normal_queue() -> None:
-    """Priority seeds should be claimed ahead of ordinary waiting blogs."""
-    repository = PriorityQueueRepository(priority_blog_ids=[101], normal_blog_ids=[1, 2])
-    runtime = CrawlerRuntimeService(RecordingPipeline(repository), worker_count=1)
+def test_runtime_claims_waiting_blogs_in_queue_order() -> None:
+    """Runtime batches should keep claiming ordinary waiting blogs until the limit is reached."""
+    pipeline = RecordingPipeline(QueueRepository([1, 2, 3]))
+    runtime = CrawlerRuntimeService(pipeline, worker_count=1)
 
     result = runtime.run_batch(3)
 
     assert result["accepted"] is True
-    assert repository.claim_order[0] == 101
-
-
-def test_runtime_releases_normal_queue_slots_after_each_priority_seed() -> None:
-    """After one priority seed, the runtime should release normal queue claims before taking the next priority."""
-    repository = PriorityQueueRepository(priority_blog_ids=[101, 102], normal_blog_ids=[1, 2, 3])
-    runtime = CrawlerRuntimeService(
-        RecordingPipeline(repository),
-        worker_count=1,
-        priority_seed_normal_queue_slots=2,
-    )
-
-    result = runtime.run_batch(5)
-
-    assert result["accepted"] is True
-    assert repository.claim_order[:4] == [101, 1, 2, 102]
+    assert pipeline.processed_ids == [1, 2, 3]
 
 
 def test_runtime_continues_to_next_waiting_blog_after_one_timeout_failure() -> None:

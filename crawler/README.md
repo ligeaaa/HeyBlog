@@ -325,7 +325,7 @@ crawler/
 
 - 启动 / 停止后台抓取线程
 - 维护多个 worker 的运行状态快照
-- 控制 priority queue 和 normal queue 的公平 claim
+- 按等待队列领取并分发待抓取 blog
 - 聚合本次 runtime 的 processed / discovered / failed
 - 对外提供 `/internal/runtime/*` 需要的状态
 

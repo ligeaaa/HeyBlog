@@ -105,15 +105,9 @@ crawler 的两种主要运行方式：
 6. 每个博客结束后累计 `processed / discovered / failed`
 7. 本轮结束后执行 `write_exports()`
 
-### 3.3 队列公平策略
+### 3.3 队列领取策略
 
-`CrawlPipeline._claim_next_scheduled_blog()` 当前不是简单 FIFO，而是带优先队列公平窗口：
-
-- 优先种子队列优先级更高
-- 但不会无限饿死普通 waiting 队列
-- 参数 `priority_seed_normal_queue_slots` 控制“处理一个 priority 后，允许多少个 normal queue 项穿插执行”
-
-这套逻辑也被 runtime 模式复用。
+`CrawlPipeline` 与 runtime 模式都会通过 `persistence-api /internal/queue/next` 领取下一个 `WAITING` blog，并在领取时把状态切换为 `PROCESSING`。
 
 ## 4. 单博客抓取链路
 

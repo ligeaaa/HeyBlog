@@ -24,7 +24,6 @@ import {
   fetchAdminBlogLabelingCandidates,
   fetchAdminBlogLabelParquetStatus,
   fetchAdminBlogLabelTitlePreview,
-  fetchAdminDedupLatest,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
   fetchStats,
@@ -42,7 +41,6 @@ import {
 import type {
   AdminBlogLabelingCandidate,
   AdminBlogLabelTag,
-  AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
   StatsData,
@@ -123,7 +121,6 @@ export function AdminPage() {
   const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
   const [runtimeStatus, setRuntimeStatus] = useState<AdminRuntimeStatus | null>(null);
   const [runtimeCurrent, setRuntimeCurrent] = useState<AdminRuntimeCurrent | null>(null);
-  const [latestDedup, setLatestDedup] = useState<AdminDedupSummary | null>(null);
   const [labelingCandidates, setLabelingCandidates] = useState<AdminBlogLabelingCandidate[]>([]);
   const [labelTags, setLabelTags] = useState<AdminBlogLabelTag[]>([]);
   const [labelCounts, setLabelCounts] = useState<AdminBlogLabelCounts>({ totalLabeled: 0, byLabel: {} });
@@ -180,7 +177,6 @@ export function AdminPage() {
       if (!adminToken.trim()) {
         setRuntimeStatus(null);
         setRuntimeCurrent(null);
-        setLatestDedup(null);
         setLabelingCandidates([]);
         setLabelTags([]);
         setLabelCounts({ totalLabeled: 0, byLabel: {} });
@@ -191,23 +187,15 @@ export function AdminPage() {
         return;
       }
 
-      const [
-        runtimeStatusResponse,
-        runtimeCurrentResponse,
-        latestDedupResponse,
-        labelCountResponse,
-        labelParquetResponse,
-      ] =
+      const [runtimeStatusResponse, runtimeCurrentResponse, labelCountResponse, labelParquetResponse] =
         await Promise.all([
           fetchAdminRuntimeStatus(adminToken),
           fetchAdminRuntimeCurrent(adminToken),
-          fetchAdminDedupLatest(adminToken),
           fetchAdminBlogLabelCounts(adminToken),
           fetchAdminBlogLabelParquetStatus(adminToken),
         ]);
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
-      setLatestDedup(latestDedupResponse);
       setLabelCounts(labelCountResponse);
       setLabelParquetStatus(labelParquetResponse);
       setAdminError(null);
@@ -233,7 +221,6 @@ export function AdminPage() {
       console.error(error);
       setRuntimeStatus(null);
       setRuntimeCurrent(null);
-      setLatestDedup(null);
       setLabelingCandidates([]);
       setLabelTags([]);
       setLabelCounts({ totalLabeled: 0, byLabel: {} });
@@ -913,17 +900,6 @@ export function AdminPage() {
                     elapsed: {runtimeCurrent?.elapsedSeconds ?? "-"}s
                     <br />
                     active run: {runtimeCurrent?.activeRunId ?? "-"}
-                  </div>
-                </div>
-                <div className="rounded-3xl bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">latest dedup scan</div>
-                  <div className="mt-1 text-xl text-slate-950">{latestDedup?.status ?? "暂无记录"}</div>
-                  <div className="mt-3 text-sm leading-7 text-slate-600">
-                    run id: {latestDedup?.id ?? "-"}
-                    <br />
-                    scanned / total: {latestDedup ? `${latestDedup.scannedCount} / ${latestDedup.totalCount}` : "-"}
-                    <br />
-                    removed: {latestDedup?.removedCount ?? "-"}
                   </div>
                 </div>
               </div>

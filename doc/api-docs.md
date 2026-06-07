@@ -63,7 +63,7 @@
 
 ### 2.1 Public API
 
-Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 ingestion 流程使用：
+Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与用户 seed 提交流程使用：
 
 - `GET /`
 - `GET /internal/health`
@@ -88,9 +88,6 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
 - `GET /api/filter-stats`
-- `GET /api/ingestion-requests`
-- `POST /api/ingestion-requests`
-- `GET /api/ingestion-requests/{request_id}`
 
 源码位置： [backend/main.py](../backend/main.py)
 
@@ -125,9 +122,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `POST /api/admin/blog-labeling/title-preview`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
 - `GET /api/admin/recommendation-stats`
-- `POST /api/admin/blog-dedup-scans`
-- `GET /api/admin/blog-dedup-scans/latest`
-- `GET /api/admin/blog-dedup-scans/{run_id}/items`
 
 补充脚本：
 
@@ -737,7 +731,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 匹配阶梯：
 
-- 先复用 ingestion 的 canonicalization / identity 规则，把输入归一化为 `normalized_query_url`
+- 先复用 blog identity canonicalization 规则，把输入归一化为 `normalized_query_url`
 - 优先按 canonical homepage identity 精确匹配
 - 若 identity 未命中，再回退到 `normalized_url` 精确相等匹配
 - 若仍未命中，则返回空数组；当前不做 substring / domain contains 型广义搜索
@@ -1224,86 +1218,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 当前 public API 已不再暴露 legacy 的 `/api/logs` 与 `/api/search`。
 - 运行日志统一由 `shared.observability` 输出到类型目录，默认是 `logs/app/`、`logs/error/`、`logs/access/`；每个类型目录下再按服务分目录，保存 `<service>-YYYYMMDD-HH.log` 小时切片，Docker Compose 中对应 `volumes/logs`。
 - legacy `/internal/logs` 仍保留兼容入口，但当前不会把 crawl log 写入业务数据库。
-- blog dedup scan 这类维护任务的进度属于 domain event，仍通过各自 run/event 接口持久化，不混入通用 application log。
 - `search` 服务仍保留为内部可重建索引组件，供 health 检查与 reindex 维护链路使用，并在缓存为空时回退到 `persistence-api /internal/search-snapshot`。
 - 浏览器当前没有直接依赖的 public 搜索页；public 发现主路径已经收敛到 `catalog / lookup / detail / graph views`。
-
-#### `GET /api/ingestion-requests`
-
-用途：返回统一 discovery 页“优先处理博客清单”所需的公开优先录入请求列表。
-
-返回约束：
-
-- 固定最多返回 `20` 条
-- inclusion rule: 先返回 active request（`QUEUED`、`CRAWLING_SEED`），再补最近创建的 terminal request，直到达到上限
-- 排序固定为 `active-first -> created_at DESC -> request_id DESC`
-
-公开字段：
-
-- `request_id`
-- `requested_url`
-- `normalized_url`
-- `status`
-- `seed_blog_id`
-- `matched_blog_id`
-- `blog_id`
-- `error_message`
-- `created_at`
-- `updated_at`
-- `blog`
-
-隐私边界：
-
-- 该公开列表不会返回 `email`
-- 该公开列表不会返回 `request_token`
-
-补充说明：
-
-- `blog` 是裁剪后的公开摘要，至少包含 `id`、`url`、`domain`、`title`、`icon_url`、`crawl_status`
-- 该列表接口服务统一页的优先队列面板，不替代单条状态查询接口
-
-#### `POST /api/ingestion-requests`
-
-用途：当搜索未命中时，由最终用户提交博客首页 URL 与联系邮箱，触发优先录入请求。
-
-请求体：
-
-```json
-{
-  "homepage_url": "https://example.com/",
-  "email": "owner@example.com"
-}
-```
-
-响应分两类：
-
-- 已收录时：直接返回 `DEDUPED_EXISTING` 与现有 `blog_id`
-- 未收录时：返回请求状态、`request_id`、`request_token`、seed blog 关联信息
-
-补充说明：
-
-- 后端会先做 URL normalize 与 email 基础校验
-- 当前去重主键已经扩展为 `identity_key`；它会忽略 `http/https`、主页默认首页路径、`www.`，以及白名单博客别名子域（如 `blog.`）
-- 活跃请求会按 `identity_key + ACTIVE_INGESTION_REQUEST_STATUSES` 复用，而不是重复创建 crawl
-- `request_token` 仍作为自助提交状态查询的轻量凭证；当前账号系统暂未接管 ingestion request 的所有权
-
-#### `GET /api/ingestion-requests/{request_id}?request_token=...`
-
-用途：查询某个自助录入请求的当前状态。
-
-当前返回字段重点包括：
-
-- `status`: 当前请求状态，常见值有 `QUEUED`、`CRAWLING_SEED`、`COMPLETED`、`FAILED`
-- `seed_blog_id`: 当前请求绑定的 seed blog
-- `matched_blog_id`: 若已完成并命中 blog，则返回该 blog id
-- `blog`: 当前关联 blog 的摘要信息
-- `request_token`: 创建请求时返回的状态查询 token
-
-补充说明：
-
-- 当前 ingestion request 状态查询仍依赖 `request_id + request_token`
-- 若 `request_token` 不匹配，返回 `404`
-- 统一 discovery 页的公开优先队列列表不会暴露该 `request_token`；只有创建者通过该单条接口查询时才会使用它
 
 ### 3.5 管理员爬取执行接口
 
@@ -1366,81 +1282,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 ### 3.6 数据维护接口
 
-#### `POST /api/admin/blog-dedup-scans`
-
-用途：管理员手动触发一次基于当前 `UrlDecisionChain` 的全库已收录 blog URL 重评估扫描。
-
-行为说明：
-
-- backend 会先读取 crawler runtime；若扫描前 crawler 正在运行，则先停爬并等待 `idle`
-- 扫描期间 backend 会打开 `maintenance_in_progress` 维护锁
-- `POST` 请求现在只负责创建一个 `RUNNING` scan run 并启动后台任务，因此前端会立刻收到可轮询的 run 摘要
-- 维护窗口内新的 `POST /api/admin/runtime/start` 与 `POST /api/admin/runtime/run-batch` 会返回 `409 maintenance_in_progress`
-- 当前实现会复用 crawler 的共享 `UrlDecisionChain` builder，对数据库里已存的 `blogs.url` 重新跑一遍完整 URL 过滤逻辑
-- 被当前决策链拒绝的 blog 会连同其相关 edge 一起删除，并清空相关 ingestion 引用，避免残留悬挂关系
-- 扫描 summary 中的 `total_count / scanned_count / kept_count / removed_count` 对应的是已存 blog URL 数量
-- 扫描成功后 backend 会尝试调用 search reindex
-- 若扫描前 crawler 原本在运行，backend 会在结束后尝试恢复 crawler，并把恢复结果写回 run summary
-- 前端可通过 `GET /api/admin/blog-dedup-scans/latest` 轮询实时进度，并在需要明细时继续请求 `GET /api/admin/blog-dedup-scans/{run_id}/items`；其中 `scanned_count / total_count` 表示“已扫描 URL / 总共 URL”
-
-返回字段重点包括：
-
-- `id`
-- `status`
-- `ruleset_version`
-- `total_count`
-- `scanned_count`
-- `removed_count`
-- `kept_count`
-- `crawler_was_running`
-- `crawler_restart_attempted`
-- `crawler_restart_succeeded`
-- `search_reindexed`
-- `error_message`
-- `started_at` / `completed_at` / `duration_ms`
-
-#### `GET /api/admin/blog-dedup-scans/latest`
-
-用途：返回最近一次扫描摘要。
-
-#### `GET /api/admin/blog-dedup-scans/{run_id}/items`
-
-用途：返回该次扫描中被决策链移除的 blog 明细与原因。
-
-每条 item 至少包含：
-
-- `survivor_blog_id`
-  当前通常为 `null`；历史字段名保留用于兼容
-- `removed_blog_id`
-  当前表示被规则重扫移除的 blog id
-- `survivor_identity_key`
-  当前承载被扫描 blog 的 identity key 供排查使用
-- `removed_url`
-- `reason_code`
-- `reason_codes`
-- `survivor_selection_basis`
-  当前承载 scanned blog id 与 decision score 等辅助调试信息
-
-#### `POST /api/admin/blogs/requeue-failed`
-
-用途：把所有 `FAILED` 状态的 blog 重新放回 crawler 待处理队列。
-
-行为说明：
-
-- 仅允许在 crawler 运行器不处于 `starting/running/stopping` 时调用
-- 若运行器忙碌，返回 `409`，错误详情为 `crawler_busy`
-- 会把当前所有 `crawl_status=FAILED` 的 blog 改为 `WAITING`
-- 会清空这些 blog 的 `status_code`，并更新 `updated_at`
-- 若对应 ingestion request 处于 `FAILED`，会同步改回 `QUEUED` 并清空 `error_message`
-
-成功响应示例：
-
-```json
-{
-  "requeued": 733
-}
-```
-
 #### `POST /api/admin/database/reset`
 
 用途：重置数据库中的 crawler 相关数据，便于测试和开发时快速回到初始状态。
@@ -1449,7 +1290,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 仅允许在 crawler 运行器不处于 `starting/running/stopping` 时调用
 - 若运行器忙碌，返回 `409`，错误详情为 `crawler_busy`
-- 会清空 `blogs`、`edges`、`raw_discovered_urls`、`ingestion_requests` 和维护任务记录
+- 会清空 `blogs`、`edges`、`raw_discovered_urls`
 - 不会删除人工 label 相关数据：`blog_labels(normalized_url, title, label_id, created_time, updated_time)` 和 `blog_label_tags` 会被保留
 - backend 在数据库重置后会尝试调用 `search /internal/search/reindex`
 - 即使 search 重建失败，数据库重置结果仍会返回，并附带 `search_reindexed=false`
@@ -1522,7 +1363,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 若当前已在 `starting/running/stopping`，直接返回当前快照
 - 成功启动后会创建新的 `active_run_id`
-- 若 backend 当前处于 blog dedup 维护窗口，返回 `409 maintenance_in_progress`
 
 #### `POST /api/admin/runtime/stop`
 
@@ -1539,7 +1379,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 补充说明：
 
-- 若 backend 当前处于 blog dedup 维护窗口，返回 `409 maintenance_in_progress`
 
 请求体：
 
@@ -1791,18 +1630,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 行为说明：
 
 - 只从 `crawl_status = 'WAITING'` 中选择
-- 默认允许包含 priority seed；也可以通过 `include_priority=false` 只领取普通队列
 - 选中后立刻更新为 `PROCESSING`
-
-### `GET /internal/queue/priority-next`
-
-用途：只领取由 `ingestion_requests` 驱动的高优先级 seed blog。
-
-行为说明：
-
-- 仅选择仍处于 `QUEUED` 的请求对应 seed
-- 按 `priority DESC, created_at ASC, blog.id ASC` 领取
-- 选中后立刻把 blog 更新为 `PROCESSING`
 
 ### `GET /internal/blogs/{blog_id}/detail`
 
@@ -2017,7 +1845,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 行为说明：
 
-- 清空 `blogs`、`edges`、`raw_discovered_urls`、`ingestion_requests` 和维护任务记录
+- 清空 `blogs`、`edges`、`raw_discovered_urls`
 - 保留 URL-keyed 人工 label 数据与 tag 定义
 - `logs_deleted` 固定返回 `0`
 - 重置主键计数器
@@ -2038,80 +1866,6 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
   "blog_label_tags_preserved": 6
 }
 ```
-
-补充说明：
-
-- 若该 blog 是某个活跃 `ingestion_request` 的 seed，写回结果时会同步推进请求状态为 `COMPLETED` 或 `FAILED`
-
-### `POST /internal/ingestion-requests`
-
-用途：创建或复用一个用户自助优先录入请求。
-
-请求体：
-
-```json
-{
-  "homepage_url": "https://example.com/",
-  "email": "owner@example.com"
-}
-```
-
-返回：
-
-- 已收录时：`DEDUPED_EXISTING`
-- 新建或复用请求时：请求 payload，包含 `request_id`、`request_token`、`status`、`seed_blog_id`
-
-补充说明：
-
-- 去重与复用当前按 `identity_key` 执行，而不再只看 `normalized_url`
-- 返回 payload 会附带 `identity_key`、`identity_reason_codes` 与 `identity_ruleset_version`
-- 对满足“tenant-like homepage 子域”启发式的 URL，`normalized_url` 与 seed blog URL 会直接收敛到 registrable root 的 canonical URL；例如 `*.66law.cn` 会统一收敛到 `https://66law.cn/`。`*.github.io`、`*.gitee.io` 等显式排除域名不会被这样归并。
-
-### `GET /internal/ingestion-requests/{request_id}`
-
-用途：通过 `request_id + request_token` 查询请求状态。
-
-查询参数：
-
-- `request_token`: 创建请求时生成的查询 token
-
-### `GET /internal/ingestion-requests`
-
-用途：为 backend 提供统一 discovery 页“优先处理博客清单”所需的公开优先录入请求列表。
-
-补充说明：
-
-- 返回范围、排序与公开字段约束与 `GET /api/ingestion-requests` 一致
-- internal/public 两层都不会在该列表 payload 中暴露 `email` 与 `request_token`
-
-### `POST /internal/ingestion-requests/by-blog/{blog_id}/crawling`
-
-用途：当 crawler 真正开始处理某个 seed blog 时，把关联请求推进到 `CRAWLING_SEED`。
-
-### `POST /internal/blog-dedup-scans/runs`
-
-用途：创建一个 `RUNNING` 的规则重扫 run，并立即返回初始摘要，供 backend 异步编排使用。
-
-查询参数：
-
-- `crawler_was_running`: backend 透传的预扫描 runtime 状态
-
-### `POST /internal/blog-dedup-scans/{run_id}/execute`
-
-用途：执行指定 run 的 persistence 侧规则重扫逻辑，并在执行过程中持续更新 `total_count`、`scanned_count`、`removed_count`、`kept_count`。
-当前四个计数字段都以已存 blog URL 数为口径。
-
-### `POST /internal/blog-dedup-scans/{run_id}/finalize`
-
-用途：由 backend 在扫描编排完成后回写 crawler 恢复和 search reindex 结果。
-
-### `GET /internal/blog-dedup-scans/latest`
-
-用途：返回最近一次 run summary。
-
-### `GET /internal/blog-dedup-scans/{run_id}/items`
-
-用途：返回指定 run 中被决策链移除的 blog 明细。
 
 ## 5. 数据模型整理
 
@@ -2185,37 +1939,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 | `filters.min_connections` | `number` | 最小连接度阈值 |
 | `sort` | `string` | 当前生效排序；与 `filters.sort` 保持一致 |
 
-### 5.3 IngestionRequestPayload
-
-来源：
-
-- [persistence_api/repository.py](persistence_api/repository.py)
-- [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
-
-字段：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `id` / `request_id` | `number` | 请求主键 |
-| `requested_url` | `string` | 用户提交的原始首页 URL |
-| `normalized_url` | `string` | 归一化后的 URL |
-| `identity_key` | `string` | 当前请求命中的 blog 身份键 |
-| `identity_reason_codes` | `string[]` | 当前 identity 解析原因码 |
-| `identity_ruleset_version` | `string` | 当前 identity 规则版本 |
-| `email` | `string` | 用户提交的联系邮箱 |
-| `status` | `string` | 请求状态 |
-| `priority` | `number` | 当前固定优先级值 |
-| `seed_blog_id` | `number \| null` | 绑定的 seed blog |
-| `matched_blog_id` | `number \| null` | 已完成时关联的最终 blog |
-| `blog_id` | `number \| null` | 便于前端跳转的当前关联 blog id |
-| `request_token` | `string` | 无账号状态查询 token |
-| `seed_blog` | `BlogRecord \| null` | seed blog 摘要 |
-| `matched_blog` | `BlogRecord \| null` | 已匹配 blog 摘要 |
-| `blog` | `BlogRecord \| null` | 前端使用的当前 blog 视图 |
-| `error_message` | `string \| null` | 失败时的错误摘要 |
-| `created_at` / `updated_at` | `string` | 请求创建/更新时间 |
-
-### 5.4 BlogDetailPayload
+### 5.3 BlogDetailPayload
 
 字段：
 
@@ -2331,7 +2055,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 ### 6.1 读接口调用链
 
 - 前端 -> `backend /api/*`
-- `backend` -> `persistence-api` 获取 blog catalog、blog detail、graph views、graph snapshots、stats、ingestion request 与 dedup summary
+- `backend` -> `persistence-api` 获取 blog catalog、blog detail、graph views、graph snapshots 与 stats
 - `backend` -> `crawler` 获取运行时状态
 
 ### 6.2 写接口调用链
@@ -2369,7 +2093,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 对外协议以 `backend /api/*` 为准，前端不要直接依赖内部服务接口
 - 内部服务接口已经比较清晰，但目前没有统一版本号，也没有显式 OpenAPI schema 文档归档
-- legacy 的 raw blog/edge/graph/log/search 公共读取端点已经移除，当前对外建议继续围绕 catalog、detail、graph view、ingestion 和 admin runtime 组织能力
+- legacy 的 raw blog/edge/graph/log/search 公共读取端点已经移除，当前对外建议继续围绕 catalog、detail、graph view、user seed 和 admin runtime 组织能力
 - `/api/admin/crawl/run` 使用 query 参数 `max_nodes`，而 `/api/admin/runtime/run-batch` 使用 JSON body `max_nodes`，风格不完全一致，后续可统一
 - `search` 当前是轻量缓存式实现，属于可重建索引，不是强一致检索服务
 - `services/*` 只是兼容入口，后续文档与新开发应优先引用顶层目录 `backend/`、`crawler/`、`search/`、`persistence_api/`

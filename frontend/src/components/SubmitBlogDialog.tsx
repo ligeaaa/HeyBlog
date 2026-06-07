@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 import { toast } from "sonner";
-import { submitBlogInfo } from "../lib/api";
+import { submitUserSeed } from "../lib/api";
 
 interface SubmitBlogDialogProps {
   url: string;
@@ -18,7 +18,6 @@ interface SubmitBlogDialogProps {
  * @returns Modal dialog UI.
  */
 export function SubmitBlogDialog({ url, onClose, onSuccess }: SubmitBlogDialogProps) {
-  const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   /**
@@ -31,9 +30,9 @@ export function SubmitBlogDialog({ url, onClose, onSuccess }: SubmitBlogDialogPr
 
     try {
       setIsSubmitting(true);
-      await submitBlogInfo({ url, email });
+      await submitUserSeed({ url });
 
-      toast.success("提交成功，系统已记录该博客请求。");
+      toast.success("提交成功，系统已将该博客加入抓取队列。");
       onSuccess?.();
       onClose();
     } catch {
@@ -51,7 +50,7 @@ export function SubmitBlogDialog({ url, onClose, onSuccess }: SubmitBlogDialogPr
             <h2 className="mb-2 text-2xl text-gray-900">博客未找到</h2>
             <div className="flex items-start gap-2 rounded-md bg-amber-50 p-3 text-amber-700">
               <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
-              <div className="text-sm">该 URL 当前未收录。你可以留下邮箱，系统会创建抓取请求。</div>
+              <div className="text-sm">该 URL 当前未收录。你可以将它加入抓取队列。</div>
             </div>
           </div>
           <button onClick={onClose} className="flex-shrink-0 rounded-md p-1 transition-colors hover:bg-gray-100">
@@ -72,19 +71,6 @@ export function SubmitBlogDialog({ url, onClose, onSuccess }: SubmitBlogDialogPr
             />
           </div>
 
-          <div>
-            <label className="mb-2 block text-sm text-gray-700">
-              联系邮箱 <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
-              className="w-full rounded-md border border-gray-300 px-4 py-2 focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-
           <div className="flex gap-3 pt-4">
             <button
               type="button"
@@ -95,10 +81,10 @@ export function SubmitBlogDialog({ url, onClose, onSuccess }: SubmitBlogDialogPr
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !email.trim()}
+              disabled={isSubmitting}
               className="flex-1 rounded-md bg-blue-500 px-6 py-3 text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
-              {isSubmitting ? "提交中..." : "创建抓取请求"}
+              {isSubmitting ? "提交中..." : "加入抓取队列"}
             </button>
           </div>
         </form>

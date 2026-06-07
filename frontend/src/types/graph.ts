@@ -234,17 +234,6 @@ export interface AdminRequeueFailedBlogsResult {
   requeued: number;
 }
 
-export interface AdminDedupSummary {
-  id: number;
-  status: string;
-  totalCount: number;
-  scannedCount: number;
-  removedCount: number;
-  keptCount: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface AdminBlogLabelTag {
   id: number;
   name: string;

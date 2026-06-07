@@ -19,7 +19,7 @@ Public capabilities:
 - browse discovered blogs
 - inspect blog detail and graph relationships
 - search by blog/site/relation clues
-- submit ingestion requests and check request status
+- submit user seed blog URLs for crawling
 
 ### Admin
 
@@ -36,7 +36,6 @@ Admin capabilities:
 - crawler runtime control
 - manual crawl/bootstrap triggers
 - database maintenance
-- dedup scans
 - blog labeling
 
 ## API Boundary
@@ -52,9 +51,7 @@ Admin capabilities:
 - `GET /api/graph/snapshots/latest`
 - `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
-- `POST /api/ingestion-requests`
-- `GET /api/ingestion-requests`
-- `GET /api/ingestion-requests/{request_id}`
+- `POST /api/blogs/user-seeds`
 
 ### Admin API
 
@@ -70,9 +67,6 @@ Admin capabilities:
 - `GET /api/admin/blog-labeling/tags`
 - `POST /api/admin/blog-labeling/tags`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
-- `POST /api/admin/blog-dedup-scans`
-- `GET /api/admin/blog-dedup-scans/latest`
-- `GET /api/admin/blog-dedup-scans/{run_id}/items`
 
 ## Auth
 

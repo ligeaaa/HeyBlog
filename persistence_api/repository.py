@@ -43,10 +43,7 @@ from persistence_api.models import BlogInteractionModel
 from persistence_api.models import BlogUserLabelModel
 from persistence_api.models import BlogUserLabelSelectionModel
 from persistence_api.models import BlogModel
-from persistence_api.models import BlogDedupScanRunItemModel
-from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
-from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.models import RecommendationImpressionModel
 from persistence_api.models import RecommendationRequestModel
@@ -76,7 +73,6 @@ BLOG_CATALOG_ALLOWED_SORTS = frozenset(
 BLOG_CATALOG_ALLOWED_ACCEPTANCE_STATUSES = frozenset(
     {BLOG_ACCEPTANCE_ACCEPTED, BLOG_ACCEPTANCE_UNKNOWN, "REJECTED"}
 )
-INGESTION_PRIORITY_LIST_LIMIT = 20
 BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
 BLOG_LABELING_MAX_PAGE_SIZE = 200
 BLOG_LABELING_DEFAULT_SORT = "id_desc"
@@ -106,20 +102,6 @@ RECOMMENDATION_EVENT_TYPES = frozenset(
 )
 REPOSITORY_LOGGER_NAME = "heyblog.repository"
 LOGGER = get_logger(REPOSITORY_LOGGER_NAME)
-INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
-INGESTION_REQUEST_STATUS_DEDUPED_EXISTING = "DEDUPED_EXISTING"
-INGESTION_REQUEST_STATUS_QUEUED = "QUEUED"
-INGESTION_REQUEST_STATUS_CRAWLING_SEED = "CRAWLING_SEED"
-INGESTION_REQUEST_STATUS_COMPLETED = "COMPLETED"
-INGESTION_REQUEST_STATUS_FAILED = "FAILED"
-INGESTION_REQUEST_STATUS_EXPIRED = "EXPIRED"
-ACTIVE_INGESTION_REQUEST_STATUSES = frozenset(
-    {
-        INGESTION_REQUEST_STATUS_RECEIVED,
-        INGESTION_REQUEST_STATUS_QUEUED,
-        INGESTION_REQUEST_STATUS_CRAWLING_SEED,
-    }
-)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 USER_SESSION_TTL_DAYS = 30
@@ -677,10 +659,9 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
     """Apply additive compatibility fixes needed by existing persistence databases."""
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    if "blogs" not in existing_tables or "ingestion_requests" not in existing_tables:
+    if "blogs" not in existing_tables:
         return
     blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
-    ingestion_columns = {column["name"] for column in inspector.get_columns("ingestion_requests")}
     with engine.begin() as connection:
         if "email" not in blog_columns:
             connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
@@ -696,37 +677,8 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             connection.execute(
                 text("ALTER TABLE blogs ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL")
             )
-        if "identity_key" not in ingestion_columns:
-            connection.execute(text("ALTER TABLE ingestion_requests ADD COLUMN identity_key TEXT"))
-        if "identity_reason_codes" not in ingestion_columns:
-            connection.execute(
-                text(
-                    "ALTER TABLE ingestion_requests ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL"
-                )
-            )
-        if "identity_ruleset_version" not in ingestion_columns:
-            connection.execute(
-                text(
-                    "ALTER TABLE ingestion_requests ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL"
-                )
-            )
-        if "blog_dedup_scan_runs" in existing_tables:
-            run_columns = {column["name"] for column in inspector.get_columns("blog_dedup_scan_runs")}
-            if "total_count" not in run_columns:
-                connection.execute(
-                    text("ALTER TABLE blog_dedup_scan_runs ADD COLUMN total_count INTEGER DEFAULT 0 NOT NULL")
-                )
         if "ix_blogs_identity_key" not in {index["name"] for index in inspector.get_indexes("blogs")}:
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_blogs_identity_key ON blogs (identity_key)"))
-        if "ix_ingestion_requests_identity_key" not in {
-            index["name"] for index in inspector.get_indexes("ingestion_requests")
-        }:
-            connection.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_ingestion_requests_identity_key "
-                    "ON ingestion_requests (identity_key)"
-                )
-            )
         if "seeds" not in existing_tables:
             if connection.dialect.name == "postgresql":
                 connection.execute(
@@ -1142,40 +1094,6 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     "domain": str(row["domain"] or identity.domain),
                 },
             )
-        ingestion_rows = connection.execute(
-            text(
-                "SELECT id, requested_url, normalized_url, identity_key, identity_ruleset_version "
-                "FROM ingestion_requests"
-            )
-        ).mappings().all()
-        for row in ingestion_rows:
-            needs_refresh = (
-                not row["identity_key"]
-                or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
-            )
-            if not needs_refresh:
-                continue
-            identity = resolve_blog_identity(str(row["requested_url"]) or str(row["normalized_url"]))
-            storage_url = (
-                identity.canonical_url
-                if _uses_tenant_root_canonicalization(identity.reason_codes)
-                else normalize_url(str(row["requested_url"]) or str(row["normalized_url"])).normalized_url
-            )
-            connection.execute(
-                text(
-                    "UPDATE ingestion_requests SET identity_key = :identity_key, "
-                    "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version, "
-                    "normalized_url = :normalized_url "
-                    "WHERE id = :request_id"
-                ),
-                {
-                    "request_id": row["id"],
-                    "identity_key": identity.identity_key,
-                    "reason_codes": _dump_reason_codes(identity.reason_codes),
-                    "ruleset_version": identity.ruleset_version,
-                    "normalized_url": storage_url,
-                },
-            )
 
 def _resolved_blog_title(model: BlogModel) -> str:
     title = (model.title or "").strip()
@@ -1284,87 +1202,6 @@ class _BlogPayloadView:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class _IngestionRequestPayloadView:
-    """Hold one ingestion request plus its related blogs and expose output slices."""
-
-    model: IngestionRequestModel
-    seed_blog_view: _BlogPayloadView | None
-    matched_blog_view: _BlogPayloadView | None
-
-    @classmethod
-    def from_model(
-        cls,
-        model: IngestionRequestModel,
-        *,
-        seed_blog: BlogModel | None = None,
-        matched_blog: BlogModel | None = None,
-    ) -> _IngestionRequestPayloadView:
-        """Return the resolved request view for one ingestion request row."""
-        return cls(
-            model=model,
-            seed_blog_view=_BlogPayloadView.from_model(seed_blog),
-            matched_blog_view=_BlogPayloadView.from_model(matched_blog),
-        )
-
-    def _resolved_blog_view(self) -> _BlogPayloadView | None:
-        """Return the matched blog when present, otherwise the seed blog."""
-        return self.matched_blog_view or self.seed_blog_view
-
-    def _resolved_blog_id(self) -> int | None:
-        """Return the business id of the resolved blog used by public payloads."""
-        resolved_blog_view = self._resolved_blog_view()
-        return resolved_blog_view.blog_id if resolved_blog_view is not None else None
-
-    def as_full_payload(self) -> dict[str, Any]:
-        """Return the full ingestion request payload used by private flows."""
-        resolved_blog_view = self._resolved_blog_view()
-        return {
-            "id": int(self.model.id),
-            "request_id": int(self.model.id),
-            "requested_url": self.model.requested_url,
-            "normalized_url": self.model.normalized_url,
-            "identity_key": self.model.identity_key,
-            "identity_reason_codes": _load_reason_codes(self.model.identity_reason_codes),
-            "identity_ruleset_version": self.model.identity_ruleset_version,
-            "email": self.model.requester_email,
-            "status": self.model.status,
-            "priority": int(self.model.priority),
-            "seed_blog_id": int(self.model.seed_blog_id) if self.model.seed_blog_id is not None else None,
-            "matched_blog_id": int(self.model.matched_blog_id) if self.model.matched_blog_id is not None else None,
-            "blog_id": self._resolved_blog_id(),
-            "request_token": self.model.request_token,
-            "expires_at": _iso(self.model.expires_at),
-            "error_message": self.model.error_message,
-            "created_at": _iso(self.model.created_at),
-            "updated_at": _iso(self.model.updated_at),
-            "seed_blog": self.seed_blog_view.as_blog_payload() if self.seed_blog_view is not None else None,
-            "matched_blog": self.matched_blog_view.as_blog_payload() if self.matched_blog_view is not None else None,
-            "blog": resolved_blog_view.as_blog_payload() if resolved_blog_view is not None else None,
-        }
-
-    def as_priority_payload(self) -> dict[str, Any]:
-        """Return the public priority-list payload with private fields removed."""
-        resolved_blog_view = self._resolved_blog_view()
-        return {
-            "request_id": int(self.model.id),
-            "requested_url": self.model.requested_url,
-            "normalized_url": self.model.normalized_url,
-            "status": self.model.status,
-            "seed_blog_id": int(self.model.seed_blog_id) if self.model.seed_blog_id is not None else None,
-            "matched_blog_id": int(self.model.matched_blog_id) if self.model.matched_blog_id is not None else None,
-            "blog_id": self._resolved_blog_id(),
-            "error_message": self.model.error_message,
-            "created_at": _iso(self.model.created_at),
-            "updated_at": _iso(self.model.updated_at),
-            "blog": (
-                resolved_blog_view.as_public_summary_payload()
-                if resolved_blog_view is not None
-                else None
-            ),
-        }
-
-
 def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     return {
         "id": int(model.id),
@@ -1397,32 +1234,6 @@ def _seed_payload(model: SeedModel) -> dict[str, Any]:
         "imported_at": _iso(model.imported_at),
         "updated_at": _iso(model.updated_at),
     }
-
-
-def _ingestion_request_payload(
-    model: IngestionRequestModel,
-    *,
-    seed_blog: BlogModel | None = None,
-    matched_blog: BlogModel | None = None,
-) -> dict[str, Any]:
-    return _IngestionRequestPayloadView.from_model(
-        model,
-        seed_blog=seed_blog,
-        matched_blog=matched_blog,
-    ).as_full_payload()
-
-
-def _priority_ingestion_request_payload(
-    model: IngestionRequestModel,
-    *,
-    seed_blog: BlogModel | None = None,
-    matched_blog: BlogModel | None = None,
-) -> dict[str, Any]:
-    return _IngestionRequestPayloadView.from_model(
-        model,
-        seed_blog=seed_blog,
-        matched_blog=matched_blog,
-    ).as_priority_payload()
 
 
 def _blog_lookup_payload(
@@ -1640,82 +1451,6 @@ class _BlogLabelStateView:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class _MaintenanceRunPayloadView:
-    """Hold the shared lifecycle facts exposed by maintenance run summaries."""
-
-    run_id: int
-    status: str
-    crawler_was_running: bool
-    started_at: datetime | None
-    completed_at: datetime | None
-    error_message: str | None
-    created_at: datetime | None
-    updated_at: datetime | None
-
-    @classmethod
-    def from_model(
-        cls,
-        model: BlogDedupScanRunModel,
-    ) -> _MaintenanceRunPayloadView:
-        """Return the shared lifecycle view for one maintenance run row."""
-        return cls(
-            run_id=int(model.id),
-            status=str(model.status),
-            crawler_was_running=bool(model.crawler_was_running),
-            started_at=model.started_at,
-            completed_at=model.completed_at,
-            error_message=model.error_message,
-            created_at=model.created_at,
-            updated_at=model.updated_at,
-        )
-
-    def as_payload(self) -> dict[str, Any]:
-        """Return the shared lifecycle payload used by maintenance run summaries."""
-        return {
-            "id": self.run_id,
-            "status": self.status,
-            "crawler_was_running": self.crawler_was_running,
-            "started_at": _iso(self.started_at),
-            "completed_at": _iso(self.completed_at),
-            "error_message": self.error_message,
-            "created_at": _iso(self.created_at),
-            "updated_at": _iso(self.updated_at),
-        }
-
-
-def _blog_dedup_scan_run_payload(model: BlogDedupScanRunModel) -> dict[str, Any]:
-    run_view = _MaintenanceRunPayloadView.from_model(model)
-    return run_view.as_payload() | {
-        "ruleset_version": model.ruleset_version,
-        "duration_ms": int(model.duration_ms),
-        "total_count": int(model.total_count),
-        "scanned_count": int(model.scanned_count),
-        "removed_count": int(model.removed_count),
-        "kept_count": int(model.kept_count),
-        "crawler_restart_attempted": bool(model.crawler_restart_attempted),
-        "crawler_restart_succeeded": bool(model.crawler_restart_succeeded),
-        "search_reindexed": bool(model.search_reindexed),
-    }
-
-
-def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[str, Any]:
-    return {
-        "id": int(model.id),
-        "run_id": int(model.run_id),
-        "survivor_blog_id": int(model.survivor_blog_id) if model.survivor_blog_id is not None else None,
-        "removed_blog_id": int(model.removed_blog_id) if model.removed_blog_id is not None else None,
-        "survivor_identity_key": model.survivor_identity_key,
-        "removed_url": model.removed_url,
-        "removed_normalized_url": model.removed_normalized_url,
-        "removed_domain": model.removed_domain,
-        "reason_code": model.reason_code,
-        "reason_codes": _load_reason_codes(model.reason_codes),
-        "survivor_selection_basis": model.survivor_selection_basis,
-        "created_at": _iso(model.created_at),
-    }
-
-
 def _decision_scan_ruleset_version(settings: Settings) -> str:
     """Describe the current URL decision-chain configuration in one string.
 
@@ -1856,11 +1591,7 @@ class RepositoryProtocol(Protocol):
 
     def list_seeds(self) -> list[dict[str, Any]]: ...
 
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None: ...
-
-    def get_next_priority_blog(self) -> dict[str, Any] | None: ...
-
-    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]: ...
+    def get_next_waiting_blog(self) -> dict[str, Any] | None: ...
 
     def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]: ...
 
@@ -1876,20 +1607,9 @@ class RepositoryProtocol(Protocol):
 
     def count_user_label_selections(self, *, user_id: int) -> int: ...
 
-    def get_ingestion_request(
-        self,
-        *,
-        request_id: int,
-        request_token: str,
-    ) -> dict[str, Any] | None: ...
-
-    def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]: ...
-
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]: ...
 
     def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None: ...
-
-    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None: ...
 
     def mark_blog_result(
         self,
@@ -2050,24 +1770,6 @@ class RepositoryProtocol(Protocol):
 
     def get_filter_stats_by_chain_order(self) -> dict[str, Any]: ...
 
-    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
-
-    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]: ...
-
-    def finalize_blog_dedup_scan_run(
-        self,
-        *,
-        run_id: int,
-        crawler_restart_attempted: bool,
-        crawler_restart_succeeded: bool,
-        search_reindexed: bool,
-        error_message: str | None = None,
-    ) -> dict[str, Any]: ...
-
-    def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None: ...
-
-    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]: ...
-
     def reset(self) -> dict[str, Any]: ...
 
 
@@ -2088,7 +1790,6 @@ class SQLAlchemyRepository:
             Base.metadata.create_all(self.engine)
             ensure_legacy_compat_schema(self.engine)
         with session_scope(self.session_factory) as session:
-            self._fail_orphaned_dedup_scan_runs(session)
             self._requeue_processing(session)
 
     @property
@@ -2102,29 +1803,6 @@ class SQLAlchemyRepository:
                 BlogModel.updated_at: now_utc(),
             }
         )
-        session.query(IngestionRequestModel).filter(
-            IngestionRequestModel.status == INGESTION_REQUEST_STATUS_CRAWLING_SEED
-        ).update(
-            {
-                IngestionRequestModel.status: INGESTION_REQUEST_STATUS_QUEUED,
-                IngestionRequestModel.updated_at: now_utc(),
-            }
-        )
-
-    def _fail_orphaned_dedup_scan_runs(self, session: Session) -> None:
-        orphaned_runs = session.scalars(
-            select(BlogDedupScanRunModel).where(BlogDedupScanRunModel.status == "RUNNING")
-        ).all()
-        if not orphaned_runs:
-            return
-        failed_at = now_utc()
-        for run in orphaned_runs:
-            started_at = _sortable_datetime(run.started_at)
-            run.status = "FAILED"
-            run.completed_at = failed_at
-            run.duration_ms = max(int((failed_at - started_at).total_seconds() * 1000), 0)
-            run.error_message = "orphaned_dedup_scan_run_cleaned_on_startup"
-            run.updated_at = failed_at
 
     def _get_blog_by_business_id(self, session: Session, blog_id: int) -> BlogModel | None:
         """Return one blog row by business ``blog_id``."""
@@ -2218,52 +1896,6 @@ class SQLAlchemyRepository:
             activity_at=row.activity_at,
             identity_complete=bool(row.identity_complete),
         )
-
-    def _serialize_ingestion_request_payload(
-        self,
-        session: Session,
-        request: IngestionRequestModel,
-        *,
-        serializer: Callable[..., dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Resolve request blogs once and pass them to the chosen serializer."""
-        seed_blog, matched_blog = self._resolve_ingestion_request_blogs(session, request)
-        return serializer(request, seed_blog=seed_blog, matched_blog=matched_blog)
-
-    def _serialize_ingestion_request_payloads(
-        self,
-        session: Session,
-        requests: list[IngestionRequestModel],
-        *,
-        serializer: Callable[..., dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Resolve and serialize multiple ingestion requests using the shared serializer handoff."""
-        return [
-            self._serialize_ingestion_request_payload(
-                session,
-                request,
-                serializer=serializer,
-            )
-            for request in requests
-        ]
-
-    def _resolve_ingestion_request_blogs(
-        self,
-        session: Session,
-        request: IngestionRequestModel,
-    ) -> tuple[BlogModel | None, BlogModel | None]:
-        """Resolve the seed and matched blogs referenced by one ingestion request."""
-        seed_blog = (
-            self._get_blog_by_business_id(session, request.seed_blog_id)
-            if request.seed_blog_id is not None
-            else None
-        )
-        matched_blog = (
-            self._get_blog_by_business_id(session, request.matched_blog_id)
-            if request.matched_blog_id is not None
-            else None
-        )
-        return seed_blog, matched_blog
 
     def _latest_row_payload(
         self,
@@ -2906,9 +2538,9 @@ class SQLAlchemyRepository:
             blog_id: Blog identifier that should be removed from persistence.
 
         Returns:
-            ``None``. The blog, its edges, and dangling ingestion references
-            are removed or cleared in place. URL-keyed label assignments are
-            intentionally preserved across graph cleanup.
+            ``None``. The blog and its edges are removed in place.
+            URL-keyed label assignments are intentionally preserved across
+            graph cleanup.
         """
         edge_ids = session.scalars(
             select(EdgeModel.id).where(
@@ -2920,12 +2552,6 @@ class SQLAlchemyRepository:
         ).all()
         if edge_ids:
             session.query(EdgeModel).filter(EdgeModel.id.in_(edge_ids)).delete(synchronize_session=False)
-        session.query(IngestionRequestModel).filter(
-            IngestionRequestModel.seed_blog_id == blog_id
-        ).update({IngestionRequestModel.seed_blog_id: None})
-        session.query(IngestionRequestModel).filter(
-            IngestionRequestModel.matched_blog_id == blog_id
-        ).update({IngestionRequestModel.matched_blog_id: None})
         blog = self._get_blog_by_business_id(session, blog_id)
         if blog is not None:
             session.delete(blog)
@@ -3038,114 +2664,6 @@ class SQLAlchemyRepository:
                 session,
                 statement=select(SeedModel).order_by(SeedModel.id.asc()),
                 serializer=_seed_payload,
-            )
-
-    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
-        requested_url, normalized_url, domain, identity_key, reason_codes, ruleset_version = normalize_homepage_url(
-            homepage_url
-        )
-        normalized_email = normalize_ingestion_email(email)
-        with session_scope(self.session_factory) as session:
-            existing_blog = session.scalar(
-                select(BlogModel).where(BlogModel.identity_key == identity_key)
-            )
-            if existing_blog is not None and not (existing_blog.email or "").strip():
-                existing_blog.email = normalized_email
-            if existing_blog is not None:
-                if _uses_tenant_root_canonicalization(reason_codes):
-                    existing_blog.url = normalized_url
-                    existing_blog.normalized_url = normalized_url
-                    existing_blog.domain = domain
-                existing_blog.identity_key = identity_key
-                existing_blog.identity_reason_codes = _dump_reason_codes(reason_codes)
-                existing_blog.identity_ruleset_version = ruleset_version
-                existing_blog.updated_at = now_utc()
-
-            if existing_blog is not None and existing_blog.crawl_status == CrawlStatus.FINISHED:
-                existing_blog_view = _BlogPayloadView.from_model(existing_blog)
-                return {
-                    "status": INGESTION_REQUEST_STATUS_DEDUPED_EXISTING,
-                    "blog_id": int(_business_blog_id(existing_blog)),
-                    "matched_blog_id": int(_business_blog_id(existing_blog)),
-                    "request_id": None,
-                    "request_token": None,
-                    "blog": existing_blog_view.as_blog_payload() if existing_blog_view is not None else None,
-                }
-
-            existing_request = self._oldest_ingestion_request(
-                session,
-                filters=(IngestionRequestModel.identity_key == identity_key,),
-                statuses=tuple(ACTIVE_INGESTION_REQUEST_STATUSES),
-            )
-            if existing_request is not None:
-                if not (existing_request.requester_email or "").strip():
-                    existing_request.requester_email = normalized_email
-                if _uses_tenant_root_canonicalization(reason_codes):
-                    existing_request.normalized_url = normalized_url
-                existing_request.identity_key = identity_key
-                existing_request.identity_reason_codes = _dump_reason_codes(reason_codes)
-                existing_request.identity_ruleset_version = ruleset_version
-                existing_request.updated_at = now_utc()
-                return self._serialize_ingestion_request_payload(
-                    session,
-                    existing_request,
-                    serializer=_ingestion_request_payload,
-                )
-
-            if existing_blog is None:
-                existing_blog = BlogModel(
-                    blog_id=None,
-                    url=normalized_url,
-                    normalized_url=normalized_url,
-                    identity_key=identity_key,
-                    identity_reason_codes=_dump_reason_codes(reason_codes),
-                    identity_ruleset_version=ruleset_version,
-                    domain=domain,
-                    email=normalized_email,
-                    acceptance_status=BLOG_ACCEPTANCE_ACCEPTED,
-                    accepted_by="seed",
-                    accepted_at=now_utc(),
-                    crawl_status=CrawlStatus.WAITING,
-                    friend_links_count=0,
-                    created_at=now_utc(),
-                    updated_at=now_utc(),
-                )
-                session.add(existing_blog)
-                session.flush()
-                existing_blog.blog_id = int(existing_blog.id)
-                session.flush()
-            elif existing_blog.crawl_status == CrawlStatus.FAILED:
-                existing_blog.crawl_status = CrawlStatus.WAITING
-                existing_blog.updated_at = now_utc()
-
-            request_status = (
-                INGESTION_REQUEST_STATUS_CRAWLING_SEED
-                if existing_blog.crawl_status == CrawlStatus.PROCESSING
-                else INGESTION_REQUEST_STATUS_QUEUED
-            )
-            request = IngestionRequestModel(
-                requested_url=requested_url,
-                normalized_url=normalized_url,
-                identity_key=identity_key,
-                identity_reason_codes=_dump_reason_codes(reason_codes),
-                identity_ruleset_version=ruleset_version,
-                requester_email=normalized_email,
-                status=request_status,
-                priority=100,
-                seed_blog_id=int(_business_blog_id(existing_blog)),
-                matched_blog_id=None,
-                request_token=token_urlsafe(18),
-                expires_at=None,
-                error_message=None,
-                created_at=now_utc(),
-                updated_at=now_utc(),
-            )
-            session.add(request)
-            session.flush()
-            return self._serialize_ingestion_request_payload(
-                session,
-                request,
-                serializer=_ingestion_request_payload,
             )
 
     def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
@@ -3361,43 +2879,6 @@ class SQLAlchemyRepository:
             session.flush()
             return True
 
-    def get_ingestion_request(
-        self,
-        *,
-        request_id: int,
-        request_token: str,
-    ) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            request = session.scalar(
-                select(IngestionRequestModel).where(IngestionRequestModel.id == request_id)
-            )
-            if request is None or request.request_token != request_token:
-                return None
-            return self._serialize_ingestion_request_payload(
-                session,
-                request,
-                serializer=_ingestion_request_payload,
-            )
-
-    def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]:
-        resolved_limit = max(1, min(int(limit), INGESTION_PRIORITY_LIST_LIMIT))
-        active_sort = case(
-            (IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)), 0),
-            else_=1,
-        )
-        with session_scope(self.session_factory) as session:
-            requests = session.scalars(
-                select(IngestionRequestModel)
-                .where(IngestionRequestModel.priority >= 100)
-                .order_by(active_sort.asc(), IngestionRequestModel.created_at.desc(), IngestionRequestModel.id.desc())
-                .limit(resolved_limit)
-            ).all()
-            return self._serialize_ingestion_request_payloads(
-                session,
-                requests,
-                serializer=_priority_ingestion_request_payload,
-            )
-
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         normalized = normalize_url(url)
         identity = resolve_blog_identity(url)
@@ -3443,18 +2924,6 @@ class SQLAlchemyRepository:
                 match_reason=None,
             )
 
-    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
-        with session_scope(self.session_factory) as session:
-            request = self._oldest_seed_ingestion_request(
-                session,
-                blog_id=blog_id,
-                statuses=(INGESTION_REQUEST_STATUS_QUEUED,),
-            )
-            if request is None:
-                return
-            request.status = INGESTION_REQUEST_STATUS_CRAWLING_SEED
-            request.updated_at = now_utc()
-
     def _claim_blog_for_statement(self, session: Session, statement: Any) -> dict[str, Any] | None:
         blog = session.scalar(statement)
         if blog is None:
@@ -3471,43 +2940,26 @@ class SQLAlchemyRepository:
             statement = statement.with_for_update(skip_locked=True)
         return self._claim_blog_for_statement(session, statement)
 
-    def _active_ingestion_seed_ids_statement(self) -> Any:
-        """Return the active ingestion seed ids used to exclude priority-backed blogs."""
-        return select(IngestionRequestModel.seed_blog_id).where(
-            IngestionRequestModel.seed_blog_id.is_not(None),
-            IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
-        )
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        """Claim the next ordinary waiting blog for crawler processing.
 
-    def _oldest_ingestion_request(
-        self,
-        session: Session,
-        *,
-        filters: tuple[ColumnElement[bool], ...],
-        statuses: tuple[str, ...],
-    ) -> IngestionRequestModel | None:
-        """Return the oldest ingestion request matching the given filters and statuses."""
-        return session.scalar(
-            select(IngestionRequestModel)
-            .where(
-                *filters,
-                IngestionRequestModel.status.in_(statuses),
+        Args:
+            None.
+
+        Returns:
+            Serialized blog payload for the claimed row, or ``None`` when no
+            `WAITING` blog is available. The claimed row is immediately moved
+            to `PROCESSING`.
+        """
+
+        with session_scope(self.session_factory) as session:
+            statement = (
+                select(BlogModel)
+                .where(BlogModel.crawl_status == CrawlStatus.WAITING)
+                .order_by(BlogModel.id.asc())
+                .limit(1)
             )
-            .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
-        )
-
-    def _oldest_seed_ingestion_request(
-        self,
-        session: Session,
-        *,
-        blog_id: int,
-        statuses: tuple[str, ...],
-    ) -> IngestionRequestModel | None:
-        """Return the oldest ingestion request for one seed blog within the allowed statuses."""
-        return self._oldest_ingestion_request(
-            session,
-            filters=(IngestionRequestModel.seed_blog_id == blog_id,),
-            statuses=statuses,
-        )
+            return self._claim_first_matching_blog(session, statement)
 
     def _lookup_blog_matches(
         self,
@@ -3533,47 +2985,6 @@ class SQLAlchemyRepository:
             match_reason=match_reason,
         )
 
-    def _priority_blog_claim_statement(self) -> Any:
-        """Build the priority queue statement without changing claim semantics."""
-        return (
-            select(BlogModel)
-            .join(
-                IngestionRequestModel,
-                IngestionRequestModel.seed_blog_id == BlogModel.blog_id,
-            )
-            .where(
-                BlogModel.crawl_status == CrawlStatus.WAITING,
-                IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
-            )
-            .order_by(
-                IngestionRequestModel.priority.desc(),
-                IngestionRequestModel.created_at.asc(),
-                BlogModel.blog_id.asc(),
-                BlogModel.id.asc(),
-            )
-            .limit(1)
-        )
-
-    def _waiting_blog_claim_statement(self, *, include_priority: bool) -> Any:
-        """Build the waiting queue statement while preserving priority exclusion semantics."""
-        statement = select(BlogModel).where(BlogModel.crawl_status == CrawlStatus.WAITING)
-        if not include_priority:
-            statement = statement.where(
-                BlogModel.blog_id.not_in(self._active_ingestion_seed_ids_statement())
-            )
-        return statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc()).limit(1)
-
-    def get_next_priority_blog(self) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._claim_first_matching_blog(session, self._priority_blog_claim_statement())
-
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._claim_first_matching_blog(
-                session,
-                self._waiting_blog_claim_statement(include_priority=include_priority),
-            )
-
     def requeue_failed_blogs(self) -> dict[str, Any]:
         """Move every failed blog back into the waiting crawl queue.
 
@@ -3591,17 +3002,6 @@ class SQLAlchemyRepository:
                 blog.crawl_error_kind = None
                 blog.crawl_error_message = None
                 blog.updated_at = timestamp
-
-            requests = session.scalars(
-                select(IngestionRequestModel).where(
-                    IngestionRequestModel.seed_blog_id.in_([int(_business_blog_id(blog)) for blog in blogs]),
-                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_FAILED,
-                )
-            ).all()
-            for request in requests:
-                request.status = INGESTION_REQUEST_STATUS_QUEUED
-                request.error_message = None
-                request.updated_at = timestamp
 
             return {"requeued": requeued_count}
 
@@ -3640,20 +3040,6 @@ class SQLAlchemyRepository:
             if metadata_captured:
                 blog.title = title
                 blog.icon_url = icon_url
-            request = self._oldest_seed_ingestion_request(
-                session,
-                blog_id=blog_id,
-                statuses=tuple(ACTIVE_INGESTION_REQUEST_STATUSES),
-            )
-            if request is not None:
-                if blog.crawl_status == CrawlStatus.FINISHED:
-                    request.status = INGESTION_REQUEST_STATUS_COMPLETED
-                    request.matched_blog_id = int(_business_blog_id(blog))
-                    request.error_message = None
-                elif blog.crawl_status == CrawlStatus.FAILED:
-                    request.status = INGESTION_REQUEST_STATUS_FAILED
-                    request.error_message = "seed crawl failed"
-                request.updated_at = now_utc()
 
     def add_edge(
         self,
@@ -5293,194 +4679,10 @@ class SQLAlchemyRepository:
             "funnel": funnel,
         }
 
-    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        started_at = now_utc()
-        settings = self._decision_scan_settings()
-        with session_scope(self.session_factory) as session:
-            total_count = _count_selectable_rows(session, BlogModel)
-            run = BlogDedupScanRunModel(
-                status="RUNNING",
-                ruleset_version=_decision_scan_ruleset_version(settings),
-                started_at=started_at,
-                completed_at=None,
-                duration_ms=0,
-                total_count=total_count,
-                scanned_count=0,
-                removed_count=0,
-                kept_count=0,
-                crawler_was_running=crawler_was_running,
-                crawler_restart_attempted=False,
-                crawler_restart_succeeded=False,
-                search_reindexed=False,
-                error_message=None,
-                created_at=started_at,
-                updated_at=started_at,
-            )
-            session.add(run)
-            session.flush()
-            return _blog_dedup_scan_run_payload(run)
-
-    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
-        started_at = now_utc()
-        settings = self._decision_scan_settings()
-        decision_chain = build_url_decision_chain(settings)
-        try:
-            with session_scope(self.session_factory) as session:
-                run = self._require_model(
-                    session,
-                    BlogDedupScanRunModel,
-                    run_id,
-                    not_found_error="blog_dedup_scan_run_not_found",
-                )
-                run.status = "RUNNING"
-                run.started_at = run.started_at or started_at
-                run.completed_at = None
-                run.duration_ms = 0
-                run.scanned_count = 0
-                run.removed_count = 0
-                run.kept_count = 0
-                run.error_message = None
-                run.updated_at = started_at
-                blog_rows = session.execute(
-                    select(
-                        BlogModel.blog_id,
-                        BlogModel.url,
-                        BlogModel.domain,
-                        BlogModel.identity_key,
-                    )
-                    .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
-                ).all()
-                run.total_count = len(blog_rows)
-
-            scanned_count = 0
-            rejected_blog_count = 0
-            for blog_row in blog_rows:
-                with session_scope(self.session_factory) as session:
-                    run = self._require_model(
-                        session,
-                        BlogDedupScanRunModel,
-                        run_id,
-                        not_found_error="blog_dedup_scan_run_not_found",
-                    )
-                    blog = self._get_blog_by_business_id(session, int(blog_row.blog_id))
-                    if blog is None:
-                        continue
-                    decision = decision_chain.decide(
-                        str(blog.url or ""),
-                        "",
-                        link_text=str(blog.domain or ""),
-                        context_text="",
-                    )
-                    if not decision.accepted:
-                        session.add(
-                            BlogDedupScanRunItemModel(
-                                run_id=int(run.id),
-                                survivor_blog_id=None,
-                                removed_blog_id=int(_business_blog_id(blog)),
-                                survivor_identity_key=str(blog.identity_key or ""),
-                                removed_url=str(blog.url or ""),
-                                removed_normalized_url=str(blog.normalized_url or blog.url or ""),
-                                removed_domain=str(blog.domain or ""),
-                                reason_code=decision.reasons[0] if decision.reasons else "decision_rejected",
-                                reason_codes=_dump_reason_codes(list(decision.reasons)),
-                                survivor_selection_basis=(
-                                    f"scanned_blog_id={int(_business_blog_id(blog))}, "
-                                    f"decision_score={decision.score:.6f}"
-                                ),
-                                created_at=now_utc(),
-                            )
-                        )
-                        self._delete_blog_graph(session, blog_id=int(_business_blog_id(blog)))
-                        rejected_blog_count += 1
-
-                    scanned_count += 1
-                    completed_so_far = now_utc()
-                    run.scanned_count = scanned_count
-                    run.removed_count = rejected_blog_count
-                    run.kept_count = max(run.total_count - rejected_blog_count, 0)
-                    run.duration_ms = max(int((completed_so_far - started_at).total_seconds() * 1000), 0)
-                    run.updated_at = completed_so_far
-
-            with session_scope(self.session_factory) as session:
-                run = self._require_model(
-                    session,
-                    BlogDedupScanRunModel,
-                    run_id,
-                    not_found_error="blog_dedup_scan_run_not_found",
-                )
-                completed_at = now_utc()
-                final_blog_count = _count_selectable_rows(session, BlogModel)
-                run.status = "SUCCEEDED"
-                run.completed_at = completed_at
-                run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
-                run.scanned_count = scanned_count
-                run.removed_count = max(run.total_count - final_blog_count, 0)
-                run.kept_count = final_blog_count
-                run.updated_at = completed_at
-                session.flush()
-                return _blog_dedup_scan_run_payload(run)
-        except Exception as exc:
-            with session_scope(self.session_factory) as session:
-                run = session.get(BlogDedupScanRunModel, run_id)
-                if run is not None:
-                    completed_at = now_utc()
-                    run.status = "FAILED"
-                    run.completed_at = completed_at
-                    run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
-                    run.error_message = str(exc)
-                    run.updated_at = completed_at
-            raise
-
-    def finalize_blog_dedup_scan_run(
-        self,
-        *,
-        run_id: int,
-        crawler_restart_attempted: bool,
-        crawler_restart_succeeded: bool,
-        search_reindexed: bool,
-        error_message: str | None = None,
-    ) -> dict[str, Any]:
-        with session_scope(self.session_factory) as session:
-            run = self._require_model(
-                session,
-                BlogDedupScanRunModel,
-                run_id,
-                not_found_error="blog_dedup_scan_run_not_found",
-            )
-            run.crawler_restart_attempted = crawler_restart_attempted
-            run.crawler_restart_succeeded = crawler_restart_succeeded
-            run.search_reindexed = search_reindexed
-            if error_message:
-                run.error_message = error_message
-            run.updated_at = now_utc()
-            session.flush()
-            return _blog_dedup_scan_run_payload(run)
-
-    def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._latest_row_payload(
-                session,
-                statement=select(BlogDedupScanRunModel).order_by(BlogDedupScanRunModel.id.desc()).limit(1),
-                serializer=_blog_dedup_scan_run_payload,
-            )
-
-    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
-        with session_scope(self.session_factory) as session:
-            return self._ordered_row_payloads(
-                session,
-                statement=(
-                    select(BlogDedupScanRunItemModel)
-                    .where(BlogDedupScanRunItemModel.run_id == run_id)
-                    .order_by(BlogDedupScanRunItemModel.id.asc())
-                ),
-                serializer=_blog_dedup_scan_run_item_payload,
-            )
-
     def reset(self) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
             blogs_deleted = _count_selectable_rows(session, BlogModel)
             edges_deleted = _count_selectable_rows(session, EdgeModel)
-            requests_deleted = _count_selectable_rows(session, IngestionRequestModel)
             users_preserved = _count_selectable_rows(session, UserModel)
             user_sessions_preserved = _count_selectable_rows(session, UserSessionModel)
             labels_preserved = _count_selectable_rows(session, BlogLabelModel)
@@ -5492,16 +4694,11 @@ class SQLAlchemyRepository:
             recommendation_interactions_deleted = _count_selectable_rows(session, BlogInteractionModel)
             recommendation_impressions_deleted = _count_selectable_rows(session, RecommendationImpressionModel)
             recommendation_requests_deleted = _count_selectable_rows(session, RecommendationRequestModel)
-            scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
-            scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
             session.query(SeedModel).update({SeedModel.blog_id: None})
             session.query(BlogInteractionModel).delete()
             session.query(RecommendationImpressionModel).delete()
             session.query(RecommendationRequestModel).delete()
-            session.query(BlogDedupScanRunItemModel).delete()
-            session.query(BlogDedupScanRunModel).delete()
             session.query(RawDiscoveredUrlModel).delete()
-            session.query(IngestionRequestModel).delete()
             session.query(EdgeModel).delete()
             session.query(BlogModel).delete()
             return {
@@ -5509,7 +4706,6 @@ class SQLAlchemyRepository:
                 "blogs_deleted": blogs_deleted,
                 "edges_deleted": edges_deleted,
                 "logs_deleted": 0,
-                "ingestion_requests_deleted": requests_deleted,
                 "users_preserved": users_preserved,
                 "user_sessions_preserved": user_sessions_preserved,
                 "blog_link_labels_deleted": 0,
@@ -5525,8 +4721,6 @@ class SQLAlchemyRepository:
                 "recommendation_interactions_deleted": recommendation_interactions_deleted,
                 "recommendation_impressions_deleted": recommendation_impressions_deleted,
                 "recommendation_requests_deleted": recommendation_requests_deleted,
-                "blog_dedup_scan_items_deleted": scan_items_deleted,
-                "blog_dedup_scan_runs_deleted": scan_runs_deleted,
             }
 
 

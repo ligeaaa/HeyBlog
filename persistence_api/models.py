@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean
 from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
@@ -91,29 +90,6 @@ class SeedModel(Base):
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
     blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class IngestionRequestModel(Base):
-    """User-triggered priority ingestion request."""
-
-    __tablename__ = "ingestion_requests"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    requested_url: Mapped[str] = mapped_column(Text, nullable=False)
-    normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
-    identity_key: Mapped[str] = mapped_column(Text, nullable=False, index=True, default="")
-    identity_reason_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    identity_ruleset_version: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    requester_email: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    seed_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
-    matched_blog_id: Mapped[int | None] = mapped_column(ForeignKey("blogs.blog_id", ondelete="SET NULL"), nullable=True)
-    request_token: Mapped[str] = mapped_column(Text, nullable=False)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -386,53 +362,4 @@ class BlogInteractionModel(Base):
     session_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     client_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attributes_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class BlogDedupScanRunModel(Base):
-    """Administrative full-library dedup scan summary."""
-
-    __tablename__ = "blog_dedup_scan_runs"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    ruleset_version: Mapped[str] = mapped_column(Text, nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    scanned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    removed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    kept_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    crawler_was_running: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    crawler_restart_attempted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    crawler_restart_succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    search_reindexed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class BlogDedupScanRunItemModel(Base):
-    """Detailed removal records produced by one dedup scan run."""
-
-    __tablename__ = "blog_dedup_scan_run_items"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[int] = mapped_column(
-        ForeignKey("blog_dedup_scan_runs.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    survivor_blog_id: Mapped[int] = mapped_column(
-        ForeignKey("blogs.blog_id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    removed_blog_id: Mapped[int | None] = mapped_column(nullable=True)
-    survivor_identity_key: Mapped[str] = mapped_column(Text, nullable=False)
-    removed_url: Mapped[str] = mapped_column(Text, nullable=False)
-    removed_normalized_url: Mapped[str] = mapped_column(Text, nullable=False)
-    removed_domain: Mapped[str] = mapped_column(Text, nullable=False)
-    reason_code: Mapped[str] = mapped_column(Text, nullable=False)
-    reason_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    survivor_selection_basis: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

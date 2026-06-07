@@ -133,7 +133,6 @@ class CrawlPipeline:
         """
         stats = CrawlRunStats()
         limit = max_nodes or self.settings.max_nodes_per_run
-        normal_slots_remaining = 0
         stop_reason: str | None = None
 
         while stats.processed < limit:
@@ -144,11 +143,7 @@ class CrawlPipeline:
             if not capacity.allowed:
                 stop_reason = capacity.reason
                 break
-            # Claiming and processing stay in one loop so the batch result
-            # always reflects the same queue-fairness rules as runtime mode.
-            row, _claimed_priority, normal_slots_remaining = self._claim_next_scheduled_blog(
-                normal_slots_remaining=normal_slots_remaining
-            )
+            row = self._get_next_waiting_blog()
             if row is None:
                 break
             result = self.process_blog_row(
@@ -195,10 +190,6 @@ class CrawlPipeline:
             failed.
         """
         blog = BlogNode.from_row(row)
-        if hasattr(self.repository, "mark_ingestion_request_crawling"):
-            # Priority ingestion requests need a state transition before the
-            # actual crawl starts so UI callers can observe progress promptly.
-            self.repository.mark_ingestion_request_crawling(blog_id=blog.id)
         if on_blog_start is not None:
             on_blog_start(blog.callback_payload())
         try:
@@ -220,69 +211,14 @@ class CrawlPipeline:
         """
         return self.export_service.write_exports()
 
-    def _claim_next_scheduled_blog(self, *, normal_slots_remaining: int) -> tuple[dict[str, Any] | None, bool, int]:
-        """Claim the next eligible blog while enforcing priority fairness.
-
-        Args:
-            normal_slots_remaining: Remaining count in the current fairness
-                window that allows normal-queue blogs after a priority claim.
-
-        Returns:
-            A tuple of ``(row, claimed_priority, next_normal_slots_remaining)``
-            describing the claimed blog, whether it came from the priority
-            queue, and the updated fairness-window counter.
-        """
-        priority_slots = max(1, self.settings.priority_seed_normal_queue_slots)
-        if normal_slots_remaining <= 0:
-            # A priority seed wins immediately when its turn comes up.
-            row = self._get_next_priority_blog()
-            if row is not None:
-                return row, True, priority_slots
-
-        include_priority = normal_slots_remaining <= 0
-        row = self._get_next_waiting_blog(include_priority=include_priority)
-        if row is not None:
-            # After one priority seed is claimed, let a bounded number of normal
-            # queue items run before checking the priority queue again.
-            next_remaining = max(0, normal_slots_remaining - 1) if normal_slots_remaining > 0 else 0
-            return row, False, next_remaining
-
-        if normal_slots_remaining > 0:
-            # If the normal queue is empty during a fairness window, do not make
-            # the priority seed wait for the remaining normal slots to expire.
-            row = self._get_next_priority_blog()
-            if row is not None:
-                return row, True, priority_slots
-        return None, False, 0
-
-    def _get_next_priority_blog(self) -> dict[str, Any] | None:
-        """Return the next priority blog row if the repository supports it.
-
-        Returns:
-            The claimed priority blog row, or ``None`` when no priority queue is
-            available or no priority blog is waiting.
-        """
-        getter = getattr(self.repository, "get_next_priority_blog", None)
-        if getter is None:
-            return None
-        return getter()
-
-    def _get_next_waiting_blog(self, *, include_priority: bool) -> dict[str, Any] | None:
+    def _get_next_waiting_blog(self) -> dict[str, Any] | None:
         """Return the next waiting blog row from the main queue.
-
-        Args:
-            include_priority: Whether repository implementations should allow
-                priority rows to be returned from the general waiting query.
 
         Returns:
             The next claimed waiting blog row, or ``None`` when the queue is
             empty.
         """
-        getter = self.repository.get_next_waiting_blog
-        try:
-            return getter(include_priority=include_priority)
-        except TypeError:
-            return getter()
+        return self.repository.get_next_waiting_blog()
 
     def _crawl_blog(self, blog: dict[str, Any]) -> int:
         """Crawl one blog row through the orchestrator.

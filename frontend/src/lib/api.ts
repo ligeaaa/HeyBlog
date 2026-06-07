@@ -1,5 +1,4 @@
 import type {
-  AdminDedupSummary,
   AdminBlogLabelCounts,
   AdminBlogLabelingCandidate,
   AdminBlogLabelingPage,
@@ -230,12 +229,6 @@ interface BackendRandomRecommendationBatchPayload {
   items: BackendGraphNode[];
 }
 
-interface CreateIngestionRequestPayload {
-  request_id: number;
-  request_token: string;
-  status: string;
-}
-
 interface BackendUserProfile {
   id: number;
   email: string;
@@ -275,17 +268,6 @@ interface BackendRuntimePayload {
   current_stage: string | null;
   elapsed_seconds: number | null;
   maintenance_in_progress?: boolean;
-}
-
-interface BackendDedupSummary {
-  id: number;
-  status: string;
-  total_count: number;
-  scanned_count: number;
-  removed_count: number;
-  kept_count: number;
-  created_at: string;
-  updated_at: string;
 }
 
 interface BackendBlogLabelTag {
@@ -1010,31 +992,6 @@ export async function postRecommendationEvent(
 }
 
 /**
- * Submit one ingestion request when a searched blog is missing.
- *
- * @param data User-provided URL and email pair.
- * @returns Created ingestion request summary.
- */
-export async function submitBlogInfo(data: {
-  url: string;
-  email: string;
-}): Promise<CreateIngestionRequestPayload> {
-  if (!data.url.trim()) {
-    throw new Error("url_required");
-  }
-  if (!data.email.trim()) {
-    throw new Error("email_required");
-  }
-  return apiJson<CreateIngestionRequestPayload>("/api/ingestion-requests", {
-    method: "POST",
-    body: JSON.stringify({
-      homepage_url: data.url.trim(),
-      email: data.email.trim(),
-    }),
-  });
-}
-
-/**
  * Submit one user seed URL so it can be accepted and queued for crawling.
  *
  * @param data User-provided complete blog URL.
@@ -1188,32 +1145,6 @@ export async function fetchAdminRuntimeCurrent(adminToken: string): Promise<Admi
     currentStage: normalized.currentStage,
     elapsedSeconds: normalized.elapsedSeconds,
   };
-}
-
-/**
- * Fetch the latest dedup scan summary when available.
- *
- * @param adminToken Bearer token used for the protected endpoint.
- * @returns Normalized dedup summary or null when no run exists.
- */
-export async function fetchAdminDedupLatest(adminToken: string): Promise<AdminDedupSummary | null> {
-  try {
-    const payload = await apiJson<BackendDedupSummary>("/api/admin/blog-dedup-scans/latest", {
-      headers: adminHeaders(adminToken),
-    });
-    return {
-      id: payload.id,
-      status: payload.status,
-      totalCount: payload.total_count,
-      scannedCount: payload.scanned_count,
-      removedCount: payload.removed_count,
-      keptCount: payload.kept_count,
-      createdAt: payload.created_at,
-      updatedAt: payload.updated_at,
-    };
-  } catch {
-    return null;
-  }
 }
 
 /**

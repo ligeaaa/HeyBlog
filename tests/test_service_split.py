@@ -217,31 +217,6 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     }
     assert detail.json()["outgoing_edges"] == []
 
-    request = client.post(
-        "/internal/ingestion-requests",
-        json={
-            "homepage_url": "https://queued.example.com/",
-            "email": "owner@example.com",
-        },
-    )
-    assert request.status_code == 200
-    assert request.json()["request_id"] == 1
-    assert request.json()["status"] == "QUEUED"
-
-    request_status = client.get(
-        "/internal/ingestion-requests/1",
-        params={"request_token": request.json()["request_token"]},
-    )
-    assert request_status.status_code == 200
-    assert request_status.json()["email"] == "owner@example.com"
-
-    priority_requests = client.get("/internal/ingestion-requests")
-    assert priority_requests.status_code == 200
-    assert priority_requests.json()[0]["request_id"] == 1
-    assert "email" not in priority_requests.json()[0]
-    assert "request_token" not in priority_requests.json()[0]
-    assert "email" not in priority_requests.json()[0]["blog"]
-
     auth = client.post(
         "/internal/users/register",
         json={"email": "Member@Example.com", "password": "long enough"},
@@ -257,10 +232,10 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     assert login.status_code == 200
     assert login.json()["user"]["id"] == auth.json()["user"]["id"]
 
-    lookup = client.get("/internal/blogs/lookup", params={"url": "https://queued.example.com/"})
+    lookup = client.get("/internal/blogs/lookup", params={"url": "https://blog.example.com/"})
     assert lookup.status_code == 200
     assert lookup.json()["match_reason"] == "identity_key"
-    assert lookup.json()["items"][0]["id"] == request.json()["seed_blog_id"]
+    assert lookup.json()["items"][0]["id"] == 1
 
     filter_stats = client.get("/internal/filter-stats")
     assert filter_stats.status_code == 200
@@ -268,9 +243,8 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
 
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
-    assert reset.json()["blogs_deleted"] == 3
+    assert reset.json()["blogs_deleted"] == 2
     assert reset.json()["logs_deleted"] == 0
-    assert reset.json()["ingestion_requests_deleted"] == 1
     assert reset.json()["blog_link_labels_deleted"] == 0
 
     empty_catalog = client.get("/internal/blogs/catalog")
@@ -300,19 +274,16 @@ def test_persistence_service_queue_routes_preserve_optional_row_serialization() 
 
     class StubRepository:
         def __init__(self) -> None:
-            self.include_priority_calls: list[bool] = []
+            self.calls = 0
 
-        def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, object] | None:
-            self.include_priority_calls.append(include_priority)
+        def get_next_waiting_blog(self) -> dict[str, object] | None:
+            self.calls += 1
             return {
                 "id": 11,
                 "blog_id": 11,
                 "domain": "queued.example.com",
                 "crawl_status": "PROCESSING",
             }
-
-        def get_next_priority_blog(self) -> dict[str, object] | None:
-            return None
 
     repository = StubRepository()
     app = create_persistence_app(
@@ -324,8 +295,7 @@ def test_persistence_service_queue_routes_preserve_optional_row_serialization() 
     )
     client = TestClient(app)
 
-    waiting = client.get("/internal/queue/next", params={"include_priority": "false"})
-    priority = client.get("/internal/queue/priority-next")
+    waiting = client.get("/internal/queue/next")
 
     assert waiting.status_code == 200
     assert waiting.json() == {
@@ -334,78 +304,13 @@ def test_persistence_service_queue_routes_preserve_optional_row_serialization() 
         "domain": "queued.example.com",
         "crawl_status": "PROCESSING",
     }
-    assert repository.include_priority_calls == [False]
-
-    assert priority.status_code == 200
-    assert priority.json() is None
-
-
-def test_persistence_service_maintenance_run_create_routes_preserve_bool_passthrough() -> None:
-    """Maintenance create routes should keep bool passthrough and payload shape unchanged."""
-
-    class StubRepository:
-        def __init__(self) -> None:
-            self.blog_dedup_calls: list[bool] = []
-
-        def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
-            self.blog_dedup_calls.append(crawler_was_running)
-            return {"id": 34, "status": "RUNNING", "crawler_was_running": crawler_was_running}
-
-    repository = StubRepository()
-    app = create_persistence_app(
-        PersistenceState(
-            repository=repository,  # type: ignore[arg-type]
-            graph_service=object(),  # type: ignore[arg-type]
-            stats_service=object(),  # type: ignore[arg-type]
-        )
-    )
-    client = TestClient(app)
-
-    blog_dedup = client.post("/internal/blog-dedup-scans/runs")
-
-    assert blog_dedup.status_code == 200
-    assert blog_dedup.json() == {"id": 34, "status": "RUNNING", "crawler_was_running": False}
-    assert repository.blog_dedup_calls == [False]
-
-
-def test_persistence_service_maintenance_child_list_routes_preserve_run_id_passthrough() -> None:
-    """Maintenance child-list routes should keep run_id passthrough and list payloads unchanged."""
-
-    class StubRepository:
-        def __init__(self) -> None:
-            self.blog_dedup_calls: list[int] = []
-
-        def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, object]]:
-            self.blog_dedup_calls.append(run_id)
-            return [{"id": 2, "run_id": run_id, "reason_code": "blog_alias_collapsed"}]
-
-    repository = StubRepository()
-    app = create_persistence_app(
-        PersistenceState(
-            repository=repository,  # type: ignore[arg-type]
-            graph_service=object(),  # type: ignore[arg-type]
-            stats_service=object(),  # type: ignore[arg-type]
-        )
-    )
-    client = TestClient(app)
-
-    blog_dedup = client.get("/internal/blog-dedup-scans/9/items")
-
-    assert blog_dedup.status_code == 200
-    assert blog_dedup.json() == [{"id": 2, "run_id": 9, "reason_code": "blog_alias_collapsed"}]
-    assert repository.blog_dedup_calls == [9]
+    assert repository.calls == 1
 
 
 def test_persistence_service_zero_arg_list_routes_preserve_payload_passthrough() -> None:
     """Zero-arg list routes should keep list payloads and ordering unchanged."""
 
     class StubRepository:
-        def list_priority_ingestion_requests(self) -> list[dict[str, object]]:
-            return [
-                {"request_id": 2, "status": "QUEUED"},
-                {"request_id": 5, "status": "CRAWLING"},
-            ]
-
         def list_blog_label_tags(self) -> list[dict[str, object]]:
             return [
                 {"id": 7, "slug": "blog"},
@@ -421,14 +326,7 @@ def test_persistence_service_zero_arg_list_routes_preserve_payload_passthrough()
     )
     client = TestClient(app)
 
-    ingestion_requests = client.get("/internal/ingestion-requests")
     blog_label_tags = client.get("/internal/blog-labeling/tags")
-
-    assert ingestion_requests.status_code == 200
-    assert ingestion_requests.json() == [
-        {"request_id": 2, "status": "QUEUED"},
-        {"request_id": 5, "status": "CRAWLING"},
-    ]
 
     assert blog_label_tags.status_code == 200
     assert blog_label_tags.json() == [
@@ -1605,26 +1503,6 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 },
             },
             "list_logs": lambda self: [],
-            "create_ingestion_request": lambda self, homepage_url, email: {
-                "id": 9,
-                "request_id": 9,
-                "requested_url": homepage_url,
-                "normalized_url": homepage_url,
-                "email": email,
-                "status": "QUEUED",
-                "priority": 100,
-                "seed_blog_id": 3,
-                "matched_blog_id": None,
-                "blog_id": 3,
-                "request_token": "token-123",
-                "expires_at": None,
-                "error_message": None,
-                "created_at": "2026-04-05T00:00:00Z",
-                "updated_at": "2026-04-05T00:00:00Z",
-                "seed_blog": None,
-                "matched_blog": None,
-                "blog": None,
-            },
             "create_user_seed": lambda self, homepage_url: {
                 "status": "QUEUED",
                 "blog_id": 44,
@@ -1640,59 +1518,6 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                     "crawl_status": "WAITING",
                 },
             },
-            "get_ingestion_request": lambda self, request_id, request_token: {
-                "id": request_id,
-                "request_id": request_id,
-                "requested_url": "https://queued.example/",
-                "normalized_url": "https://queued.example/",
-                "email": "owner@example.com",
-                "status": "QUEUED",
-                "priority": 100,
-                "seed_blog_id": 3,
-                "matched_blog_id": None,
-                "blog_id": 3,
-                "request_token": request_token,
-                "expires_at": None,
-                "error_message": None,
-                "created_at": "2026-04-05T00:00:00Z",
-                "updated_at": "2026-04-05T00:00:00Z",
-                "seed_blog": None,
-                "matched_blog": None,
-                "blog": None,
-            },
-            "list_priority_ingestion_requests": lambda self: [
-                {
-                    "request_id": 9,
-                    "requested_url": "https://queued.example/",
-                    "normalized_url": "https://queued.example/",
-                    "status": "QUEUED",
-                    "seed_blog_id": 3,
-                    "matched_blog_id": None,
-                    "blog_id": 3,
-                    "error_message": None,
-                    "created_at": "2026-04-05T00:00:00Z",
-                    "updated_at": "2026-04-05T00:00:00Z",
-                    "blog": {
-                        "id": 3,
-                        "url": "https://queued.example/",
-                        "normalized_url": "https://queued.example/",
-                        "domain": "queued.example",
-                        "title": "Queued Example",
-                        "icon_url": None,
-                        "status_code": None,
-                        "crawl_status": "WAITING",
-                        "friend_links_count": 0,
-                        "last_crawled_at": None,
-                        "created_at": "2026-04-05T00:00:00Z",
-                        "updated_at": "2026-04-05T00:00:00Z",
-                        "incoming_count": 0,
-                        "outgoing_count": 0,
-                        "connection_count": 0,
-                        "activity_at": None,
-                        "identity_complete": True,
-                    },
-                }
-            ],
             "lookup_blog_candidates": lambda self, url: {
                 "query_url": url,
                 "normalized_query_url": "https://queued.example/",
@@ -1732,7 +1557,6 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "blogs_deleted": 3,
                 "edges_deleted": 4,
                 "logs_deleted": 0,
-                "ingestion_requests_deleted": 1,
                 "blog_link_labels_deleted": 0,
                 "blog_label_tags_deleted": 0,
                 "blog_label_subjects_preserved": 1,
@@ -1899,17 +1723,6 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     assert requeue.status_code == 200
     assert requeue.json() == {"requeued": 7}
 
-    ingestion = client.post(
-        "/api/ingestion-requests",
-        json={"homepage_url": "https://queued.example/", "email": "owner@example.com"},
-    )
-    assert ingestion.status_code == 200
-    assert ingestion.json()["request_id"] == 9
-
-    ingestion_status = client.get("/api/ingestion-requests/9?request_token=token-123")
-    assert ingestion_status.status_code == 200
-    assert ingestion_status.json()["status"] == "QUEUED"
-
     user_seed = client.post(
         "/api/blogs/user-seeds",
         json={"homepage_url": "https://queued-user.example/"},
@@ -1919,13 +1732,6 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     assert user_seed.json()["blog"]["accepted_by"] == "user"
     assert user_seed.json()["blog"]["crawl_status"] == "WAITING"
 
-    priority_ingestion = client.get("/api/ingestion-requests")
-    assert priority_ingestion.status_code == 200
-    assert priority_ingestion.json()[0]["request_id"] == 9
-    assert "email" not in priority_ingestion.json()[0]
-    assert "request_token" not in priority_ingestion.json()[0]
-    assert "email" not in priority_ingestion.json()[0]["blog"]
-
     lookup = client.get("/api/blogs/lookup?url=https://queued.example/")
     assert lookup.status_code == 200
     assert lookup.json()["match_reason"] == "identity_key"
@@ -1934,7 +1740,6 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     reset = client.post("/api/admin/database/reset", headers=admin_headers())
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
-    assert reset.json()["ingestion_requests_deleted"] == 1
     assert reset.json()["blog_link_labels_deleted"] == 0
     assert reset.json()["blog_label_tags_deleted"] == 0
     assert reset.json()["blog_link_labels_preserved"] == 1
@@ -2206,8 +2011,8 @@ def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
     assert response.json()["detail"] == "Unsupported crawl status: BAD"
 
 
-def test_backend_lookup_and_priority_list_surface_upstream_validation_errors() -> None:
-    """Public lookup and priority list endpoints should preserve upstream failures."""
+def test_backend_lookup_and_user_seed_surface_upstream_validation_errors() -> None:
+    """Public lookup and user seed endpoints should preserve upstream failures."""
 
     class LookupValidationStub:
         def stats(self) -> dict[str, object]:
@@ -2231,11 +2036,6 @@ def test_backend_lookup_and_priority_list_surface_upstream_validation_errors() -
         def lookup_blog_candidates(self, *, url: str) -> dict[str, object]:
             request = httpx.Request("GET", "http://persistence/internal/blogs/lookup")
             response = httpx.Response(422, request=request, json={"detail": "Unsupported homepage URL"})
-            raise httpx.HTTPStatusError("boom", request=request, response=response)
-
-        def list_priority_ingestion_requests(self) -> list[dict[str, object]]:
-            request = httpx.Request("GET", "http://persistence/internal/ingestion-requests")
-            response = httpx.Response(503, request=request, json={"detail": "upstream_unavailable"})
             raise httpx.HTTPStatusError("boom", request=request, response=response)
 
         def create_user_seed(self, *, homepage_url: str) -> dict[str, object]:
@@ -2281,10 +2081,6 @@ def test_backend_lookup_and_priority_list_surface_upstream_validation_errors() -
     lookup = client.get("/api/blogs/lookup?url=notaurl")
     assert lookup.status_code == 422
     assert lookup.json()["detail"] == "Unsupported homepage URL"
-
-    priority = client.get("/api/ingestion-requests")
-    assert priority.status_code == 503
-    assert priority.json()["detail"] == "upstream_unavailable"
 
     user_seed = client.post("/api/blogs/user-seeds", json={"homepage_url": "https://blog.sayori.org/"})
     assert user_seed.status_code == 422
@@ -2442,215 +2238,6 @@ def test_backend_admin_routes_fail_when_auth_not_configured() -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "admin_auth_not_configured"
-
-
-def test_persistence_service_exposes_blog_dedup_scan_endpoints(tmp_path: Path) -> None:
-    """Persistence should expose decision-rescan summary and removed item endpoints."""
-    settings = Settings(
-        db_path=tmp_path / "heyblog.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-    )
-    app = create_persistence_app(build_persistence_state(settings))
-    client = TestClient(app)
-
-    first = client.post(
-        "/internal/blogs/upsert",
-        json={
-            "url": "https://langhai.cc/",
-            "normalized_url": "https://langhai.cc/",
-            "domain": "langhai.cc",
-        },
-    )
-    assert first.status_code == 200
-
-    run = client.post("/internal/blog-dedup-scans/runs", params={"crawler_was_running": "true"})
-    assert run.status_code == 200
-    assert run.json()["status"] == "RUNNING"
-    assert run.json()["total_count"] == 1
-
-    executed = client.post(f"/internal/blog-dedup-scans/{run.json()['id']}/execute")
-    assert executed.status_code == 200
-    assert executed.json()["status"] == "SUCCEEDED"
-    assert executed.json()["total_count"] == 1
-
-    latest = client.get("/internal/blog-dedup-scans/latest")
-    assert latest.status_code == 200
-    assert latest.json()["id"] == run.json()["id"]
-
-    items = client.get(f"/internal/blog-dedup-scans/{run.json()['id']}/items")
-    assert items.status_code == 200
-    assert isinstance(items.json(), list)
-
-    legacy_shortcut = client.post("/internal/blog-dedup-scans", params={"crawler_was_running": "true"})
-    assert legacy_shortcut.status_code == 404
-
-
-def test_backend_blog_dedup_scan_stops_and_restarts_crawler_and_blocks_runtime_actions() -> None:
-    """Admin scan should orchestrate stop/scan/restart and expose maintenance lock."""
-
-    class ScanPersistenceStub:
-        def __init__(self) -> None:
-            self.finalize_calls: list[dict[str, object]] = []
-            self.run = {
-                "id": 7,
-                "status": "PENDING",
-                "ruleset_version": "2026-04-07-v2",
-                "total_count": 3,
-                "scanned_count": 0,
-                "removed_count": 0,
-                "kept_count": 0,
-                "crawler_was_running": True,
-                "crawler_restart_attempted": False,
-                "crawler_restart_succeeded": False,
-                "search_reindexed": False,
-                "error_message": None,
-            }
-
-        def stats(self) -> dict[str, object]:
-            return {
-                "pending_tasks": 0,
-                "processing_tasks": 0,
-                "finished_tasks": 0,
-                "failed_tasks": 0,
-                "total_blogs": 0,
-                "total_edges": 0,
-                "status_counts": {},
-                "average_friend_links": 0.0,
-            }
-
-        def list_blogs(self) -> list[dict[str, object]]:
-            return []
-
-        def get_blog(self, blog_id: int) -> None:
-            return None
-
-        def get_blog_detail(self, blog_id: int) -> None:
-            return None
-
-        def list_edges(self) -> list[dict[str, object]]:
-            return []
-
-        def graph(self) -> dict[str, object]:
-            return {"nodes": [], "edges": []}
-
-        def graph_view(self, **_: object) -> dict[str, object]:
-            return {"nodes": [], "edges": [], "meta": {}}
-
-        def graph_neighbors(self, blog_id: int, hops: int = 1, limit: int = 120) -> dict[str, object]:
-            return {"nodes": [], "edges": [], "meta": {}}
-
-        def latest_graph_snapshot(self) -> dict[str, object]:
-            return {"version": "v1"}
-
-        def graph_snapshot(self, version: str) -> dict[str, object]:
-            return {"version": version, "nodes": [], "edges": [], "meta": {}}
-
-        def list_logs(self) -> list[dict[str, object]]:
-            return []
-
-        def reset(self) -> dict[str, object]:
-            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
-
-        def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, object]:
-            self.run.update(
-                {
-                    "status": "RUNNING",
-                    "crawler_was_running": crawler_was_running,
-                    "crawler_restart_attempted": False,
-                    "crawler_restart_succeeded": False,
-                    "search_reindexed": False,
-                    "error_message": None,
-                }
-            )
-            return dict(self.run)
-
-        def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, object]:
-            sleep(0.05)
-            self.run.update(
-                {
-                    "id": run_id,
-                    "status": "SUCCEEDED",
-                    "scanned_count": 3,
-                    "removed_count": 2,
-                    "kept_count": 1,
-                }
-            )
-            return dict(self.run)
-
-        def finalize_blog_dedup_scan_run(self, **payload: object) -> dict[str, object]:
-            self.finalize_calls.append(payload)
-            self.run.update(
-                {
-                    "id": int(payload["run_id"]),
-                    "crawler_restart_attempted": bool(payload["crawler_restart_attempted"]),
-                    "crawler_restart_succeeded": bool(payload["crawler_restart_succeeded"]),
-                    "search_reindexed": bool(payload["search_reindexed"]),
-                    "error_message": payload.get("error_message"),
-                }
-            )
-            return dict(self.run)
-
-        def latest_blog_dedup_scan_run(self) -> dict[str, object]:
-            return dict(self.run)
-
-        def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, object]]:
-            return [
-                {
-                    "id": 1,
-                    "run_id": run_id,
-                    "removed_url": "http://blog.langhai.cc/index.html",
-                    "reason_code": "blog_alias_collapsed",
-                    "survivor_selection_basis": "FINISHED, created_at=2026-04-05T00:00:00Z, id=1",
-                }
-            ]
-
-    class ToggleCrawler(StubCrawler):
-        def __init__(self) -> None:
-            self.runner_status = "running"
-            self.stop_calls = 0
-            self.start_calls = 0
-
-        def runtime_status(self) -> dict[str, object]:
-            payload = super().runtime_status()
-            payload["runner_status"] = self.runner_status
-            return payload
-
-        def stop(self) -> dict[str, object]:
-            self.stop_calls += 1
-            self.runner_status = "idle"
-            return self.runtime_status()
-
-        def start(self) -> dict[str, object]:
-            self.start_calls += 1
-            self.runner_status = "running"
-            return self.runtime_status()
-
-    persistence = ScanPersistenceStub()
-    crawler = ToggleCrawler()
-    search = StubSearch()
-    app = create_backend_app(BackendState(persistence=persistence, crawler=crawler, search=search, admin_token="secret-token"))
-    client = TestClient(app)
-
-    response = client.post("/api/admin/blog-dedup-scans", headers=admin_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "RUNNING"
-    assert response.json()["total_count"] == 3
-    assert crawler.stop_calls == 1
-    for _ in range(20):
-        latest = client.get("/api/admin/blog-dedup-scans/latest", headers=admin_headers())
-        assert latest.status_code == 200
-        if latest.json()["status"] == "SUCCEEDED":
-            break
-        sleep(0.05)
-    assert latest.json()["crawler_restart_attempted"] is True
-    assert latest.json()["crawler_restart_succeeded"] is True
-    assert latest.json()["search_reindexed"] is True
-    assert crawler.start_calls == 1
-    items = client.get("/api/admin/blog-dedup-scans/7/items", headers=admin_headers())
-    assert items.status_code == 200
-    assert items.json()[0]["reason_code"] == "blog_alias_collapsed"
 
 
 def test_search_service_queries_rebuilt_snapshot(tmp_path: Path) -> None:
@@ -2938,7 +2525,7 @@ def test_frontend_service_does_not_forward_empty_authorization_headers(tmp_path:
     app = create_frontend_app(settings)
     client = TestClient(app)
 
-    response = client.post("/api/ingestion-requests", json={"homepage_url": "https://blog.example.com"})
+    response = client.post("/api/blogs/user-seeds", json={"homepage_url": "https://blog.example.com"})
 
     assert response.status_code == 200
     assert captured["headers"].pop("x-request-id")

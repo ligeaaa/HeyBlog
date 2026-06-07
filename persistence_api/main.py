@@ -54,11 +54,6 @@ class UpsertBlogRequest(BaseModel):
     seed_source_row: int | None = None
 
 
-class CreateIngestionRequest(BaseModel):
-    homepage_url: str
-    email: str
-
-
 class CreateUserSeedRequest(BaseModel):
     homepage_url: str
 
@@ -158,13 +153,6 @@ class BlogLabelParquetStatusResponse(BaseModel):
     rewritten: bool
     message: str
     updated_at: str | None
-
-
-class FinalizeBlogDedupScanRunRequest(BaseModel):
-    crawler_restart_attempted: bool
-    crawler_restart_succeeded: bool
-    search_reindexed: bool
-    error_message: str | None = None
 
 
 _T = TypeVar("_T")
@@ -404,10 +392,6 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def get_recommendation_strategy_stats() -> dict[str, Any]:
         return get_state().repository.get_recommendation_strategy_stats()
 
-    @app.get("/internal/ingestion-requests")
-    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
-        return get_state().repository.list_priority_ingestion_requests()
-
     @app.post("/internal/users/register")
     def register_user(payload: UserAuthRequest) -> dict[str, Any]:
         return _call_with_http_exception_translation(
@@ -554,15 +538,9 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         )
 
     @app.get("/internal/queue/next")
-    def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:
+    def next_waiting() -> dict[str, Any] | None:
         return _load_optional_row_as_dict(
-            lambda: get_state().repository.get_next_waiting_blog(include_priority=include_priority),
-        )
-
-    @app.get("/internal/queue/priority-next")
-    def next_priority_waiting() -> dict[str, Any] | None:
-        return _load_optional_row_as_dict(
-            lambda: get_state().repository.get_next_priority_blog(),
+            lambda: get_state().repository.get_next_waiting_blog(),
         )
 
     @app.get("/internal/blogs/{blog_id}/detail")
@@ -572,66 +550,11 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             detail="blog_not_found",
         )
 
-    @app.post("/internal/ingestion-requests")
-    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
-            lambda: get_state().repository.create_ingestion_request(**payload.model_dump()),
-            status_code=422,
-        )
-
     @app.post("/internal/user-seeds")
     def create_user_seed(payload: CreateUserSeedRequest) -> dict[str, Any]:
         return _call_with_value_error_http_translation(
             lambda: get_state().repository.create_user_seed(**payload.model_dump()),
             status_code=422,
-        )
-
-    @app.get("/internal/ingestion-requests/{request_id}")
-    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        return _require_payload(
-            get_state().repository.get_ingestion_request(
-                request_id=request_id,
-                request_token=request_token,
-            ),
-            detail="ingestion_request_not_found",
-        )
-
-    @app.post("/internal/blog-dedup-scans/runs")
-    def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
-        return get_state().repository.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-
-    @app.post("/internal/blog-dedup-scans/{run_id}/execute")
-    def execute_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
-            lambda: get_state().repository.execute_blog_dedup_scan_run(run_id=run_id),
-            status_code=404,
-        )
-
-    @app.post("/internal/blog-dedup-scans/{run_id}/finalize")
-    def finalize_blog_dedup_scan_run(run_id: int, payload: FinalizeBlogDedupScanRunRequest) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
-            lambda: get_state().repository.finalize_blog_dedup_scan_run(
-                run_id=run_id,
-                **payload.model_dump(),
-            ),
-            status_code=404,
-        )
-
-    @app.get("/internal/blog-dedup-scans/latest")
-    def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
-        return _require_payload(
-            get_state().repository.get_latest_blog_dedup_scan_run(),
-            detail="blog_dedup_scan_run_not_found",
-        )
-
-    @app.get("/internal/blog-dedup-scans/{run_id}/items")
-    def list_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
-        return get_state().repository.list_blog_dedup_scan_run_items(run_id)
-
-    @app.post("/internal/ingestion-requests/by-blog/{blog_id}/crawling")
-    def mark_ingestion_request_crawling(blog_id: int) -> dict[str, bool]:
-        return _run_action_and_return_ok(
-            lambda: get_state().repository.mark_ingestion_request_crawling(blog_id=blog_id),
         )
 
     @app.post("/internal/blogs/upsert")

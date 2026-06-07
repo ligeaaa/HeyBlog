@@ -324,15 +324,6 @@ class PersistenceHttpClient:
 
         return self._get("/internal/recommendation-stats")
 
-    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
-        return self._post(
-            "/internal/ingestion-requests",
-            {
-                "homepage_url": homepage_url,
-                "email": email,
-            },
-        )
-
     def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
         """Create or refresh a user-submitted crawler seed.
 
@@ -396,20 +387,6 @@ class PersistenceHttpClient:
 
         return self._get(f"/internal/users/{user_id}/label-stats")
 
-    def get_ingestion_request(
-        self,
-        *,
-        request_id: int,
-        request_token: str,
-    ) -> dict[str, Any] | None:
-        return self._get(
-            f"/internal/ingestion-requests/{request_id}",
-            {"request_token": request_token},
-        )
-
-    def list_priority_ingestion_requests(self) -> list[dict[str, Any]]:
-        return self._get("/internal/ingestion-requests")
-
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         return self._get("/internal/blogs/lookup", {"url": url})
 
@@ -420,56 +397,8 @@ class PersistenceHttpClient:
         blog_id = payload.get("id")
         return int(blog_id) if blog_id is not None else None
 
-    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        return self._create_maintenance_run(
-            "/internal/blog-dedup-scans/runs",
-            crawler_was_running=crawler_was_running,
-        )
-
-    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
-        return self._post_maintenance_run_action(
-            "/internal/blog-dedup-scans",
-            run_id=run_id,
-            action="execute",
-        )
-
-    def finalize_blog_dedup_scan_run(
-        self,
-        *,
-        run_id: int,
-        crawler_restart_attempted: bool,
-        crawler_restart_succeeded: bool,
-        search_reindexed: bool,
-        error_message: str | None = None,
-    ) -> dict[str, Any]:
-        return self._post(
-            f"/internal/blog-dedup-scans/{run_id}/finalize",
-            {
-                "crawler_restart_attempted": crawler_restart_attempted,
-                "crawler_restart_succeeded": crawler_restart_succeeded,
-                "search_reindexed": search_reindexed,
-                "error_message": error_message,
-            },
-        )
-
-    def latest_blog_dedup_scan_run(self) -> dict[str, Any]:
-        return self._get_latest_maintenance_run("/internal/blog-dedup-scans")
-
-    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
-        return self._list_maintenance_run_children(
-            "/internal/blog-dedup-scans",
-            run_id=run_id,
-            child_resource="items",
-        )
-
-    def get_next_priority_blog(self) -> dict[str, Any] | None:
-        return self._get("/internal/queue/priority-next")
-
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next", {"include_priority": self._bool_query_value(include_priority)})
-
-    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
-        self._post(f"/internal/ingestion-requests/by-blog/{blog_id}/crawling", {})
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        return self._get("/internal/queue/next")
 
     def mark_blog_result(
         self,
