@@ -2397,10 +2397,8 @@ class SQLAlchemyRepository:
         """
 
         admin_non_blog = _non_blog_label_count_expr(BlogLabelModel.label_id)
-        user_blog_count = _json_label_count_expr(BlogUserLabelModel.label_id, BLOG_LABEL_BLOG_ID)
         user_non_blog_count = _non_blog_label_count_expr(BlogUserLabelModel.label_id)
-        raw_weight = cast(10 + user_blog_count, Float) / cast(1 + user_non_blog_count, Float)
-        random_weight = case((raw_weight > 10, 10.0), else_=raw_weight)
+        random_weight = cast(10, Float) / cast(1 + user_non_blog_count, Float)
         return (
             statement.outerjoin(BlogLabelModel, BlogLabelModel.normalized_url == BlogModel.normalized_url)
             .outerjoin(BlogUserLabelModel, BlogUserLabelModel.normalized_url == BlogModel.normalized_url)

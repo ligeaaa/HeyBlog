@@ -1442,6 +1442,64 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     assert raw_kept not in [item["id"] for item in admin_labeled["items"]]
 
 
+def test_repository_random_catalog_only_demotes_user_non_blog_feedback(tmp_path: Path) -> None:
+    """Random catalog weighting should ignore blog votes and demote non-blog votes."""
+    repository = repository_module.build_repository(db_path=tmp_path / "heyblog.sqlite")
+    repository.create_blog_label_tag(name="blog")
+    repository.create_blog_label_tag(name="other")
+
+    if repository.engine.dialect.name == "sqlite":
+        def fixed_random(dbapi_connection: object, _connection_record: object) -> None:
+            dbapi_connection.create_function("random", 0, lambda: 1)
+
+        event.listen(repository.engine, "connect", fixed_random)
+        repository.engine.dispose()
+
+    boosted_id, boosted_inserted = repository.upsert_blog(
+        url="https://boosted.example/",
+        normalized_url="https://boosted.example/",
+        domain="boosted.example",
+    )
+    baseline_id, baseline_inserted = repository.upsert_blog(
+        url="https://baseline.example/",
+        normalized_url="https://baseline.example/",
+        domain="baseline.example",
+    )
+    demoted_id, demoted_inserted = repository.upsert_blog(
+        url="https://demoted.example/",
+        normalized_url="https://demoted.example/",
+        domain="demoted.example",
+    )
+    assert boosted_inserted is True
+    assert baseline_inserted is True
+    assert demoted_inserted is True
+    for blog_id, title in (
+        (boosted_id, "Boosted"),
+        (baseline_id, "Baseline"),
+        (demoted_id, "Demoted"),
+    ):
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=1,
+            metadata_captured=True,
+            title=title,
+            icon_url=None,
+        )
+
+    repository.increment_blog_user_label(blog_id=boosted_id, label="blog")
+    repository.increment_blog_user_label(blog_id=demoted_id, label="other")
+
+    random_page = repository.list_blogs_catalog(status="finished", sort="random", page_size=10)
+
+    assert [item["url"] for item in random_page["items"]] == [
+        "https://baseline.example/",
+        "https://boosted.example/",
+        "https://demoted.example/",
+    ]
+
+
 def test_repository_persists_random_recommendation_batch_and_interaction_stats(tmp_path: Path) -> None:
     """Random recommendation batches should persist request, impression, event, and stat rows."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
