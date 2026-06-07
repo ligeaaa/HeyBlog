@@ -93,6 +93,8 @@ export interface BlogRelationGraph {
 }
 
 export interface BlogDetail extends GraphNode {
+  crawlStatus: string;
+  crawlErrorKind: string | null;
   incomingLinks: number;
   outgoingLinks: number;
   relatedNodes: GraphNode[];

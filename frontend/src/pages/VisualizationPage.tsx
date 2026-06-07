@@ -213,6 +213,8 @@ export function VisualizationPage() {
       }
       setBlogDetail({
         ...node,
+        crawlStatus: "FINISHED",
+        crawlErrorKind: null,
         incomingLinks: node.incomingCount ?? 0,
         outgoingLinks: node.outgoingCount ?? 0,
         relatedNodes: [],

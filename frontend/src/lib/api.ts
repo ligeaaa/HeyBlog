@@ -58,6 +58,7 @@ interface BackendGraphNode {
   icon_url: string | null;
   status_code?: number | null;
   crawl_status?: string;
+  crawl_error_kind?: string | null;
   friend_links_count?: number;
   last_crawled_at?: string | null;
   created_at?: string;
@@ -759,6 +760,8 @@ export async function fetchBlogDetail(blogId: number): Promise<BlogDetail> {
     : null;
   return {
     ...toGraphNode(payload),
+    crawlStatus: payload.crawl_status ?? "WAITING",
+    crawlErrorKind: payload.crawl_error_kind ?? null,
     incomingLinks: payload.incoming_edges.length,
     outgoingLinks: payload.outgoing_edges.length,
     relatedNodes: Array.from(relatedNodesById.values()),

@@ -1,9 +1,13 @@
 import {
   ArrowLeft,
   ArrowRight,
+  AlertTriangle,
+  CheckCircle2,
+  Clock3,
   Loader2,
   Network,
   Route,
+  RotateCcw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
@@ -31,6 +35,92 @@ const DETAIL_RELATION_GRAPH_ENTRANCE_KIND = "blog_detail_relation_graph";
  */
 function formatCount(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+/**
+ * Return a compact Chinese label for a crawl status value.
+ *
+ * @param crawlStatus Raw crawl status returned by the backend.
+ * @returns User-facing crawl status label.
+ */
+function formatCrawlStatus(crawlStatus: string) {
+  const labels: Record<string, string> = {
+    WAITING: "等待抓取",
+    PROCESSING: "正在抓取",
+    FINISHED: "抓取完成",
+    FAILED: "抓取失败",
+  };
+  return labels[crawlStatus] ?? crawlStatus;
+}
+
+/**
+ * Return a readable failure reason for a crawl error kind.
+ *
+ * @param crawlErrorKind Stable backend failure category.
+ * @returns User-facing failure reason.
+ */
+function formatCrawlErrorKind(crawlErrorKind: string | null) {
+  if (!crawlErrorKind) {
+    return "未记录具体失败原因";
+  }
+  const labels: Record<string, string> = {
+    timeout: "请求超时",
+    http_status: "目标站点返回异常 HTTP 状态",
+    invalid_url: "URL 无效",
+    page_too_large: "页面体积超过抓取限制",
+    request_error: "网络请求失败",
+    worker_error: "抓取任务执行异常",
+  };
+  return labels[crawlErrorKind] ?? crawlErrorKind.replaceAll("_", " ");
+}
+
+/**
+ * Render the crawl execution status for the current detail blog.
+ *
+ * @param props Blog detail payload with crawl status fields.
+ * @returns Compact status block, including failure reason when failed.
+ */
+function BlogCrawlStatus({ detail }: { detail: BlogDetail }) {
+  const isFailed = detail.crawlStatus === "FAILED";
+  const statusMeta = (() => {
+    switch (detail.crawlStatus) {
+      case "FINISHED":
+        return {
+          Icon: CheckCircle2,
+          className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+        };
+      case "PROCESSING":
+        return {
+          Icon: RotateCcw,
+          className: "border-sky-200 bg-sky-50 text-sky-700",
+        };
+      case "FAILED":
+        return {
+          Icon: AlertTriangle,
+          className: "border-rose-200 bg-rose-50 text-rose-700",
+        };
+      default:
+        return {
+          Icon: Clock3,
+          className: "border-slate-200 bg-slate-50 text-slate-600",
+        };
+    }
+  })();
+  const { Icon } = statusMeta;
+
+  return (
+    <div className={`mt-5 inline-flex max-w-full flex-col gap-1 rounded-lg border px-3 py-2 text-sm ${statusMeta.className}`}>
+      <div className="flex items-center gap-2 font-medium">
+        <Icon className="h-4 w-4 flex-shrink-0" />
+        <span>抓取状态：{formatCrawlStatus(detail.crawlStatus)}</span>
+      </div>
+      {isFailed ? (
+        <div className="break-words pl-6 text-xs opacity-90">
+          失败原因：{formatCrawlErrorKind(detail.crawlErrorKind)}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -573,6 +663,7 @@ export function BlogDetailPage() {
                   >
                     {detail.url}
                   </BlogExternalLink>
+                  <BlogCrawlStatus detail={detail} />
                 </div>
               </div>
             </section>

@@ -767,6 +767,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 额外字段：
 
+- `crawl_status`: 当前抓取执行状态，例如 `WAITING`、`PROCESSING`、`FAILED`、`FINISHED`；详情页会直接展示该字段
+- `crawl_error_kind`: 最近一次抓取失败分类；当 `crawl_status=FAILED` 时，详情页会把该字段作为失败原因展示，例如 `timeout`、`page_too_large`、`http_status`、`request_error`
 - `incoming_edges`: 所有 `to_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
 - `outgoing_edges`: 所有 `from_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
 - `recommended_blogs`: “朋友的朋友”推荐列表，规则是“当前博客的友链认识、但当前博客还没直接认识的博客”
