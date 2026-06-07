@@ -94,6 +94,41 @@ def _build_rss_discovery_filter(settings: Settings) -> BaseUrlFilter:
     return RssDiscoveryFilter()
 
 
+def _build_implicit_success_deciders(
+    settings: Settings,
+    *,
+    configured_filter_kinds: set[str],
+    disabled_filter_kinds: set[str],
+) -> list[BaseUrlFilter]:
+    """Append optional success deciders controlled only by settings toggles.
+
+    Args:
+        settings: Runtime settings that enable or disable optional deciders.
+        configured_filter_kinds: Filter kinds mentioned by the TOML config.
+        disabled_filter_kinds: Filter kinds explicitly disabled in the TOML
+            config.
+
+    Returns:
+        Success decider filters that should be appended after deterministic
+        rule filters because the config omitted them and the corresponding
+        runtime toggle is enabled.
+    """
+    implicit_filters: list[BaseUrlFilter] = []
+    if (
+        settings.rss_discovery_enabled
+        and "rss_discovery" not in configured_filter_kinds
+        and "rss_discovery" not in disabled_filter_kinds
+    ):
+        implicit_filters.append(_build_rss_discovery_filter(settings))
+    if (
+        settings.decision_model_consensus_enabled
+        and "model_consensus" not in configured_filter_kinds
+        and "model_consensus" not in disabled_filter_kinds
+    ):
+        implicit_filters.append(_build_model_consensus_filter(settings))
+    return implicit_filters
+
+
 FILTER_REGISTRY: dict[str, FilterFactory] = {
     "duplicate_url": _static_filter_factory(DuplicateUrlFilter),
     "non_http_scheme": _static_filter_factory(NonHttpSchemeFilter),
@@ -167,10 +202,16 @@ class ConfiguredUrlFilterChain:
     def from_settings(cls, settings: Settings) -> "ConfiguredUrlFilterChain":
         """Build a filter chain using the configured TOML ordering."""
         loaded_filters: list[BaseUrlFilter] = []
+        configured_filter_kinds: set[str] = set()
+        disabled_filter_kinds: set[str] = set()
         for item in _load_filter_chain_config(settings.filter_chain_config_path):
-            if not bool(item.get("enabled", True)):
-                continue
             kind = str(item.get("kind", "")).strip()
+            if kind:
+                configured_filter_kinds.add(kind)
+            if not bool(item.get("enabled", True)):
+                if kind:
+                    disabled_filter_kinds.add(kind)
+                continue
             if kind == "model_consensus" and not settings.decision_model_consensus_enabled:
                 continue
             if kind == "rss_discovery" and not settings.rss_discovery_enabled:
@@ -179,6 +220,13 @@ class ConfiguredUrlFilterChain:
             if factory is None:
                 raise ValueError(f"unknown_filter_kind:{kind}")
             loaded_filters.append(factory(settings))
+        loaded_filters.extend(
+            _build_implicit_success_deciders(
+                settings,
+                configured_filter_kinds=configured_filter_kinds,
+                disabled_filter_kinds=disabled_filter_kinds,
+            )
+        )
         return cls(filters=tuple(loaded_filters))
 
     @property

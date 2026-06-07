@@ -17,8 +17,8 @@ def test_filter_rejects_known_platform_domains() -> None:
     assert not is_blog_candidate("https://t.co/share", "blog.example.com")
 
 
-def test_filter_rejects_blocked_tlds_like_gov_and_org() -> None:
-    """Reject blocked TLD categories such as government/organization domains."""
+def test_filter_rejects_government_tlds_but_allows_org_domains() -> None:
+    """Reject government/education TLDs while allowing organization domains."""
     decision = decide_blog_candidate("https://agency.gov/", "blog.example.com")
     gov_cn_decision = decide_blog_candidate("https://beian.miit.gov.cn/", "blog.example.com")
     org_decision = decide_blog_candidate("https://foundation.org/", "blog.example.com")
@@ -29,9 +29,9 @@ def test_filter_rejects_blocked_tlds_like_gov_and_org() -> None:
     assert not gov_cn_decision.accepted
     assert gov_cn_decision.hard_blocked
     assert "blocked_tld" in gov_cn_decision.reasons
-    assert not org_decision.accepted
-    assert org_decision.hard_blocked
-    assert "blocked_tld" in org_decision.reasons
+    assert org_decision.accepted
+    assert not org_decision.hard_blocked
+    assert "blocked_tld" not in org_decision.reasons
 
 
 def test_filter_rejects_exact_url_and_prefix_blocklist_entries() -> None:
