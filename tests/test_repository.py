@@ -6,7 +6,6 @@ import sys
 import pyarrow.parquet as pq
 import pytest
 from sqlalchemy import event
-from sqlalchemy import func
 from sqlalchemy import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -2608,7 +2607,7 @@ def test_repository_blog_detail_relation_graph_keeps_all_edges_within_two_layers
         repository.add_edge(
             from_blog_id=incoming_id,
             to_blog_id=incoming_first_ids[0],
-            link_url_raw=f"https://in-first-0.example/",
+            link_url_raw="https://in-first-0.example/",
             link_text=f"In second {index}",
         )
 
