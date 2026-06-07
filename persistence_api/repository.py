@@ -39,6 +39,7 @@ from persistence_api.db import session_scope
 from persistence_api.models import Base
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
+from persistence_api.models import BlogInteractionModel
 from persistence_api.models import BlogUserLabelModel
 from persistence_api.models import BlogUserLabelSelectionModel
 from persistence_api.models import BlogModel
@@ -47,6 +48,8 @@ from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import RecommendationImpressionModel
+from persistence_api.models import RecommendationRequestModel
 from persistence_api.models import SeedModel
 from persistence_api.models import UserModel
 from persistence_api.models import UserSessionModel
@@ -95,6 +98,12 @@ RANDOM_BLOG_LABEL_SLUGS = frozenset({"blog", "company", "other", "unknown"})
 BLOG_LABEL_BLOG_ID = BLOG_LABEL_NAME_TO_ID["blog"]
 RAW_DISCOVERED_URL_DUPLICATE_STATUS = "rule:duplicate_url"
 RAW_DISCOVERED_URL_SUCCESS_STATUS = "success"
+RANDOM_RECOMMENDATION_SURFACE = "random_blog_page"
+RANDOM_RECOMMENDATION_STRATEGY = "weighted_random"
+RANDOM_RECOMMENDATION_STRATEGY_VERSION = "v1"
+RECOMMENDATION_EVENT_TYPES = frozenset(
+    {"click", "detail_open", "external_open", "label_select", "refresh", "dismiss", "copy_url"}
+)
 REPOSITORY_LOGGER_NAME = "heyblog.repository"
 LOGGER = get_logger(REPOSITORY_LOGGER_NAME)
 INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
@@ -274,6 +283,80 @@ def _sortable_datetime(value: datetime | None) -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _clean_event_text(value: str, *, field: str, max_length: int = 256) -> str:
+    """Return a non-empty event text field or raise a stable validation error.
+
+    Args:
+        value: Raw event field value supplied by a caller.
+        field: Field name included in the validation error.
+        max_length: Maximum accepted character length.
+
+    Returns:
+        Trimmed field value.
+
+    Raises:
+        ValueError: Raised when the value is blank or too long.
+    """
+
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise ValueError(f"{field}_required")
+    if len(cleaned) > max_length:
+        raise ValueError(f"{field}_too_long")
+    return cleaned
+
+
+def _coerce_json_object(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a JSON object payload with unsupported values normalized by JSON.
+
+    Args:
+        value: Optional JSON-like mapping supplied by a caller.
+
+    Returns:
+        A JSON-serializable dictionary.
+
+    Raises:
+        ValueError: Raised when the mapping cannot be encoded as JSON.
+    """
+
+    if value is None:
+        return {}
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=True, default=str))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_json_attributes") from exc
+
+
+def _parse_event_datetime(value: str | datetime | None) -> datetime | None:
+    """Return an optional timezone-aware client event timestamp.
+
+    Args:
+        value: ISO datetime string, datetime instance, or `None`.
+
+    Returns:
+        Parsed datetime with UTC timezone when supplied.
+
+    Raises:
+        ValueError: Raised when the value cannot be parsed.
+    """
+
+    if value is None or isinstance(value, datetime):
+        parsed = value
+    else:
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("invalid_client_event_at") from exc
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _business_blog_id(model: BlogModel | None) -> int | None:
@@ -808,6 +891,26 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                 )
             )
             existing_tables.add("blog_user_label_selections")
+        if "blog_interactions" in existing_tables:
+            interaction_columns = {column["name"] for column in inspector.get_columns("blog_interactions")}
+            if "entrance_kind" not in interaction_columns:
+                connection.execute(
+                    text("ALTER TABLE blog_interactions ADD COLUMN entrance_kind TEXT NOT NULL DEFAULT 'legacy_unknown'")
+                )
+                if connection.dialect.name == "postgresql":
+                    connection.execute(text("ALTER TABLE blog_interactions ALTER COLUMN entrance_kind DROP DEFAULT"))
+            if "entrance_url" not in interaction_columns:
+                connection.execute(
+                    text("ALTER TABLE blog_interactions ADD COLUMN entrance_url TEXT NOT NULL DEFAULT 'legacy_unknown'")
+                )
+                if connection.dialect.name == "postgresql":
+                    connection.execute(text("ALTER TABLE blog_interactions ALTER COLUMN entrance_url DROP DEFAULT"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_blog_interactions_entrance_kind ON blog_interactions (entrance_kind)")
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_blog_interactions_entrance_url ON blog_interactions (entrance_url)")
+            )
         if "blog_label_tags" not in existing_tables:
             connection.execute(
                 text(
@@ -1855,6 +1958,41 @@ class RepositoryProtocol(Protocol):
         min_connections: int | None = None,
         acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
     ) -> dict[str, Any]: ...
+
+    def create_random_recommendation_batch(
+        self,
+        *,
+        count: int = 9,
+        visitor_id: str,
+        session_id: str,
+        user_id: int | None = None,
+        source: str | None = None,
+        page_url: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def record_blog_interaction(
+        self,
+        *,
+        event_uuid: str,
+        event_type: str,
+        blog_id: int,
+        visitor_id: str,
+        session_id: str,
+        entrance_kind: str,
+        entrance_url: str,
+        request_uuid: str | None = None,
+        impression_id: int | None = None,
+        position: int | None = None,
+        interaction_order: int = 1,
+        user_id: int | None = None,
+        client_event_at: str | datetime | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any] | None: ...
+
+    def get_recommendation_strategy_stats(self) -> dict[str, Any]: ...
 
     def list_blog_labeling_candidates(
         self,
@@ -3947,6 +4085,362 @@ class SQLAlchemyRepository:
                 },
             )
 
+    def create_random_recommendation_batch(
+        self,
+        *,
+        count: int = 9,
+        visitor_id: str,
+        session_id: str,
+        user_id: int | None = None,
+        source: str | None = None,
+        page_url: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist one random-blog recommendation request and its impressions.
+
+        Args:
+            count: Number of cards requested by the frontend.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            user_id: Optional authenticated user ID for attribution.
+            source: Optional caller surface detail.
+            page_url: Optional page URL where the batch was shown.
+            context: Optional JSON metadata associated with the serving event.
+
+        Returns:
+            Recommendation batch payload containing request metadata and ordered
+            catalog items with impression attribution fields.
+        """
+
+        if count < 1 or count > 50:
+            raise ValueError("count_out_of_range")
+        clean_visitor_id = _clean_event_text(visitor_id, field="visitor_id")
+        clean_session_id = _clean_event_text(session_id, field="session_id")
+        request_uuid = token_urlsafe(24)
+        with session_scope(self.session_factory) as session:
+            if user_id is not None and session.scalar(select(UserModel.id).where(UserModel.id == user_id)) is None:
+                raise UserAuthError("user_not_found")
+            statement, _ = self._blog_select()
+            statement = statement.where(
+                BlogModel.crawl_status == CrawlStatus.FINISHED,
+                BlogModel.acceptance_status == BLOG_ACCEPTANCE_ACCEPTED,
+            )
+            rows = session.execute(self._random_blog_catalog_statement(statement).limit(count)).all()
+            recommendation = RecommendationRequestModel(
+                request_uuid=request_uuid,
+                surface=RANDOM_RECOMMENDATION_SURFACE,
+                strategy=RANDOM_RECOMMENDATION_STRATEGY,
+                strategy_version=RANDOM_RECOMMENDATION_STRATEGY_VERSION,
+                visitor_id=clean_visitor_id,
+                user_id=user_id,
+                session_id=clean_session_id,
+                source=(source or "").strip() or None,
+                page_url=(page_url or "").strip() or None,
+                requested_count=count,
+                served_count=len(rows),
+                context_json=_coerce_json_object(context),
+            )
+            session.add(recommendation)
+            session.flush()
+            items: list[dict[str, Any]] = []
+            for position, row in enumerate(rows, start=1):
+                blog = row[0]
+                blog_id = _business_blog_id(blog)
+                impression = RecommendationImpressionModel(
+                    request_id=recommendation.id,
+                    blog_id=int(blog_id),
+                    normalized_url=str(blog.normalized_url),
+                    position=position,
+                    score=None,
+                    reason_json={"strategy": RANDOM_RECOMMENDATION_STRATEGY},
+                )
+                session.add(impression)
+                session.flush()
+                items.append(
+                    self._row_blog_payload(row)
+                    | {
+                        "request_uuid": request_uuid,
+                        "impression_id": impression.id,
+                        "position": position,
+                    }
+                )
+            session.flush()
+            return {
+                "request_uuid": request_uuid,
+                "surface": RANDOM_RECOMMENDATION_SURFACE,
+                "strategy": RANDOM_RECOMMENDATION_STRATEGY,
+                "strategy_version": RANDOM_RECOMMENDATION_STRATEGY_VERSION,
+                "visitor_id": clean_visitor_id,
+                "session_id": clean_session_id,
+                "user_id": user_id,
+                "source": recommendation.source,
+                "page_url": recommendation.page_url,
+                "requested_count": count,
+                "served_count": len(items),
+                "created_at": _iso(recommendation.created_at),
+                "items": items,
+            }
+
+    def _blog_interaction_payload(self, interaction: BlogInteractionModel) -> dict[str, Any]:
+        """Serialize one immutable blog interaction event row.
+
+        Args:
+            interaction: Persisted interaction model.
+
+        Returns:
+            JSON-ready event payload with attribution identifiers.
+        """
+
+        return {
+            "id": interaction.id,
+            "event_uuid": interaction.event_uuid,
+            "request_id": interaction.request_id,
+            "impression_id": interaction.impression_id,
+            "blog_id": interaction.blog_id,
+            "normalized_url": interaction.normalized_url,
+            "event_type": interaction.event_type,
+            "position": interaction.position,
+            "entrance_kind": interaction.entrance_kind,
+            "entrance_url": interaction.entrance_url,
+            "interaction_order": interaction.interaction_order,
+            "visitor_id": interaction.visitor_id,
+            "user_id": interaction.user_id,
+            "session_id": interaction.session_id,
+            "client_event_at": _iso(interaction.client_event_at),
+            "attributes": interaction.attributes_json,
+            "created_at": _iso(interaction.created_at),
+        }
+
+    def record_blog_interaction(
+        self,
+        *,
+        event_uuid: str,
+        event_type: str,
+        blog_id: int,
+        visitor_id: str,
+        session_id: str,
+        entrance_kind: str,
+        entrance_url: str,
+        request_uuid: str | None = None,
+        impression_id: int | None = None,
+        position: int | None = None,
+        interaction_order: int = 1,
+        user_id: int | None = None,
+        client_event_at: str | datetime | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist one idempotent recommendation interaction event.
+
+        Args:
+            event_uuid: Client-generated idempotency key.
+            event_type: Interaction type such as ``detail_open``.
+            blog_id: Public/business blog ID receiving the event.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            entrance_kind: Stable entrance category such as ``random_blog_card``.
+            entrance_url: Raw URL for the entrance context.
+            request_uuid: Optional serving request UUID for attribution.
+            impression_id: Optional impression row ID for attribution.
+            position: Optional card position displayed to the visitor.
+            interaction_order: Monotonic client-side order within the session.
+            user_id: Optional authenticated user ID.
+            client_event_at: Optional client timestamp.
+            attributes: Optional JSON metadata for the event.
+
+        Returns:
+            Serialized event payload plus a ``duplicate`` flag.
+        """
+
+        clean_event_uuid = _clean_event_text(event_uuid, field="event_uuid")
+        clean_event_type = _clean_event_text(event_type, field="event_type", max_length=64)
+        if clean_event_type not in RECOMMENDATION_EVENT_TYPES:
+            raise ValueError("unsupported_recommendation_event_type")
+        clean_visitor_id = _clean_event_text(visitor_id, field="visitor_id")
+        clean_session_id = _clean_event_text(session_id, field="session_id")
+        clean_entrance_kind = _clean_event_text(entrance_kind, field="entrance_kind", max_length=128)
+        clean_entrance_url = _clean_event_text(entrance_url, field="entrance_url", max_length=2048)
+        if interaction_order < 1:
+            raise ValueError("interaction_order_out_of_range")
+        with session_scope(self.session_factory) as session:
+            existing = session.scalar(
+                select(BlogInteractionModel).where(BlogInteractionModel.event_uuid == clean_event_uuid)
+            )
+            if existing is not None:
+                return self._blog_interaction_payload(existing) | {"duplicate": True}
+            blog = self._get_blog_by_business_id(session, blog_id)
+            if blog is None:
+                raise BlogLabelingNotFoundError("blog_not_found")
+            if user_id is not None and session.scalar(select(UserModel.id).where(UserModel.id == user_id)) is None:
+                raise UserAuthError("user_not_found")
+            recommendation: RecommendationRequestModel | None = None
+            if request_uuid is not None:
+                recommendation = session.scalar(
+                    select(RecommendationRequestModel).where(
+                        RecommendationRequestModel.request_uuid == request_uuid
+                    )
+                )
+                if recommendation is None:
+                    raise ValueError("recommendation_request_not_found")
+            impression: RecommendationImpressionModel | None = None
+            if impression_id is not None:
+                impression = session.get(RecommendationImpressionModel, impression_id)
+                if impression is None:
+                    raise ValueError("recommendation_impression_not_found")
+                if int(impression.blog_id) != int(blog_id):
+                    raise ValueError("recommendation_impression_blog_mismatch")
+                if recommendation is not None and int(impression.request_id) != int(recommendation.id):
+                    raise ValueError("recommendation_impression_request_mismatch")
+                if position is None:
+                    position = int(impression.position)
+            interaction = BlogInteractionModel(
+                event_uuid=clean_event_uuid,
+                request_id=recommendation.id if recommendation is not None else None,
+                impression_id=impression.id if impression is not None else None,
+                blog_id=int(blog_id),
+                normalized_url=str(blog.normalized_url),
+                event_type=clean_event_type,
+                position=position,
+                entrance_kind=clean_entrance_kind,
+                entrance_url=clean_entrance_url,
+                interaction_order=interaction_order,
+                visitor_id=clean_visitor_id,
+                user_id=user_id,
+                session_id=clean_session_id,
+                client_event_at=_parse_event_datetime(client_event_at),
+                attributes_json=_coerce_json_object(attributes),
+            )
+            session.add(interaction)
+            session.flush()
+            return self._blog_interaction_payload(interaction) | {"duplicate": False}
+
+    def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any] | None:
+        """Return recommendation exposure and interaction stats for one blog.
+
+        Args:
+            blog_id: Public/business blog ID.
+
+        Returns:
+            Stats payload, or ``None`` when the blog does not exist.
+        """
+
+        with session_scope(self.session_factory) as session:
+            blog = self._get_blog_by_business_id(session, blog_id)
+            if blog is None:
+                return None
+            impressions = int(
+                session.scalar(
+                    select(func.count(RecommendationImpressionModel.id)).where(
+                        RecommendationImpressionModel.blog_id == blog_id
+                    )
+                )
+                or 0
+            )
+            event_counts = {
+                str(event_type): int(count or 0)
+                for event_type, count in session.execute(
+                    select(BlogInteractionModel.event_type, func.count(BlogInteractionModel.id))
+                    .where(BlogInteractionModel.blog_id == blog_id)
+                    .group_by(BlogInteractionModel.event_type)
+                ).all()
+            }
+            unique_visitors = int(
+                session.scalar(
+                    select(func.count(func.distinct(BlogInteractionModel.visitor_id))).where(
+                        BlogInteractionModel.blog_id == blog_id
+                    )
+                )
+                or 0
+            )
+            last_interaction_at = session.scalar(
+                select(func.max(BlogInteractionModel.created_at)).where(BlogInteractionModel.blog_id == blog_id)
+            )
+            clicks = int(event_counts.get("click", 0))
+            detail_opens = int(event_counts.get("detail_open", 0))
+            external_opens = int(event_counts.get("external_open", 0))
+            label_selects = int(event_counts.get("label_select", 0))
+            return {
+                "blog_id": blog_id,
+                "normalized_url": blog.normalized_url,
+                "impressions": impressions,
+                "clicks": clicks,
+                "detail_opens": detail_opens,
+                "external_opens": external_opens,
+                "label_selects": label_selects,
+                "unique_visitors": unique_visitors,
+                "ctr": (clicks + detail_opens + external_opens) / impressions if impressions else 0.0,
+                "last_interaction_at": _iso(last_interaction_at),
+                "by_event_type": event_counts,
+            }
+
+    def get_recommendation_strategy_stats(self) -> dict[str, Any]:
+        """Return aggregate recommendation request, impression, and event stats.
+
+        Args:
+            None.
+
+        Returns:
+            Strategy-grouped aggregate stats for admin dashboards.
+        """
+
+        with session_scope(self.session_factory) as session:
+            total_requests = int(session.scalar(select(func.count(RecommendationRequestModel.id))) or 0)
+            total_impressions = int(session.scalar(select(func.count(RecommendationImpressionModel.id))) or 0)
+            total_interactions = int(session.scalar(select(func.count(BlogInteractionModel.id))) or 0)
+            click_counts = {
+                int(request_id): int(count or 0)
+                for request_id, count in session.execute(
+                    select(BlogInteractionModel.request_id, func.count(BlogInteractionModel.id))
+                    .where(
+                        BlogInteractionModel.request_id.is_not(None),
+                        BlogInteractionModel.event_type.in_(("click", "detail_open", "external_open")),
+                    )
+                    .group_by(BlogInteractionModel.request_id)
+                ).all()
+            }
+            grouped_rows = session.execute(
+                select(
+                    RecommendationRequestModel.surface,
+                    RecommendationRequestModel.strategy,
+                    RecommendationRequestModel.strategy_version,
+                    func.count(RecommendationRequestModel.id),
+                    func.coalesce(func.sum(RecommendationRequestModel.served_count), 0),
+                    func.count(func.distinct(RecommendationRequestModel.visitor_id)),
+                ).group_by(
+                    RecommendationRequestModel.surface,
+                    RecommendationRequestModel.strategy,
+                    RecommendationRequestModel.strategy_version,
+                )
+            ).all()
+            by_strategy: list[dict[str, Any]] = []
+            for surface, strategy, strategy_version, request_count, served_count, visitor_count in grouped_rows:
+                request_ids = session.scalars(
+                    select(RecommendationRequestModel.id).where(
+                        RecommendationRequestModel.surface == surface,
+                        RecommendationRequestModel.strategy == strategy,
+                        RecommendationRequestModel.strategy_version == strategy_version,
+                    )
+                ).all()
+                clicks = sum(click_counts.get(int(request_id), 0) for request_id in request_ids)
+                impressions = int(served_count or 0)
+                by_strategy.append(
+                    {
+                        "surface": surface,
+                        "strategy": strategy,
+                        "strategy_version": strategy_version,
+                        "requests": int(request_count or 0),
+                        "impressions": impressions,
+                        "clicks": clicks,
+                        "unique_visitors": int(visitor_count or 0),
+                        "ctr": clicks / impressions if impressions else 0.0,
+                    }
+                )
+            return {
+                "total_requests": total_requests,
+                "total_impressions": total_impressions,
+                "total_interactions": total_interactions,
+                "by_strategy": by_strategy,
+            }
+
     def list_blog_labeling_candidates(
         self,
         *,
@@ -4997,9 +5491,15 @@ class SQLAlchemyRepository:
             label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
             seeds_preserved = _count_selectable_rows(session, SeedModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
+            recommendation_interactions_deleted = _count_selectable_rows(session, BlogInteractionModel)
+            recommendation_impressions_deleted = _count_selectable_rows(session, RecommendationImpressionModel)
+            recommendation_requests_deleted = _count_selectable_rows(session, RecommendationRequestModel)
             scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
             scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
             session.query(SeedModel).update({SeedModel.blog_id: None})
+            session.query(BlogInteractionModel).delete()
+            session.query(RecommendationImpressionModel).delete()
+            session.query(RecommendationRequestModel).delete()
             session.query(BlogDedupScanRunItemModel).delete()
             session.query(BlogDedupScanRunModel).delete()
             session.query(RawDiscoveredUrlModel).delete()
@@ -5024,6 +5524,9 @@ class SQLAlchemyRepository:
                 "blog_label_tags_preserved": label_tags_preserved,
                 "seeds_preserved": seeds_preserved,
                 "raw_discovered_urls_deleted": raw_urls_deleted,
+                "recommendation_interactions_deleted": recommendation_interactions_deleted,
+                "recommendation_impressions_deleted": recommendation_impressions_deleted,
+                "recommendation_requests_deleted": recommendation_requests_deleted,
                 "blog_dedup_scan_items_deleted": scan_items_deleted,
                 "blog_dedup_scan_runs_deleted": scan_runs_deleted,
             }

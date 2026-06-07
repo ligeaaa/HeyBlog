@@ -122,6 +122,9 @@ export interface StatusData {
 
 export interface BlogCatalogItem extends GraphNode {
   normalizedUrl: string;
+  requestUuid?: string;
+  impressionId?: number;
+  position?: number;
   identityKey: string;
   identityReasonCodes: string[];
   identityRulesetVersion: string;
@@ -148,6 +151,35 @@ export interface BlogCatalogPage {
   hasNext: boolean;
   hasPrev: boolean;
   sort: string;
+}
+
+export interface RandomRecommendationBatch {
+  requestUuid: string;
+  surface: string;
+  strategy: string;
+  strategyVersion: string;
+  visitorId: string;
+  sessionId: string;
+  requestedCount: number;
+  servedCount: number;
+  createdAt: string | null;
+  items: BlogCatalogItem[];
+}
+
+export interface RecommendationEventInput {
+  eventUuid: string;
+  eventType: string;
+  blogId: number;
+  visitorId: string;
+  sessionId: string;
+  entranceKind: string;
+  entranceUrl: string;
+  requestUuid?: string;
+  impressionId?: number;
+  position?: number;
+  interactionOrder?: number;
+  clientEventAt?: string;
+  attributes?: Record<string, unknown>;
 }
 
 export interface UserProfile {

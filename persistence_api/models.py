@@ -280,6 +280,115 @@ class RawDiscoveredUrlModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class RecommendationRequestModel(Base):
+    """One recommendation-serving request shown to a visitor.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Recommendation request row that groups one ordered impression set.
+    """
+
+    __tablename__ = "recommendation_requests"
+    __table_args__ = (
+        Index("ix_recommendation_requests_surface_created", "surface", "created_at"),
+        Index("ix_recommendation_requests_strategy_created", "strategy", "strategy_version", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_uuid: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    surface: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy_version: Mapped[str] = mapped_column(Text, nullable=False, default="v1")
+    visitor_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    served_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    context_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RecommendationImpressionModel(Base):
+    """One ordered blog impression inside a recommendation request.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Impression row linking a request to one shown blog and position.
+    """
+
+    __tablename__ = "recommendation_impressions"
+    __table_args__ = (
+        UniqueConstraint("request_id", "position", name="uq_recommendation_impression_request_position"),
+        UniqueConstraint("request_id", "blog_id", name="uq_recommendation_impression_request_blog"),
+        Index("ix_recommendation_impressions_blog_created", "blog_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("recommendation_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False, index=True)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BlogInteractionModel(Base):
+    """One idempotent visitor interaction with a blog or impression.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        Raw immutable event row used for attribution and statistics.
+    """
+
+    __tablename__ = "blog_interactions"
+    __table_args__ = (
+        Index("ix_blog_interactions_blog_event_created", "blog_id", "event_type", "created_at"),
+        Index("ix_blog_interactions_request_event", "request_id", "event_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_uuid: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recommendation_requests.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    impression_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recommendation_impressions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False, index=True)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entrance_kind: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    entrance_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    interaction_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    visitor_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    client_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attributes_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class BlogDedupScanRunModel(Base):
     """Administrative full-library dedup scan summary."""
 

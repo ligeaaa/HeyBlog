@@ -1,7 +1,7 @@
 import { GitBranch, Loader2, Network, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { BlogDetailLink } from "../components/BlogDetailLink";
 import { MissingBlogConfirmDialog } from "../components/MissingBlogConfirmDialog";
 import { Navigation } from "../components/Navigation";
 import { fetchBlogsCatalog, fetchStats, submitUserSeed } from "../lib/api";
@@ -10,6 +10,7 @@ import type { BlogCatalogItem, StatsData } from "../types/graph";
 
 const HOME_REFRESH_INTERVAL_MS = 5000;
 const HOME_SEARCH_PAGE_SIZE = 30;
+const HOME_SEARCH_ENTRANCE_KIND = "home_search_result";
 
 /**
  * Render the icon used in one homepage search result row.
@@ -50,7 +51,6 @@ function SearchResultIcon({ blog }: { blog: BlogCatalogItem }) {
  * @returns Home route UI.
  */
 export function HomePage() {
-  const navigate = useNavigate();
   const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -190,15 +190,6 @@ export function HomePage() {
   }
 
   /**
-   * Navigate to the temporary blog detail route.
-   *
-   * @param blog Selected search result.
-   */
-  function openBlogDetail(blog: BlogCatalogItem) {
-    navigate(`/blogs/${blog.id}`);
-  }
-
-  /**
    * Submit a user-confirmed missing blog URL as an accepted crawler seed.
    *
    * @param url Complete blog URL typed by the user.
@@ -280,10 +271,11 @@ export function HomePage() {
               {searchResults.length > 0 ? (
                 <div className="max-h-80 overflow-y-auto">
                   {searchResults.map((blog) => (
-                    <button
+                    <BlogDetailLink
                       key={blog.id}
-                      type="button"
-                      onClick={() => openBlogDetail(blog)}
+                      blog={blog}
+                      entranceKind={HOME_SEARCH_ENTRANCE_KIND}
+                      entranceUrl={window.location.href}
                       className="block w-full border-b border-slate-100 px-4 py-4 text-left transition-colors last:border-b-0 hover:bg-sky-50 focus:bg-sky-50 focus:outline-none"
                     >
                       <div className="flex items-start justify-between gap-4">
@@ -298,7 +290,7 @@ export function HomePage() {
                           {blog.crawlStatus}
                         </span>
                       </div>
-                    </button>
+                    </BlogDetailLink>
                   ))}
                 </div>
               ) : (

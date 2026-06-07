@@ -1,14 +1,21 @@
 import { Eye, Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { BlogCard } from "../components/BlogCard";
+import { BlogDetailLink } from "../components/BlogDetailLink";
 import { Navigation } from "../components/Navigation";
 import { readStoredAuthSession } from "../lib/auth";
-import { fetchBlogsCatalog, postBlogUserLabel } from "../lib/api";
+import { fetchRandomBlogBatch, postBlogUserLabel } from "../lib/api";
+import {
+  blogInteractionTarget,
+  getBlogInteractionSessionId,
+  getBlogInteractionVisitorId,
+  recordBlogInteraction,
+} from "../lib/blogInteractions";
 import type { BlogCatalogItem } from "../types/graph";
 
 const RANDOM_BLOG_COUNT = 9;
+const RANDOM_PAGE_ENTRANCE_KIND = "random_blog_page";
 const RANDOM_LABELS = [
   { slug: "blog", label: "博客" },
   { slug: "company", label: "公司" },
@@ -22,7 +29,6 @@ const RANDOM_LABELS = [
  * @returns Random finished-blog discovery page.
  */
 export function RandomBlogPage() {
-  const navigate = useNavigate();
   const [blogs, setBlogs] = useState<BlogCatalogItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -52,11 +58,15 @@ export function RandomBlogPage() {
       } else {
         setIsRefreshing(true);
       }
-      const response = await fetchBlogsCatalog({
-        page: 1,
-        pageSize: RANDOM_BLOG_COUNT,
-        status: "FINISHED",
-        sort: "random",
+      const session = readStoredAuthSession();
+      const response = await fetchRandomBlogBatch({
+        count: RANDOM_BLOG_COUNT,
+        visitorId: getBlogInteractionVisitorId(),
+        sessionId: getBlogInteractionSessionId(),
+        source: "random_page",
+        pageUrl: window.location.href,
+        context: { refresh_kind: showInitialLoading ? "initial" : "manual" },
+        token: session?.token,
       });
       setBlogs(response.items);
     } catch {
@@ -90,21 +100,21 @@ export function RandomBlogPage() {
         ...current,
         [blog.normalizedUrl]: label,
       }));
+      recordBlogInteraction(
+        blogInteractionTarget(blog),
+        "label_select",
+        {
+          entranceKind: RANDOM_PAGE_ENTRANCE_KIND,
+          entranceUrl: window.location.href,
+        },
+        { label, previous_label: selectedLabel ?? null },
+      );
       toast.success("已记录，谢谢标注。");
     } catch {
       toast.error("标注保存失败，请稍后再试。");
     } finally {
       setSavingLabelKey(null);
     }
-  }
-
-  /**
-   * Open the internal blog detail route for a random blog card.
-   *
-   * @param blog Blog selected from the random catalog.
-   */
-  function openBlogDetail(blog: BlogCatalogItem) {
-    navigate(`/blogs/${blog.id}`);
   }
 
   if (isLoading) {
@@ -146,15 +156,21 @@ export function RandomBlogPage() {
 
         <section className="mx-auto grid max-w-6xl grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
           {blogs.map((blog) => (
-            <BlogCard key={blog.id} blog={blog}>
-              <button
-                type="button"
-                onClick={() => openBlogDetail(blog)}
+            <BlogCard
+              key={blog.id}
+              blog={blog}
+              externalEntranceKind={RANDOM_PAGE_ENTRANCE_KIND}
+              externalEntranceUrl={window.location.href}
+            >
+              <BlogDetailLink
+                blog={blog}
+                entranceKind={RANDOM_PAGE_ENTRANCE_KIND}
+                entranceUrl={window.location.href}
                 className="mb-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-950 px-3 text-sm text-white transition-colors hover:bg-slate-800"
               >
                 <Eye className="h-4 w-4" />
                 查看详情
-              </button>
+              </BlogDetailLink>
               <div className="grid grid-cols-4 gap-2">
                 {RANDOM_LABELS.map((label) => {
                   const isSaving = savingLabelKey === `${blog.id}:${label.slug}`;

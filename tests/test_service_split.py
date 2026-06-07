@@ -947,6 +947,178 @@ def test_persistence_http_client_can_manage_user_auth_and_labels() -> None:
     assert ("/internal/users/7/label-stats", None) in stub.get_calls
 
 
+def test_persistence_http_client_can_manage_recommendation_data() -> None:
+    """The split-service HTTP client should expose recommendation data helpers."""
+
+    class StubResponse:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    class StubClient:
+        def __init__(self) -> None:
+            self.get_calls: list[tuple[str, dict[str, object] | None]] = []
+            self.post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def get(self, path: str, params: dict[str, object] | None = None, **kwargs: object) -> StubResponse:
+            del kwargs
+            self.get_calls.append((path, params))
+            return StubResponse({"ok": True})
+
+        def post(self, path: str, json: dict[str, object], **kwargs: object) -> StubResponse:
+            del kwargs
+            self.post_calls.append((path, json))
+            return StubResponse({"ok": True, "items": []})
+
+    client = PersistenceHttpClient("http://persistence.internal")
+    stub = StubClient()
+    client.client = stub  # type: ignore[assignment]
+
+    client.create_random_recommendation_batch(
+        count=9,
+        visitor_id="visitor-1",
+        session_id="session-1",
+        source="random_page",
+    )
+    client.record_blog_interaction(
+        event_uuid="event-1",
+        event_type="detail_open",
+        blog_id=42,
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_detail",
+        entrance_url="http://localhost/random",
+        request_uuid="request-1",
+        impression_id=12,
+        position=1,
+    )
+    assert client.get_blog_recommendation_stats(42) == {"ok": True}
+    assert client.get_recommendation_strategy_stats() == {"ok": True}
+
+    assert stub.post_calls == [
+        (
+            "/internal/recommendations/random-blog-batches",
+            {
+                "count": 9,
+                "visitor_id": "visitor-1",
+                "session_id": "session-1",
+                "user_id": None,
+                "source": "random_page",
+                "page_url": None,
+                "context": None,
+            },
+        ),
+        (
+            "/internal/recommendation-events",
+            {
+                "event_uuid": "event-1",
+                "event_type": "detail_open",
+                "blog_id": 42,
+                "visitor_id": "visitor-1",
+                "session_id": "session-1",
+                "entrance_kind": "test_detail",
+                "entrance_url": "http://localhost/random",
+                "request_uuid": "request-1",
+                "impression_id": 12,
+                "position": 1,
+                "interaction_order": 1,
+                "user_id": None,
+                "client_event_at": None,
+                "attributes": None,
+            },
+        ),
+    ]
+    assert stub.get_calls == [
+        ("/internal/blogs/42/recommendation-stats", None),
+        ("/internal/recommendation-stats", None),
+    ]
+
+
+def test_backend_routes_forward_recommendation_data_with_optional_user() -> None:
+    """Backend public recommendation routes should preserve attribution fields."""
+
+    class RecommendationPersistenceStub:
+        def __init__(self) -> None:
+            self.batch_payload: dict[str, object] | None = None
+            self.event_payload: dict[str, object] | None = None
+
+        def get_user_by_session_token(self, *, token: str) -> dict[str, object] | None:
+            assert token == "session-token"
+            return {"id": 7, "email": "user@example.com"}
+
+        def create_random_recommendation_batch(self, **kwargs: object) -> dict[str, object]:
+            self.batch_payload = kwargs
+            return {"request_uuid": "request-1", "items": []}
+
+        def record_blog_interaction(self, **kwargs: object) -> dict[str, object]:
+            self.event_payload = kwargs
+            return {"event_uuid": kwargs["event_uuid"], "duplicate": False}
+
+        def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, object]:
+            return {"blog_id": blog_id, "impressions": 1}
+
+        def get_recommendation_strategy_stats(self) -> dict[str, object]:
+            return {"total_requests": 1, "by_strategy": []}
+
+    persistence = RecommendationPersistenceStub()
+    app = create_backend_app(
+        BackendState(
+            persistence=persistence,
+            crawler=StubCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    batch_response = client.post(
+        "/api/recommendations/random-blog-batches",
+        headers={"authorization": "Bearer session-token"},
+        json={
+            "count": 9,
+            "visitor_id": "visitor-1",
+            "session_id": "session-1",
+            "source": "random_page",
+        },
+    )
+    event_response = client.post(
+        "/api/recommendation-events",
+        headers={"authorization": "Bearer session-token"},
+        json={
+            "event_uuid": "event-1",
+            "event_type": "detail_open",
+            "blog_id": 42,
+            "visitor_id": "visitor-1",
+            "session_id": "session-1",
+            "entrance_kind": "test_detail",
+            "entrance_url": "http://localhost/random",
+            "request_uuid": "request-1",
+            "impression_id": 12,
+            "position": 1,
+        },
+    )
+    blog_stats = client.get("/api/blogs/42/stats")
+    admin_stats = client.get("/api/admin/recommendation-stats", headers=admin_headers())
+
+    assert batch_response.status_code == 200
+    assert event_response.status_code == 200
+    assert blog_stats.json() == {"blog_id": 42, "impressions": 1}
+    assert admin_stats.json() == {"total_requests": 1, "by_strategy": []}
+    assert persistence.batch_payload is not None
+    assert persistence.batch_payload["user_id"] == 7
+    assert persistence.batch_payload["visitor_id"] == "visitor-1"
+    assert persistence.event_payload is not None
+    assert persistence.event_payload["user_id"] == 7
+    assert persistence.event_payload["event_type"] == "detail_open"
+    assert persistence.event_payload["entrance_kind"] == "test_detail"
+    assert persistence.event_payload["entrance_url"] == "http://localhost/random"
+
+
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
     """Environment loading should allow the split runtime to point at Postgres."""
     monkeypatch.setenv("HEYBLOG_DB_DSN", "postgresql://heyblog:heyblog@persistence-db:5432/heyblog")

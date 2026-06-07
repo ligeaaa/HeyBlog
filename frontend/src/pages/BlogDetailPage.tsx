@@ -1,22 +1,27 @@
 import {
   ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
   Loader2,
   Network,
   Route,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
+import { BlogDetailLink } from "../components/BlogDetailLink";
+import { BlogExternalLink } from "../components/BlogExternalLink";
 import { Navigation } from "../components/Navigation";
 import { fetchBlogDetail } from "../lib/api";
+import { openTrackedBlogDetail } from "../lib/blogInteractions";
 import { resolveBlogIconUrls, resolveIconProxyUrl } from "../lib/icon";
 import type { BlogDetail, BlogDiscoveryPath, BlogDiscoveryStep, BlogRelationGraph, GraphNode } from "../types/graph";
 
 const RELATION_GRAPH_LINK_DISTANCE = 78;
 const RELATION_GRAPH_CHARGE_STRENGTH = -260;
+const DETAIL_PAGE_EXTERNAL_ENTRANCE_KIND = "blog_detail_hero_external";
+const DETAIL_DISCOVERY_PATH_ENTRANCE_KIND = "blog_detail_discovery_path";
+const DETAIL_RELATION_GRAPH_ENTRANCE_KIND = "blog_detail_relation_graph";
 
 /**
  * Format a numeric count for compact detail cards.
@@ -67,7 +72,7 @@ function BlogHeroIcon({ detail }: { detail: BlogDetail }) {
  * @param props Discovery step returned by the blog detail API.
  * @returns Clickable blog card with title, icon, and URL.
  */
-function DiscoveryPathCard({ step }: { step: BlogDiscoveryStep }) {
+function DiscoveryPathCard({ step, entranceUrl }: { step: BlogDiscoveryStep; entranceUrl: string }) {
   const blog = {
     id: step.blogId,
     url: step.url,
@@ -84,8 +89,10 @@ function DiscoveryPathCard({ step }: { step: BlogDiscoveryStep }) {
   }, [step.blogId, step.url, step.domain, step.blog?.iconUrl]);
 
   return (
-    <Link
-      to={`/blogs/${step.blogId}`}
+    <BlogDetailLink
+      blog={blog}
+      entranceKind={DETAIL_DISCOVERY_PATH_ENTRANCE_KIND}
+      entranceUrl={entranceUrl}
       className="flex w-56 items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 transition-colors hover:border-sky-300 hover:bg-sky-50"
     >
       <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white text-sm font-semibold text-slate-500 ring-1 ring-slate-200">
@@ -106,7 +113,7 @@ function DiscoveryPathCard({ step }: { step: BlogDiscoveryStep }) {
         <div className="truncate text-sm font-medium text-slate-950">{step.blog?.title || step.domain}</div>
         <div className="mt-1 truncate text-xs text-slate-500">{step.url}</div>
       </div>
-    </Link>
+    </BlogDetailLink>
   );
 }
 
@@ -116,7 +123,7 @@ function DiscoveryPathCard({ step }: { step: BlogDiscoveryStep }) {
  * @param props Discovery path payload.
  * @returns Historical discovery path section or null when unavailable.
  */
-function DiscoveryPathSection({ path }: { path: BlogDiscoveryPath | null }) {
+function DiscoveryPathSection({ path, entranceUrl }: { path: BlogDiscoveryPath | null; entranceUrl: string }) {
   if (!path || path.steps.length === 0) {
     return null;
   }
@@ -131,7 +138,7 @@ function DiscoveryPathSection({ path }: { path: BlogDiscoveryPath | null }) {
         <div className="flex min-w-max items-center gap-3">
           {path.steps.map((step, index) => (
             <div key={`${step.blogId}-${index}`} className="flex items-center gap-3">
-              <DiscoveryPathCard step={step} />
+              <DiscoveryPathCard step={step} entranceUrl={entranceUrl} />
               {index < path.steps.length - 1 ? (
                 <div className="flex items-center gap-2 text-slate-300">
                   <div className="h-px w-6 bg-slate-300" />
@@ -277,7 +284,7 @@ function paintRelationPointerArea(node: RelationRenderNode, paintColor: string, 
  * @param props Directional relation graph payload.
  * @returns 2D force-graph relation view.
  */
-function RelationGraphView({ graph }: { graph: BlogRelationGraph }) {
+function RelationGraphView({ graph, entranceUrl }: { graph: BlogRelationGraph; entranceUrl: string }) {
   const navigate = useNavigate();
   const graphRef = useRef<ForceGraphMethods<RelationRenderNode, RelationRenderLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -387,7 +394,17 @@ function RelationGraphView({ graph }: { graph: BlogRelationGraph }) {
           d3VelocityDecay={0.34}
           d3AlphaDecay={0.04}
           onNodeHover={(node) => setHoveredBlog(node?.original ?? null)}
-          onNodeClick={(node) => navigate(`/blogs/${node.blogId}`)}
+          onNodeClick={(node) => {
+            openTrackedBlogDetail(
+              navigate,
+              node.original,
+              {
+                entranceKind: DETAIL_RELATION_GRAPH_ENTRANCE_KIND,
+                entranceUrl,
+              },
+              { relation_direction: graph.direction, focus_blog_id: graph.focusBlogId },
+            );
+          }}
           showPointerCursor={(item) => Boolean(item && "blogId" in item)}
         />
       ) : null}
@@ -415,7 +432,7 @@ function RelationGraphView({ graph }: { graph: BlogRelationGraph }) {
  * @param props Incoming and outgoing relation graphs.
  * @returns Blog association section with two graph pages.
  */
-function BlogAssociationSection({ detail }: { detail: BlogDetail }) {
+function BlogAssociationSection({ detail, entranceUrl }: { detail: BlogDetail; entranceUrl: string }) {
   const [activeGraph, setActiveGraph] = useState<"incoming" | "outgoing">("incoming");
   const graph = detail.relationGraphs[activeGraph];
 
@@ -448,7 +465,7 @@ function BlogAssociationSection({ detail }: { detail: BlogDetail }) {
         </button>
       </div>
       {graph.nodes.length > 1 ? (
-        <RelationGraphView graph={graph} />
+        <RelationGraphView graph={graph} entranceUrl={entranceUrl} />
       ) : (
         <div className="flex h-[260px] items-center justify-center rounded-lg bg-slate-50 text-sm text-slate-500">
           暂无{activeGraph === "incoming" ? "入链" : "出链"}关联。
@@ -548,15 +565,14 @@ export function BlogDetailPage() {
                   <BlogHeroIcon detail={detail} />
                   <h1 className="break-words text-4xl leading-tight text-slate-950">{detail.title || detail.domain}</h1>
                   <div className="mt-2 text-base text-slate-500">{detail.domain}</div>
-                  <a
-                    href={detail.url}
-                    target="_blank"
-                    rel="noreferrer"
+                  <BlogExternalLink
+                    blog={detail}
+                    entranceKind={DETAIL_PAGE_EXTERNAL_ENTRANCE_KIND}
+                    entranceUrl={window.location.href}
                     className="mt-4 inline-flex max-w-full items-center gap-2 break-all text-sm text-sky-700 hover:underline"
                   >
                     {detail.url}
-                    <ArrowUpRight className="h-4 w-4 flex-shrink-0" />
-                  </a>
+                  </BlogExternalLink>
                 </div>
               </div>
             </section>
@@ -585,9 +601,9 @@ export function BlogDetailPage() {
               </div>
             </section>
 
-            <DiscoveryPathSection path={detail.discoveryPath} />
+            <DiscoveryPathSection path={detail.discoveryPath} entranceUrl={window.location.href} />
 
-            <BlogAssociationSection detail={detail} />
+            <BlogAssociationSection detail={detail} entranceUrl={window.location.href} />
           </div>
         ) : null}
       </main>

@@ -73,6 +73,31 @@ class IncrementBlogUserLabelRequest(BaseModel):
     previous_label: str | None = None
 
 
+class CreateRandomRecommendationBatchRequest(BaseModel):
+    count: int = 9
+    visitor_id: str
+    session_id: str
+    source: str | None = None
+    page_url: str | None = None
+    context: dict[str, Any] | None = None
+
+
+class RecordRecommendationEventRequest(BaseModel):
+    event_uuid: str
+    event_type: str
+    blog_id: int
+    visitor_id: str
+    session_id: str
+    entrance_kind: str
+    entrance_url: str
+    request_uuid: str | None = None
+    impression_id: int | None = None
+    position: int | None = None
+    interaction_order: int = 1
+    client_event_at: str | None = None
+    attributes: dict[str, Any] | None = None
+
+
 class BlogLabelTitlePreviewRequest(BaseModel):
     url: str
 
@@ -605,6 +630,42 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def lookup_blog_candidates(url: str) -> dict[str, Any]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.lookup_blog_candidates(url=url)
+        )
+
+    @app.post("/api/recommendations/random-blog-batches")
+    def post_random_recommendation_batch(
+        payload: CreateRandomRecommendationBatchRequest,
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_random_recommendation_batch(
+                **payload.model_dump(),
+                user_id=int(user["id"]) if user is not None else None,
+            )
+        )
+
+    @app.post("/api/recommendation-events")
+    def post_recommendation_event(
+        payload: RecordRecommendationEventRequest,
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.record_blog_interaction(
+                **payload.model_dump(),
+                user_id=int(user["id"]) if user is not None else None,
+            )
+        )
+
+    @app.get("/api/blogs/{blog_id}/stats")
+    def get_blog_recommendation_stats(blog_id: int) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_blog_recommendation_stats(blog_id)
+        )
+
+    @app.get("/api/admin/recommendation-stats")
+    def get_admin_recommendation_stats(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_recommendation_strategy_stats()
         )
 
     @app.get("/api/icons/proxy")

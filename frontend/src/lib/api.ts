@@ -17,6 +17,8 @@ import type {
   GraphMeta,
   GraphNode,
   LookupResult,
+  RandomRecommendationBatch,
+  RecommendationEventInput,
   RecommendedBlog,
   StatsData,
   StatusData,
@@ -66,6 +68,9 @@ interface BackendGraphNode {
   outgoing_count?: number;
   activity_at?: string | null;
   identity_complete?: boolean;
+  request_uuid?: string;
+  impression_id?: number;
+  position?: number;
   x?: number;
   y?: number;
   degree?: number;
@@ -210,6 +215,19 @@ interface BackendCatalogPayload {
   has_next: boolean;
   has_prev: boolean;
   sort: string;
+}
+
+interface BackendRandomRecommendationBatchPayload {
+  request_uuid: string;
+  surface: string;
+  strategy: string;
+  strategy_version: string;
+  visitor_id: string;
+  session_id: string;
+  requested_count: number;
+  served_count: number;
+  created_at: string | null;
+  items: BackendGraphNode[];
 }
 
 interface CreateIngestionRequestPayload {
@@ -380,6 +398,9 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
   return {
     ...toGraphNode(node),
     normalizedUrl: node.normalized_url ?? node.url,
+    requestUuid: node.request_uuid,
+    impressionId: node.impression_id,
+    position: node.position,
     identityKey: node.identity_key ?? "",
     identityReasonCodes: node.identity_reason_codes ?? [],
     identityRulesetVersion: node.identity_ruleset_version ?? "",
@@ -395,6 +416,27 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
     connectionCount: node.connection_count ?? (node.incoming_count ?? 0) + (node.outgoing_count ?? 0),
     activityAt: node.activity_at ?? null,
     identityComplete: node.identity_complete ?? false,
+  };
+}
+
+/**
+ * Convert one backend recommendation batch into the frontend random-page model.
+ *
+ * @param payload Backend recommendation batch payload.
+ * @returns Normalized batch with catalog items.
+ */
+function toRandomRecommendationBatch(payload: BackendRandomRecommendationBatchPayload): RandomRecommendationBatch {
+  return {
+    requestUuid: payload.request_uuid,
+    surface: payload.surface,
+    strategy: payload.strategy,
+    strategyVersion: payload.strategy_version,
+    visitorId: payload.visitor_id,
+    sessionId: payload.session_id,
+    requestedCount: payload.requested_count,
+    servedCount: payload.served_count,
+    createdAt: payload.created_at,
+    items: payload.items.map(toBlogCatalogItem),
   };
 }
 
@@ -903,6 +945,68 @@ export async function fetchBlogsCatalog(query: BlogCatalogQuery = {}): Promise<B
     hasPrev: payload.has_prev,
     sort: payload.sort,
   };
+}
+
+/**
+ * Fetch and persist one random-blog recommendation batch.
+ *
+ * @param input Random batch request metadata.
+ * @returns Persisted batch with ordered impression attribution.
+ */
+export async function fetchRandomBlogBatch(input: {
+  count: number;
+  visitorId: string;
+  sessionId: string;
+  source?: string;
+  pageUrl?: string;
+  context?: Record<string, unknown>;
+  token?: string | null;
+}): Promise<RandomRecommendationBatch> {
+  const payload = await apiJson<BackendRandomRecommendationBatchPayload>("/api/recommendations/random-blog-batches", {
+    method: "POST",
+    headers: input.token ? authHeaders(input.token) : undefined,
+    body: JSON.stringify({
+      count: input.count,
+      visitor_id: input.visitorId,
+      session_id: input.sessionId,
+      source: input.source,
+      page_url: input.pageUrl,
+      context: input.context,
+    }),
+  });
+  return toRandomRecommendationBatch(payload);
+}
+
+/**
+ * Record one recommendation event without changing page state.
+ *
+ * @param input Event attribution and metadata.
+ * @param token Optional auth token used for registered-user attribution.
+ * @returns Promise resolved after the backend accepts the event.
+ */
+export async function postRecommendationEvent(
+  input: RecommendationEventInput,
+  token?: string | null,
+): Promise<void> {
+  await apiJson("/api/recommendation-events", {
+    method: "POST",
+    headers: token ? authHeaders(token) : undefined,
+    body: JSON.stringify({
+      event_uuid: input.eventUuid,
+      event_type: input.eventType,
+      blog_id: input.blogId,
+      visitor_id: input.visitorId,
+      session_id: input.sessionId,
+      entrance_kind: input.entranceKind,
+      entrance_url: input.entranceUrl,
+      request_uuid: input.requestUuid,
+      impression_id: input.impressionId,
+      position: input.position,
+      interaction_order: input.interactionOrder,
+      client_event_at: input.clientEventAt,
+      attributes: input.attributes,
+    }),
+  });
 }
 
 /**

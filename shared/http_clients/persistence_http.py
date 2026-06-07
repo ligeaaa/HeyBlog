@@ -201,6 +201,129 @@ class PersistenceHttpClient:
 
         return self._get("/internal/seeds")
 
+    def create_random_recommendation_batch(
+        self,
+        *,
+        count: int = 9,
+        visitor_id: str,
+        session_id: str,
+        user_id: int | None = None,
+        source: str | None = None,
+        page_url: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create and persist one random-blog recommendation batch.
+
+        Args:
+            count: Number of random cards requested.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            user_id: Optional authenticated user ID.
+            source: Optional caller/source label.
+            page_url: Optional frontend page URL.
+            context: Optional JSON metadata.
+
+        Returns:
+            Recommendation batch payload returned by persistence.
+        """
+
+        return self._post(
+            "/internal/recommendations/random-blog-batches",
+            {
+                "count": count,
+                "visitor_id": visitor_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "source": source,
+                "page_url": page_url,
+                "context": context,
+            },
+        )
+
+    def record_blog_interaction(
+        self,
+        *,
+        event_uuid: str,
+        event_type: str,
+        blog_id: int,
+        visitor_id: str,
+        session_id: str,
+        entrance_kind: str,
+        entrance_url: str,
+        request_uuid: str | None = None,
+        impression_id: int | None = None,
+        position: int | None = None,
+        interaction_order: int = 1,
+        user_id: int | None = None,
+        client_event_at: str | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist one random-blog recommendation interaction event.
+
+        Args:
+            event_uuid: Client idempotency key.
+            event_type: Interaction type.
+            blog_id: Public/business blog ID.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            entrance_kind: Stable entrance category for the UI location.
+            entrance_url: Raw URL for the entrance context.
+            request_uuid: Optional recommendation request UUID.
+            impression_id: Optional impression ID.
+            position: Optional displayed card position.
+            interaction_order: Client-side event order.
+            user_id: Optional authenticated user ID.
+            client_event_at: Optional client timestamp.
+            attributes: Optional JSON metadata.
+
+        Returns:
+            Interaction payload returned by persistence.
+        """
+
+        return self._post(
+            "/internal/recommendation-events",
+            {
+                "event_uuid": event_uuid,
+                "event_type": event_type,
+                "blog_id": blog_id,
+                "visitor_id": visitor_id,
+                "session_id": session_id,
+                "entrance_kind": entrance_kind,
+                "entrance_url": entrance_url,
+                "request_uuid": request_uuid,
+                "impression_id": impression_id,
+                "position": position,
+                "interaction_order": interaction_order,
+                "user_id": user_id,
+                "client_event_at": client_event_at,
+                "attributes": attributes,
+            },
+        )
+
+    def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any]:
+        """Load recommendation stats for one blog.
+
+        Args:
+            blog_id: Public/business blog ID.
+
+        Returns:
+            Stats payload returned by persistence.
+        """
+
+        return self._get(f"/internal/blogs/{blog_id}/recommendation-stats")
+
+    def get_recommendation_strategy_stats(self) -> dict[str, Any]:
+        """Load aggregate recommendation strategy stats.
+
+        Args:
+            None.
+
+        Returns:
+            Aggregate stats payload returned by persistence.
+        """
+
+        return self._get("/internal/recommendation-stats")
+
     def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
         return self._post(
             "/internal/ingestion-requests",

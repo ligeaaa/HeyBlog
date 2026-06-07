@@ -307,6 +307,43 @@ beforeEach(() => {
         }),
       );
     }
+    if (url.pathname === "/api/recommendations/random-blog-batches") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      const count = Number(body.count || 9);
+      const filteredItems = sortCatalogItems(
+        catalogItems.filter((item) => item.crawl_status === "FINISHED"),
+        "random",
+      ).slice(0, count);
+      return new Response(
+        JSON.stringify({
+          request_uuid: "request-random-1",
+          surface: "random_blog_page",
+          strategy: "weighted_random",
+          strategy_version: "v1",
+          visitor_id: body.visitor_id,
+          session_id: body.session_id,
+          requested_count: count,
+          served_count: filteredItems.length,
+          created_at: "2026-06-07T13:30:00Z",
+          items: filteredItems.map((item, index) => ({
+            ...item,
+            request_uuid: "request-random-1",
+            impression_id: index + 101,
+            position: index + 1,
+          })),
+        }),
+      );
+    }
+    if (url.pathname === "/api/recommendation-events") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(
+        JSON.stringify({
+          id: 1,
+          ...body,
+          duplicate: false,
+        }),
+      );
+    }
     if (url.pathname === "/api/blogs/user-seeds") {
       const body = JSON.parse(String(init?.body ?? "{}"));
       const submittedUrl = String(body.homepage_url || "https://missing-blog.example.com/");
@@ -579,6 +616,17 @@ test("lets home users search normalized URLs and open the blog detail route", as
   await waitFor(() => {
     expect(window.location.pathname).toBe("/blogs/3");
   });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/recommendation-events") &&
+          String(init?.body).includes('"event_type":"detail_open"') &&
+          String(init?.body).includes('"entrance_kind":"home_search_result"') &&
+          String(init?.body).includes('"entrance_url"'),
+      ),
+  ).toBe(true);
   expect(screen.queryByRole("heading", { name: "HeyBlog!" })).not.toBeInTheDocument();
   await waitFor(() => {
     expect(screen.getByRole("heading", { name: "Finished Blog" })).toBeInTheDocument();
@@ -685,8 +733,11 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   });
 
   expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
-    expect.anything(),
+    expect.stringContaining("/api/recommendations/random-blog-batches"),
+    expect.objectContaining({
+      method: "POST",
+      body: expect.stringContaining('"count":9'),
+    }),
   );
   expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
   expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
@@ -701,7 +752,7 @@ test("adds a random blog route that loads nine finished cards and refreshes them
     const randomCalls = vi
       .mocked(fetch)
       .mock.calls.filter(([input]) =>
-        String(input).includes("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
+        String(input).includes("/api/recommendations/random-blog-batches"),
       );
     expect(randomCalls).toHaveLength(2);
   });
@@ -721,7 +772,71 @@ test("lets random blog users open one blog detail route", async () => {
   await waitFor(() => {
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/blogs/32"), expect.anything());
   });
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/recommendation-events"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"event_type":"detail_open"'),
+      }),
+    );
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/recommendation-events") &&
+          String(init?.body).includes('"entrance_kind":"random_blog_page"') &&
+          String(init?.body).includes('"entrance_url"'),
+      ),
+  ).toBe(true);
   expect(await screen.findByRole("heading", { name: "Extra Blog 32" })).toBeInTheDocument();
+});
+
+test("records random blog external URL opens as recommendation interactions", async () => {
+  window.history.replaceState({}, "", "/random");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getAllByRole("link", { name: /打开 Extra Blog 32/i })[0]);
+
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/recommendation-events"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"event_type":"external_open"'),
+      }),
+    );
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/recommendation-events") &&
+          String(init?.body).includes('"entrance_kind":"random_blog_page"') &&
+          String(init?.body).includes('"entrance_url"'),
+      ),
+  ).toBe(true);
+});
+
+test("renders one external URL text per random blog card", async () => {
+  window.history.replaceState({}, "", "/random");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  });
+
+  const firstRandomBlog = catalogItems[31];
+  expect(screen.getAllByText(String(firstRandomBlog.url))).toHaveLength(1);
 });
 
 test("lets visualization users choose a graph size with a blog-count slider", async () => {

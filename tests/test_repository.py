@@ -16,9 +16,12 @@ import persistence_api.repository as repository_module
 from persistence_api.db import session_scope
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
+from persistence_api.models import BlogInteractionModel
 from persistence_api.models import BlogModel
 from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import RecommendationImpressionModel
+from persistence_api.models import RecommendationRequestModel
 from persistence_api.models import SeedModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
@@ -118,6 +121,9 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
     assert result["blog_label_tags_deleted"] == 0
     assert result["blog_dedup_scan_items_deleted"] == 0
     assert result["blog_dedup_scan_runs_deleted"] == 0
+    assert result["recommendation_interactions_deleted"] == 0
+    assert result["recommendation_impressions_deleted"] == 0
+    assert result["recommendation_requests_deleted"] == 0
     assert repository.list_blogs() == []
     assert repository.list_edges() == []
     assert repository.list_logs() == []
@@ -1434,6 +1440,84 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     admin_labeled = repository.list_blog_labeling_candidates(labeled=True, page_size=10)
     assert [item["id"] for item in admin_labeled["items"]] == [raw_excluded]
     assert raw_kept not in [item["id"] for item in admin_labeled["items"]]
+
+
+def test_repository_persists_random_recommendation_batch_and_interaction_stats(tmp_path: Path) -> None:
+    """Random recommendation batches should persist request, impression, event, and stat rows."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    for index in range(3):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://recommend-{index}.example/",
+            normalized_url=f"https://recommend-{index}.example/",
+            domain=f"recommend-{index}.example",
+            accepted_by="rss",
+        )
+        assert inserted is True
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=index,
+            metadata_captured=True,
+            title=f"Recommend {index}",
+            icon_url=None,
+        )
+
+    batch = repository.create_random_recommendation_batch(
+        count=2,
+        visitor_id="visitor-1",
+        session_id="session-1",
+        source="test",
+        page_url="http://localhost/random",
+    )
+
+    assert batch["requested_count"] == 2
+    assert batch["served_count"] == 2
+    assert [item["position"] for item in batch["items"]] == [1, 2]
+    first = batch["items"][0]
+    event = repository.record_blog_interaction(
+        event_uuid="event-1",
+        event_type="detail_open",
+        blog_id=first["id"],
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_detail",
+        entrance_url="http://localhost/random",
+        request_uuid=first["request_uuid"],
+        impression_id=first["impression_id"],
+        interaction_order=1,
+        client_event_at="2026-06-07T12:00:00Z",
+        attributes={"button": "detail"},
+    )
+    duplicate = repository.record_blog_interaction(
+        event_uuid="event-1",
+        event_type="detail_open",
+        blog_id=first["id"],
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_detail",
+        entrance_url="http://localhost/random",
+    )
+    stats = repository.get_blog_recommendation_stats(first["id"])
+    strategy_stats = repository.get_recommendation_strategy_stats()
+
+    assert event["duplicate"] is False
+    assert event["entrance_kind"] == "test_detail"
+    assert event["entrance_url"] == "http://localhost/random"
+    assert duplicate["duplicate"] is True
+    assert stats is not None
+    assert stats["impressions"] == 1
+    assert stats["detail_opens"] == 1
+    assert stats["unique_visitors"] == 1
+    assert stats["ctr"] == 1.0
+    assert strategy_stats["total_requests"] == 1
+    assert strategy_stats["total_impressions"] == 2
+    assert strategy_stats["total_interactions"] == 1
+    assert strategy_stats["by_strategy"][0]["clicks"] == 1
+    with session_scope(repository.session_factory) as session:
+        assert session.scalar(select(RecommendationRequestModel).limit(1)) is not None
+        assert session.scalar(select(RecommendationImpressionModel).limit(1)) is not None
+        assert session.scalar(select(BlogInteractionModel).limit(1)) is not None
 
 
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:

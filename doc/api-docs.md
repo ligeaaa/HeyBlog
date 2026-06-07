@@ -74,6 +74,9 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与 inge
 - `POST /api/auth/logout`
 - `GET /api/me/label-selections`
 - `GET /api/blogs/catalog`
+- `POST /api/recommendations/random-blog-batches`
+- `POST /api/recommendation-events`
+- `GET /api/blogs/{blog_id}/stats`
 - `POST /api/blogs/user-seeds`
 - `POST /api/blogs/{blog_id}/user-labels`
 - `GET /api/blogs/lookup`
@@ -121,6 +124,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `GET /api/admin/blog-labeling/parquet-export`
 - `POST /api/admin/blog-labeling/title-preview`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
+- `GET /api/admin/recommendation-stats`
 - `POST /api/admin/blog-dedup-scans`
 - `GET /api/admin/blog-dedup-scans/latest`
 - `GET /api/admin/blog-dedup-scans/{run_id}/items`
@@ -426,6 +430,174 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 当前前端使用方式：
 
 - 首页搜索框使用 `page=1&page_size=30&url=<输入 URL>&sort=id_desc` 查询已发现博客，并把返回项渲染为可滚动结果列表。
+
+#### `POST /api/recommendations/random-blog-batches`
+
+用途：随机博客页请求一组新的推荐卡片，并把本次刷新作为一条可追踪的 recommendation request 持久化。服务端会同时写入有序 impression 记录，所以后续点击、详情打开和标注事件可以归因到“哪次刷新中的第几个 URL”。
+
+请求体：
+
+```json
+{
+  "count": 9,
+  "visitor_id": "visitor_lx7...",
+  "session_id": "session_lx7...",
+  "source": "random_page",
+  "page_url": "http://localhost:3000/random",
+  "context": {
+    "refresh_kind": "manual"
+  }
+}
+```
+
+认证说明：
+
+- 未登录也可调用；`visitor_id` 与 `session_id` 由前端本地生成，用于匿名统计。
+- 登录后可带 `Authorization: Bearer <session-token>`；backend 会把用户 ID 转发给 persistence 以便后续用户维度分析。
+
+行为说明：
+
+- 当前 surface 固定为 `random_blog_page`
+- 当前 strategy 固定为 `weighted_random`，`strategy_version = v1`
+- 只返回 `crawl_status=FINISHED` 且 `acceptance_status=ACCEPTED` 的博客
+- 随机排序复用 catalog 的 `sort=random` 权重逻辑：管理员非 blog 标签会过滤，用户公开反馈会影响权重
+- `count` 当前允许 `1..50`；随机页默认请求 `9`
+
+成功响应示例：
+
+```json
+{
+  "request_uuid": "r_abc",
+  "surface": "random_blog_page",
+  "strategy": "weighted_random",
+  "strategy_version": "v1",
+  "visitor_id": "visitor_lx7",
+  "session_id": "session_lx7",
+  "requested_count": 9,
+  "served_count": 9,
+  "created_at": "2026-06-07T13:30:00+00:00",
+  "items": [
+    {
+      "id": 12,
+      "url": "https://blog.example.com/",
+      "normalized_url": "https://blog.example.com/",
+      "request_uuid": "r_abc",
+      "impression_id": 101,
+      "position": 1
+    }
+  ]
+}
+```
+
+错误语义：
+
+- `401`: bearer token 非法或过期
+- `422`: count、visitor/session ID 或 JSON context 非法
+
+#### `POST /api/recommendation-events`
+
+用途：记录随机博客卡片上的用户行为。事件以 `event_uuid` 幂等写入，适合前端在详情跳转、外链打开、标注选择等动作发生时尽力而为上报。
+
+请求体：
+
+```json
+{
+  "event_uuid": "event_lx7...",
+  "event_type": "detail_open",
+  "blog_id": 12,
+  "visitor_id": "visitor_lx7...",
+  "session_id": "session_lx7...",
+  "entrance_kind": "random_blog_page",
+  "entrance_url": "http://localhost:3000/random",
+  "request_uuid": "r_abc",
+  "impression_id": 101,
+  "position": 1,
+  "interaction_order": 1,
+  "client_event_at": "2026-06-07T13:31:00.000Z",
+  "attributes": {
+    "label": "blog"
+  }
+}
+```
+
+支持的 `event_type`：
+
+- `click`
+- `detail_open`
+- `external_open`
+- `label_select`
+- `refresh`
+- `dismiss`
+- `copy_url`
+
+行为说明：
+
+- 同一个 `event_uuid` 重复上报时不会重复计数，响应中会返回 `duplicate: true`
+- `entrance_kind` 与 `entrance_url` 为必填字段。`entrance_kind` 使用稳定、可聚合的路口种类，例如 `random_blog_page`、`home_search_result`、`blog_detail_discovery_path`、`blog_detail_relation_graph`；`entrance_url` 保留触发动作时的原始页面 URL 或上下文 URL，便于追溯具体来源。
+- 若传入 `request_uuid` 或 `impression_id`，服务端会校验它们存在且与 `blog_id` 匹配
+- 前端不应因为事件上报失败而阻塞用户跳转或标注主流程
+- 持久化时事件落到 `blog_interactions`，其中 `entrance_kind` 与 `entrance_url` 单独存列并建立索引，便于按稳定路口维度统计详情打开、外链打开和标签选择。
+
+错误语义：
+
+- `404`: 目标 blog 不存在
+- `401`: bearer token 非法或过期
+- `422`: event type、request/impression 归因或 JSON attributes 非法
+
+#### `GET /api/blogs/{blog_id}/stats`
+
+用途：返回单个博客在推荐系统中的曝光和交互统计，供详情页或后续运营面板展示。
+
+成功响应示例：
+
+```json
+{
+  "blog_id": 12,
+  "normalized_url": "https://blog.example.com/",
+  "impressions": 20,
+  "clicks": 1,
+  "detail_opens": 3,
+  "external_opens": 0,
+  "label_selects": 2,
+  "unique_visitors": 5,
+  "ctr": 0.2,
+  "last_interaction_at": "2026-06-07T13:31:00+00:00",
+  "by_event_type": {
+    "detail_open": 3,
+    "label_select": 2
+  }
+}
+```
+
+错误语义：
+
+- `404`: 目标 blog 不存在
+
+#### `GET /api/admin/recommendation-stats`
+
+用途：返回推荐请求、曝光和交互的策略级汇总。该接口位于 admin API 下，需要 `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>`。
+
+成功响应示例：
+
+```json
+{
+  "total_requests": 10,
+  "total_impressions": 90,
+  "total_interactions": 12,
+  "by_strategy": [
+    {
+      "surface": "random_blog_page",
+      "strategy": "weighted_random",
+      "strategy_version": "v1",
+      "requests": 10,
+      "impressions": 90,
+      "clicks": 8,
+      "unique_visitors": 6,
+      "ctr": 0.0888888889
+    }
+  ]
+}
+```
 
 #### `POST /api/blogs/user-seeds`
 
@@ -1559,6 +1731,30 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 支持 `sort`、`has_title`、`has_icon`、`min_connections` 等发现型参数
 - 支持 `statuses` 多状态过滤与 `id_asc` 排序，供统一 discovery 队列视图使用
 - blog 行数据会直接带上连接度、活跃度和身份完整度等派生字段
+
+### `POST /internal/recommendations/random-blog-batches`
+
+用途：为 backend 创建随机博客推荐批次，并写入 `recommendation_requests` 与 `recommendation_impressions`。
+
+请求体字段与 `POST /api/recommendations/random-blog-batches` 一致，额外允许 backend 传入已解析的 `user_id`。
+
+### `POST /internal/recommendation-events`
+
+用途：为 backend 写入幂等推荐交互事件，数据落到 `blog_interactions`。
+
+请求体字段与 `POST /api/recommendation-events` 一致，额外允许 backend 传入已解析的 `user_id`。其中 `entrance_kind` 与 `entrance_url` 仍为必填字段，persistence-api 会清洗长度并写入 `blog_interactions.entrance_kind` / `blog_interactions.entrance_url`。
+
+### `GET /internal/blogs/{blog_id}/recommendation-stats`
+
+用途：返回单个博客的推荐曝光、点击/详情打开、标注选择、独立访客和 CTR 统计。
+
+返回结构与 `GET /api/blogs/{blog_id}/stats` 一致。
+
+### `GET /internal/recommendation-stats`
+
+用途：返回 strategy/surface/version 维度的推荐请求、曝光、交互和 CTR 汇总。
+
+返回结构与 `GET /api/admin/recommendation-stats` 一致。
 
 ### `GET /internal/blogs/lookup?url=...`
 

@@ -116,6 +116,33 @@ class IncrementBlogUserLabelRequest(BaseModel):
     user_id: int | None = None
 
 
+class CreateRandomRecommendationBatchRequest(BaseModel):
+    count: int = 9
+    visitor_id: str
+    session_id: str
+    user_id: int | None = None
+    source: str | None = None
+    page_url: str | None = None
+    context: dict[str, Any] | None = None
+
+
+class RecordBlogInteractionRequest(BaseModel):
+    event_uuid: str
+    event_type: str
+    blog_id: int
+    visitor_id: str
+    session_id: str
+    entrance_kind: str
+    entrance_url: str
+    request_uuid: str | None = None
+    impression_id: int | None = None
+    position: int | None = None
+    interaction_order: int = 1
+    user_id: int | None = None
+    client_event_at: str | None = None
+    attributes: dict[str, Any] | None = None
+
+
 class CreateBlogLabelTagRequest(BaseModel):
     name: str
 
@@ -344,6 +371,38 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             lambda: get_state().repository.lookup_blog_candidates(url=url),
             status_code=422,
         )
+
+    @app.post("/internal/recommendations/random-blog-batches")
+    def create_random_recommendation_batch(payload: CreateRandomRecommendationBatchRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.create_random_recommendation_batch(**payload.model_dump()),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.post("/internal/recommendation-events")
+    def record_blog_interaction(payload: RecordBlogInteractionRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.record_blog_interaction(**payload.model_dump()),
+            exception_translations=(
+                (ValueError, 422, None),
+                (BlogLabelingNotFoundError, 404, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.get("/internal/blogs/{blog_id}/recommendation-stats")
+    def get_blog_recommendation_stats(blog_id: int) -> dict[str, Any]:
+        return _require_payload(
+            get_state().repository.get_blog_recommendation_stats(blog_id),
+            detail="blog_not_found",
+        )
+
+    @app.get("/internal/recommendation-stats")
+    def get_recommendation_strategy_stats() -> dict[str, Any]:
+        return get_state().repository.get_recommendation_strategy_stats()
 
     @app.get("/internal/ingestion-requests")
     def list_priority_ingestion_requests() -> list[dict[str, Any]]:
