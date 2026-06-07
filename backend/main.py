@@ -5,11 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import socket
-from threading import Thread
 from time import sleep
 from typing import Any
 from typing import Callable
-from typing import NoReturn
 from urllib.parse import urlsplit
 
 import httpx

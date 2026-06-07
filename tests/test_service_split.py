@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from time import sleep
 
 import httpx
 import pytest

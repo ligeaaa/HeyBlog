@@ -3529,7 +3529,6 @@ class SQLAlchemyRepository:
             items: list[dict[str, Any]] = []
             for position, row in enumerate(rows, start=1):
                 blog = row[0]
-                blog_id = _business_blog_id(blog)
                 impression = RecommendationImpressionModel(
                     request_id=recommendation.id,
                     normalized_url=str(blog.normalized_url),
