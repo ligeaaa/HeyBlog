@@ -216,7 +216,25 @@ export function VisualizationPage() {
         incomingLinks: node.incomingCount ?? 0,
         outgoingLinks: node.outgoingCount ?? 0,
         relatedNodes: [],
+        outgoingNodes: [],
         recommendedBlogs: [],
+        discoveryPath: null,
+        relationGraphs: {
+          incoming: {
+            direction: "incoming",
+            focusBlogId: node.id,
+            depth: 2,
+            nodes: [node],
+            edges: [],
+          },
+          outgoing: {
+            direction: "outgoing",
+            focusBlogId: node.id,
+            depth: 2,
+            nodes: [node],
+            edges: [],
+          },
+        },
       });
       setHighlightNodeId(blogId);
       return;

@@ -1723,6 +1723,14 @@ def _recommended_blog_payload(
     }
 
 
+DISCOVERY_SOURCE_LABELS = {
+    "seed": "种子导入",
+    "user": "用户手动添加",
+    "rss": "RSS 判定",
+    "model": "模型判定",
+}
+
+
 class RepositoryProtocol(Protocol):
     """Protocol shared by in-process and HTTP-backed repositories."""
 
@@ -2300,6 +2308,212 @@ class SQLAlchemyRepository:
             }
             for edge in edges
         ]
+
+    def _blog_discovery_path_payload(self, session: Session, blog: BlogModel) -> dict[str, Any]:
+        """Return a compact discovery-path payload for one blog.
+
+        Args:
+            session: Active database session used for tracing raw discoveries.
+            blog: Blog row being displayed on the detail page.
+
+        Returns:
+            Payload with discovery mode and ordered path steps from origin to
+            target. Manual seed/user blogs return a single-step path.
+        """
+
+        path_reversed: list[dict[str, Any]] = []
+        visited_blog_ids: set[int] = set()
+        current_blog: BlogModel | None = blog
+        while current_blog is not None:
+            if current_blog is None:
+                break
+            current_blog_id = int(_business_blog_id(current_blog))
+            if current_blog_id in visited_blog_ids:
+                break
+            visited_blog_ids.add(current_blog_id)
+            accepted_by = str(current_blog.accepted_by or "").strip().lower()
+            if accepted_by in {"seed", "user"}:
+                path_reversed.append(self._discovery_path_step(current_blog, raw=None, edge=None))
+                break
+            incoming_edge = self._earliest_incoming_discovery_edge(session, current_blog_id)
+            raw = (
+                self._success_raw_for_edge(session, incoming_edge)
+                if incoming_edge is not None
+                else self._earliest_success_raw_for_blog(session, current_blog)
+            )
+            path_reversed.append(self._discovery_path_step(current_blog, raw=raw, edge=incoming_edge))
+            source_blog_id = int(incoming_edge.from_blog_id) if incoming_edge is not None else (
+                int(raw.source_blog_id) if raw is not None else None
+            )
+            if source_blog_id is None:
+                break
+            current_blog = self._get_blog_by_business_id(session, source_blog_id)
+
+        path = list(reversed(path_reversed))
+        origin_source = str(path[0].get("accepted_by") or path[0].get("raw_accepted_by") or "").strip().lower() if path else ""
+        target_source = str(path[-1].get("accepted_by") or path[-1].get("raw_accepted_by") or "").strip().lower() if path else ""
+        mode = "manual" if target_source in {"seed", "user"} and len(path) == 1 else "crawled"
+        if origin_source in {"seed", "user"} and mode == "crawled":
+            origin_label = DISCOVERY_SOURCE_LABELS.get(origin_source, origin_source)
+        else:
+            origin_label = "发现链路"
+        return {
+            "mode": mode,
+            "origin_source": origin_source or None,
+            "origin_label": origin_label,
+            "target_source": target_source or None,
+            "truncated": False,
+            "steps": path,
+        }
+
+    def _earliest_incoming_discovery_edge(self, session: Session, blog_id: int) -> EdgeModel | None:
+        """Return the earliest non-self incoming edge that discovered a blog."""
+
+        return session.scalar(
+            select(EdgeModel)
+            .where(
+                EdgeModel.to_blog_id == blog_id,
+                EdgeModel.from_blog_id != blog_id,
+            )
+            .order_by(EdgeModel.discovered_at.asc(), EdgeModel.id.asc())
+            .limit(1)
+        )
+
+    def _success_raw_for_edge(self, session: Session, edge: EdgeModel) -> RawDiscoveredUrlModel | None:
+        """Return the successful raw discovery row that produced one edge when available."""
+
+        candidate_urls = {
+            str(edge.link_url_raw or ""),
+            normalize_url(str(edge.link_url_raw or "")).normalized_url,
+            resolve_blog_identity(str(edge.link_url_raw or "")).canonical_url,
+        }
+        return session.scalar(
+            select(RawDiscoveredUrlModel)
+            .where(
+                RawDiscoveredUrlModel.source_blog_id == int(edge.from_blog_id),
+                RawDiscoveredUrlModel.normalized_url.in_([url for url in candidate_urls if url]),
+                RawDiscoveredUrlModel.status == RAW_DISCOVERED_URL_SUCCESS_STATUS,
+            )
+            .order_by(RawDiscoveredUrlModel.id.asc())
+            .limit(1)
+        )
+
+    def _earliest_success_raw_for_blog(self, session: Session, blog: BlogModel) -> RawDiscoveredUrlModel | None:
+        """Return the earliest successful raw discovery row for one blog."""
+
+        candidate_urls = {str(blog.normalized_url or ""), str(blog.url or "")}
+        identity = resolve_blog_identity(str(blog.url or blog.normalized_url or ""))
+        candidate_urls.add(identity.canonical_url)
+        normalized = normalize_url(str(blog.url or blog.normalized_url or ""))
+        candidate_urls.add(normalized.normalized_url)
+        return session.scalar(
+            select(RawDiscoveredUrlModel)
+            .where(
+                RawDiscoveredUrlModel.normalized_url.in_([url for url in candidate_urls if url]),
+                RawDiscoveredUrlModel.status == RAW_DISCOVERED_URL_SUCCESS_STATUS,
+            )
+            .order_by(RawDiscoveredUrlModel.id.asc())
+            .limit(1)
+        )
+
+    def _discovery_path_step(
+        self,
+        blog: BlogModel,
+        *,
+        raw: RawDiscoveredUrlModel | None,
+        edge: EdgeModel | None,
+    ) -> dict[str, Any]:
+        """Serialize one blog as a discovery path step."""
+
+        blog_view = _BlogPayloadView.from_model(blog)
+        accepted_by = str(blog.accepted_by or "").strip().lower() or None
+        raw_accepted_by = str(raw.accepted_by or "").strip().lower() if raw is not None else None
+        source = accepted_by or raw_accepted_by
+        raw_source_blog_id = int(raw.source_blog_id) if raw is not None else (
+            int(edge.from_blog_id) if edge is not None else None
+        )
+        discovered_at = _iso(raw.discovered_at) if raw is not None else (
+            _iso(edge.discovered_at) if edge is not None else None
+        )
+        return {
+            "blog": blog_view.as_neighbor_payload() if blog_view is not None else None,
+            "blog_id": int(_business_blog_id(blog)),
+            "url": str(blog.url or ""),
+            "domain": str(blog.domain or ""),
+            "accepted_by": accepted_by,
+            "accepted_label": DISCOVERY_SOURCE_LABELS.get(str(source or ""), source),
+            "raw_id": int(raw.id) if raw is not None else None,
+            "raw_source_blog_id": raw_source_blog_id,
+            "raw_accepted_by": raw_accepted_by or None,
+            "discovered_at": discovered_at,
+        }
+
+    def _blog_relation_graph_payload(
+        self,
+        session: Session,
+        *,
+        blog: BlogModel,
+        direction: str,
+        depth: int = 2,
+    ) -> dict[str, Any]:
+        """Return a small directional relation graph around one blog.
+
+        Args:
+            session: Active database session.
+            blog: Focus blog for the graph.
+            direction: Either ``incoming`` for upstream sources or
+                ``outgoing`` for downstream targets.
+            depth: Number of graph layers to traverse.
+
+        Returns:
+            Payload with normalized graph nodes, directed edges, focus blog id,
+            direction, and depth metadata.
+        """
+
+        focus_id = int(_business_blog_id(blog))
+        node_ids: set[int] = {focus_id}
+        edges_by_id: dict[int, EdgeModel] = {}
+        frontier = {focus_id}
+        for layer_index in range(depth):
+            next_frontier: set[int] = set()
+            for current_id in sorted(frontier):
+                if direction == "incoming":
+                    statement = (
+                        select(EdgeModel)
+                        .where(EdgeModel.to_blog_id == current_id, EdgeModel.from_blog_id != current_id)
+                        .order_by(EdgeModel.discovered_at.asc(), EdgeModel.id.asc())
+                    )
+                else:
+                    statement = (
+                        select(EdgeModel)
+                        .where(EdgeModel.from_blog_id == current_id, EdgeModel.to_blog_id != current_id)
+                        .order_by(EdgeModel.discovered_at.asc(), EdgeModel.id.asc())
+                    )
+                layer_edges = session.scalars(statement).all()
+                for edge in layer_edges:
+                    edges_by_id[int(edge.id)] = edge
+                    related_id = int(edge.from_blog_id) if direction == "incoming" else int(edge.to_blog_id)
+                    if related_id not in node_ids:
+                        next_frontier.add(related_id)
+                    node_ids.add(related_id)
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        blog_rows = session.execute(
+            self._blog_select()[0].where(BlogModel.blog_id.in_(sorted(node_ids)))
+        ).all()
+        nodes_by_id: dict[int, dict[str, Any]] = {}
+        for row in blog_rows:
+            payload = self._row_blog_payload(row)
+            nodes_by_id[int(payload["blog_id"])] = payload
+        return {
+            "direction": direction,
+            "focus_blog_id": focus_id,
+            "depth": depth,
+            "nodes": [nodes_by_id[node_id] for node_id in sorted(node_ids) if node_id in nodes_by_id],
+            "edges": [_edge_payload(edge) for edge in sorted(edges_by_id.values(), key=lambda item: int(item.id))],
+        }
 
     def _recommended_blog_rows(
         self,
@@ -4454,6 +4668,19 @@ class SQLAlchemyRepository:
 
             return {
                 **self._row_blog_payload(blog_row),
+                "discovery_path": self._blog_discovery_path_payload(session, blog_row[0]),
+                "relation_graphs": {
+                    "incoming": self._blog_relation_graph_payload(
+                        session,
+                        blog=blog_row[0],
+                        direction="incoming",
+                    ),
+                    "outgoing": self._blog_relation_graph_payload(
+                        session,
+                        blog=blog_row[0],
+                        direction="outgoing",
+                    ),
+                },
                 "incoming_edges": self._blog_detail_relation_payloads(
                     session,
                     incoming_edges,

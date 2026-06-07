@@ -2516,6 +2516,15 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         "activity_at": detail["recommended_blogs"][0]["blog"]["activity_at"],
         "identity_complete": True,
     }
+    assert detail["relation_graphs"]["incoming"]["focus_blog_id"] == alpha_id
+    assert [node["blog_id"] for node in detail["relation_graphs"]["incoming"]["nodes"]] == [alpha_id, gamma_id]
+    assert detail["relation_graphs"]["incoming"]["edges"][0]["from_blog_id"] == gamma_id
+    assert detail["relation_graphs"]["outgoing"]["focus_blog_id"] == alpha_id
+    assert {node["blog_id"] for node in detail["relation_graphs"]["outgoing"]["nodes"]} == {
+        alpha_id,
+        beta_id,
+        delta_id,
+    }
     assert detail["recommended_blogs"][0]["reason"] == "mutual_connection"
     assert detail["recommended_blogs"][0]["mutual_connection_count"] == 1
     assert detail["recommended_blogs"][0]["via_blogs"] == [
@@ -2527,3 +2536,216 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
             "icon_url": "https://beta.example/favicon.ico",
         }
     ]
+
+
+def test_repository_blog_detail_relation_graph_keeps_all_edges_within_two_layers(
+    tmp_path: Path,
+) -> None:
+    """Relation graphs should keep every edge reachable within the configured two-layer depth."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    focus_id, inserted = repository.upsert_blog(
+        url="https://focus.example/",
+        normalized_url="https://focus.example/",
+        domain="focus.example",
+    )
+    assert inserted is True
+
+    outgoing_first_ids: list[int] = []
+    incoming_first_ids: list[int] = []
+    for index in range(12):
+        outgoing_id, inserted = repository.upsert_blog(
+            url=f"https://out-first-{index}.example/",
+            normalized_url=f"https://out-first-{index}.example/",
+            domain=f"out-first-{index}.example",
+        )
+        assert inserted is True
+        outgoing_first_ids.append(outgoing_id)
+        repository.add_edge(
+            from_blog_id=focus_id,
+            to_blog_id=outgoing_id,
+            link_url_raw=f"https://out-first-{index}.example/",
+            link_text=f"Out first {index}",
+        )
+
+        incoming_id, inserted = repository.upsert_blog(
+            url=f"https://in-first-{index}.example/",
+            normalized_url=f"https://in-first-{index}.example/",
+            domain=f"in-first-{index}.example",
+        )
+        assert inserted is True
+        incoming_first_ids.append(incoming_id)
+        repository.add_edge(
+            from_blog_id=incoming_id,
+            to_blog_id=focus_id,
+            link_url_raw="https://focus.example/",
+            link_text=f"In first {index}",
+        )
+
+    outgoing_second_ids: list[int] = []
+    incoming_second_ids: list[int] = []
+    for index in range(11):
+        outgoing_id, inserted = repository.upsert_blog(
+            url=f"https://out-second-{index}.example/",
+            normalized_url=f"https://out-second-{index}.example/",
+            domain=f"out-second-{index}.example",
+        )
+        assert inserted is True
+        outgoing_second_ids.append(outgoing_id)
+        repository.add_edge(
+            from_blog_id=outgoing_first_ids[0],
+            to_blog_id=outgoing_id,
+            link_url_raw=f"https://out-second-{index}.example/",
+            link_text=f"Out second {index}",
+        )
+
+        incoming_id, inserted = repository.upsert_blog(
+            url=f"https://in-second-{index}.example/",
+            normalized_url=f"https://in-second-{index}.example/",
+            domain=f"in-second-{index}.example",
+        )
+        assert inserted is True
+        incoming_second_ids.append(incoming_id)
+        repository.add_edge(
+            from_blog_id=incoming_id,
+            to_blog_id=incoming_first_ids[0],
+            link_url_raw=f"https://in-first-0.example/",
+            link_text=f"In second {index}",
+        )
+
+    detail = repository.get_blog_detail(focus_id)
+
+    assert detail is not None
+    outgoing_node_ids = {node["blog_id"] for node in detail["relation_graphs"]["outgoing"]["nodes"]}
+    assert set(outgoing_first_ids).issubset(outgoing_node_ids)
+    assert set(outgoing_second_ids).issubset(outgoing_node_ids)
+
+    incoming_node_ids = {node["blog_id"] for node in detail["relation_graphs"]["incoming"]["nodes"]}
+    assert set(incoming_first_ids).issubset(incoming_node_ids)
+    assert set(incoming_second_ids).issubset(incoming_node_ids)
+
+
+def test_repository_blog_detail_includes_discovery_path(tmp_path: Path) -> None:
+    """Detail payloads should explain manual origins and crawled discovery chains."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    seed_id, inserted = repository.upsert_blog(
+        url="https://seed.example/",
+        normalized_url="https://seed.example/",
+        domain="seed.example",
+        accepted_by="seed",
+        seed_source_path="seed.csv",
+        seed_source_row=2,
+    )
+    assert inserted is True
+    middle_id, inserted = repository.upsert_blog(
+        url="https://middle.example/",
+        normalized_url="https://middle.example/",
+        domain="middle.example",
+        accepted_by="rss",
+    )
+    assert inserted is True
+    target_id, inserted = repository.upsert_blog(
+        url="https://target.example/",
+        normalized_url="https://target.example/",
+        domain="target.example",
+        accepted_by="model",
+    )
+    assert inserted is True
+    first_raw = repository.create_raw_discovered_url(
+        source_blog_id=seed_id,
+        normalized_url="https://middle.example/",
+        status="pending",
+    )
+    repository.update_raw_discovered_url_status(record_id=first_raw, status="success", accepted_by="rss")
+    second_raw = repository.create_raw_discovered_url(
+        source_blog_id=middle_id,
+        normalized_url="https://target.example/",
+        status="pending",
+    )
+    repository.update_raw_discovered_url_status(record_id=second_raw, status="success", accepted_by="model")
+
+    seed_detail = repository.get_blog_detail(seed_id)
+    target_detail = repository.get_blog_detail(target_id)
+
+    assert seed_detail is not None
+    assert seed_detail["discovery_path"]["mode"] == "manual"
+    assert seed_detail["discovery_path"]["steps"][0]["accepted_by"] == "seed"
+    assert target_detail is not None
+    assert target_detail["discovery_path"]["mode"] == "crawled"
+    assert [step["domain"] for step in target_detail["discovery_path"]["steps"]] == [
+        "seed.example",
+        "middle.example",
+        "target.example",
+    ]
+    assert target_detail["discovery_path"]["steps"][0]["accepted_label"] == "种子导入"
+    assert target_detail["discovery_path"]["steps"][1]["raw_source_blog_id"] == seed_id
+    assert target_detail["discovery_path"]["steps"][2]["raw_source_blog_id"] == middle_id
+
+
+def test_repository_blog_detail_discovery_path_keeps_full_history(tmp_path: Path) -> None:
+    """Discovery paths should return every historical source step, even for long chains."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_ids: list[int] = []
+    domains = [f"chain-{index}.example" for index in range(15)]
+    for index, domain in enumerate(domains):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://{domain}/",
+            normalized_url=f"https://{domain}/",
+            domain=domain,
+            accepted_by="seed" if index == 0 else "rss",
+        )
+        assert inserted is True
+        blog_ids.append(blog_id)
+
+    for source_id, target_domain in zip(blog_ids[:-1], domains[1:], strict=True):
+        raw_id = repository.create_raw_discovered_url(
+            source_blog_id=source_id,
+            normalized_url=f"https://{target_domain}/",
+            status="pending",
+        )
+        repository.update_raw_discovered_url_status(record_id=raw_id, status="success", accepted_by="rss")
+
+    detail = repository.get_blog_detail(blog_ids[-1])
+
+    assert detail is not None
+    assert detail["discovery_path"]["truncated"] is False
+    assert [step["domain"] for step in detail["discovery_path"]["steps"]] == domains
+
+
+def test_repository_blog_detail_discovery_path_uses_incoming_edge_for_alias_raw_url(tmp_path: Path) -> None:
+    """Discovery paths should follow incoming edges when raw URLs differ from canonical blog URLs."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    seed_id, inserted = repository.upsert_blog(
+        url="https://seed.example/",
+        normalized_url="https://seed.example/",
+        domain="seed.example",
+        accepted_by="seed",
+    )
+    assert inserted is True
+    target_id, inserted = repository.upsert_blog(
+        url="https://target.example/",
+        normalized_url="https://target.example/",
+        domain="target.example",
+        accepted_by="rss",
+    )
+    assert inserted is True
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=seed_id,
+        normalized_url="https://blog.target.example/",
+        status="pending",
+    )
+    repository.update_raw_discovered_url_status(record_id=raw_id, status="success", accepted_by="rss")
+    repository.add_edge(
+        from_blog_id=seed_id,
+        to_blog_id=target_id,
+        link_url_raw="https://blog.target.example/",
+        link_text="Target",
+    )
+
+    detail = repository.get_blog_detail(target_id)
+
+    assert detail is not None
+    assert [step["domain"] for step in detail["discovery_path"]["steps"]] == [
+        "seed.example",
+        "target.example",
+    ]
+    assert detail["discovery_path"]["steps"][1]["raw_source_blog_id"] == seed_id

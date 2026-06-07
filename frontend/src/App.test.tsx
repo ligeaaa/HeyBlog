@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const { forceGraphProps } = vi.hoisted(() => ({
   forceGraphProps: [] as Record<string, any>[],
+}));
+
+const { forceGraph2DProps } = vi.hoisted(() => ({
+  forceGraph2DProps: [] as Record<string, any>[],
 }));
 
 vi.mock("react-force-graph-3d", () => ({
@@ -11,6 +15,37 @@ vi.mock("react-force-graph-3d", () => ({
     return <div data-testid="force-graph-3d" />;
   },
 }));
+
+vi.mock("react-force-graph-2d", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    default: React.forwardRef((props: Record<string, any>, ref) => {
+      React.useImperativeHandle(ref, () => ({
+        d3Force: () => ({
+          distance: vi.fn(),
+          strength: vi.fn(),
+        }),
+        d3ReheatSimulation: vi.fn(),
+        zoomToFit: vi.fn(),
+      }));
+      forceGraph2DProps.push(props);
+      return (
+        <div data-testid="force-graph-2d">
+          {props.graphData.nodes.map((node: Record<string, any>) => (
+            <button
+              key={node.id}
+              type="button"
+              aria-label={`${node.label} ${node.url}`}
+              onMouseEnter={() => props.onNodeHover?.(node, null)}
+              onMouseLeave={() => props.onNodeHover?.(null, node)}
+              onClick={() => props.onNodeClick?.(node, new MouseEvent("click"))}
+            />
+          ))}
+        </div>
+      );
+    }),
+  };
+});
 
 import App from "./App";
 
@@ -42,6 +77,7 @@ function makeCatalogItem(id: number, crawlStatus: string, title: string) {
 
 function makeDetailPayload(item: Record<string, unknown>) {
   const relatedBlog = makeCatalogItem(88, "FINISHED", "Related Blog");
+  const downstreamBlog = makeCatalogItem(87, "FINISHED", "Downstream Blog");
   const recommendedBlog = makeCatalogItem(89, "FINISHED", "Recommended Blog");
   const viaBlog = makeCatalogItem(90, "FINISHED", "Mutual Blog");
   return {
@@ -66,6 +102,14 @@ function makeDetailPayload(item: Record<string, unknown>) {
         link_url_raw: relatedBlog.url,
         neighbor_blog: relatedBlog,
       },
+      {
+        id: "outgoing-2",
+        from_blog_id: item.id,
+        to_blog_id: downstreamBlog.id,
+        link_text: "next",
+        link_url_raw: downstreamBlog.url,
+        neighbor_blog: downstreamBlog,
+      },
     ],
     recommended_blogs: [
       {
@@ -73,6 +117,78 @@ function makeDetailPayload(item: Record<string, unknown>) {
         via_blogs: [viaBlog],
       },
     ],
+    discovery_path: {
+      mode: "crawled",
+      origin_source: "seed",
+      origin_label: "种子导入",
+      target_source: "rss",
+      truncated: false,
+      steps: [
+        {
+          blog: relatedBlog,
+          blog_id: relatedBlog.id,
+          url: relatedBlog.url,
+          domain: relatedBlog.domain,
+          accepted_by: "seed",
+          accepted_label: "种子导入",
+          raw_id: null,
+          raw_source_blog_id: null,
+          raw_accepted_by: null,
+          discovered_at: null,
+        },
+        {
+          blog: item,
+          blog_id: item.id,
+          url: String(item.url),
+          domain: String(item.domain),
+          accepted_by: null,
+          accepted_label: "RSS 判定",
+          raw_id: 22,
+          raw_source_blog_id: relatedBlog.id,
+          raw_accepted_by: "rss",
+          discovered_at: "2026-04-20T10:00:00Z",
+        },
+      ],
+    },
+    relation_graphs: {
+      incoming: {
+        direction: "incoming",
+        focus_blog_id: item.id,
+        depth: 2,
+        nodes: [item, relatedBlog],
+        edges: [
+          {
+            id: "incoming-1",
+            from_blog_id: relatedBlog.id,
+            to_blog_id: item.id,
+            link_text: "friend",
+            link_url_raw: item.url,
+          },
+        ],
+      },
+      outgoing: {
+        direction: "outgoing",
+        focus_blog_id: item.id,
+        depth: 2,
+        nodes: [item, relatedBlog, downstreamBlog],
+        edges: [
+          {
+            id: "outgoing-1",
+            from_blog_id: item.id,
+            to_blog_id: relatedBlog.id,
+            link_text: "blogroll",
+            link_url_raw: relatedBlog.url,
+          },
+          {
+            id: "outgoing-2",
+            from_blog_id: item.id,
+            to_blog_id: downstreamBlog.id,
+            link_text: "next",
+            link_url_raw: downstreamBlog.url,
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -138,6 +254,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
   forceGraphProps.length = 0;
+  forceGraph2DProps.length = 0;
   window.history.replaceState({}, "", "/");
   catalogItems = [...baseCatalogItems, makeCatalogItem(33, "PROCESSING", "Newest Processing Blog")];
   window.localStorage.clear();
@@ -449,9 +566,12 @@ test("lets home users search normalized URLs and open the blog detail route", as
   expect(screen.getByText("1 个匹配")).toBeInTheDocument();
   expect(screen.getByText("Finished Blog")).toBeInTheDocument();
   expect(screen.getByText("https://finished-blog.example.com/")).toBeInTheDocument();
-  expect(screen.getByAltText("finished-blog.example.com icon")).toHaveAttribute(
-    "src",
-    "https://finished-blog.example.com/favicon.ico",
+  expect(screen.getAllByAltText("finished-blog.example.com icon")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        src: "https://finished-blog.example.com/favicon.ico",
+      }),
+    ]),
   );
 
   fireEvent.click(screen.getByRole("button", { name: /Finished Blog/i }));
@@ -463,13 +583,33 @@ test("lets home users search normalized URLs and open the blog detail route", as
   await waitFor(() => {
     expect(screen.getByRole("heading", { name: "Finished Blog" })).toBeInTheDocument();
   });
-  expect(screen.getByAltText("finished-blog.example.com icon")).toHaveAttribute(
-    "src",
-    "https://finished-blog.example.com/favicon.ico",
+  expect(screen.getAllByAltText("finished-blog.example.com icon")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        src: "https://finished-blog.example.com/favicon.ico",
+      }),
+    ]),
   );
-  expect(screen.getByRole("heading", { name: "直接相关博客" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "推荐博客" })).toBeInTheDocument();
-  expect(screen.getByText("通过 Mutual Blog 关联")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "博客关联" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "发现路径" })).toBeInTheDocument();
+  expect(screen.getByText("https://related-blog.example.com/")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "入链关系" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "出链关系" })).toBeInTheDocument();
+  const relatedNode = screen.getByLabelText("Related Blog https://related-blog.example.com/");
+  expect(relatedNode).toBeInTheDocument();
+  fireEvent.mouseEnter(relatedNode);
+  const tooltip = screen.getByRole("tooltip");
+  expect(within(tooltip).getByText("Related Blog")).toBeInTheDocument();
+  expect(within(tooltip).getByText("https://related-blog.example.com/")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "出链关系" }));
+  expect(screen.getByLabelText("Downstream Blog https://downstream-blog.example.com/")).toBeInTheDocument();
+  expect(screen.queryByText("种子导入")).not.toBeInTheDocument();
+  expect(screen.queryByText("RSS 判定")).not.toBeInTheDocument();
+  expect(screen.queryByText(/源头/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "直接相关博客" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "推荐博客" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "基础信息" })).not.toBeInTheDocument();
+  expect(screen.queryByText("通过 Mutual Blog 关联")).not.toBeInTheDocument();
 });
 
 test("submits a user seed when home URL search has no matches", async () => {

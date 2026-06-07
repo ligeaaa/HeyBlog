@@ -596,12 +596,16 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 若 blog 不存在，返回 `404`
 - 返回内容基于单 blog 记录扩展了 `incoming_edges` 与 `outgoing_edges`
+- 返回 `discovery_path` 描述该博客进入网络的路径：手动 seed/user 添加，或由 crawler 沿友链逐级发现
+- 返回 `relation_graphs` 描述详情页“博客关联”模块使用的两层入链/出链关系图；两层深度内的入链/出链关系完整返回，不按节点或边数量裁剪
 
 额外字段：
 
 - `incoming_edges`: 所有 `to_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
 - `outgoing_edges`: 所有 `from_blog_id == blog_id` 的边，每条边额外携带 `neighbor_blog`
 - `recommended_blogs`: “朋友的朋友”推荐列表，规则是“当前博客的友链认识、但当前博客还没直接认识的博客”
+- `discovery_path`: 发现路径。`mode=manual` 表示该博客由 `accepted_by=seed/user` 手动进入网络；`mode=crawled` 表示通过 `raw_discovered_urls` 从当前博客逐级追溯 source blog，直到 seed/user 源头、无法继续追溯或检测到循环；正常长路径会完整返回，不按固定深度截断
+- `relation_graphs`: `{ incoming, outgoing }`，两个图默认各包含从当前博客出发的 2 层关系；`incoming` 沿入链向上追溯，`outgoing` 沿出链向下展开；两层深度内不按节点或边数量裁剪
 
 其中 `neighbor_blog` 是详情页使用的邻居摘要，字段为：
 
@@ -2025,12 +2029,17 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 | `incoming_edges` | `BlogRelationRecord[]` | 指向当前博客的关系列表 |
 | `outgoing_edges` | `BlogRelationRecord[]` | 当前博客指向外部的关系列表 |
 | `recommended_blogs` | `BlogRecommendationRecord[]` | “朋友的朋友”推荐列表 |
+| `discovery_path` | `BlogDiscoveryPath` | 发现路径摘要，从源头博客到当前博客的有序步骤 |
+| `relation_graphs` | `{ incoming, outgoing }` | 两层入链/出链关系图，供详情页“博客关联”模块展示；两层深度内不按节点或边数量裁剪 |
 
 其中：
 
 - `BlogRelationRecord = EdgeRecord + { neighbor_blog: BlogNeighborSummary \| null }`
 - `BlogRecommendationRecord = { blog, reason, mutual_connection_count, via_blogs }`
 - `BlogNeighborSummary` 字段为 `id`、`domain`、`title`、`icon_url`
+- `BlogDiscoveryPath = { mode, origin_source, origin_label, target_source, truncated, steps }`，其中 `truncated` 为历史兼容字段，当前始终为 `false`
+- `BlogDiscoveryStep` 包含 `blog` 邻居摘要、`blog_id`、`url`、`domain`、`accepted_by`、`accepted_label`、`raw_id`、`raw_source_blog_id`、`raw_accepted_by`、`discovered_at`
+- `BlogRelationGraph = { direction, focus_blog_id, depth, nodes, edges }`，其中 `direction` 为 `incoming` 或 `outgoing`，`depth` 默认是 `2`
 
 ### 5.4 EdgeRecord
 

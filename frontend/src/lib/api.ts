@@ -132,10 +132,45 @@ interface BackendRecommendedBlog extends BackendGraphNode {
   via_blogs?: BackendNeighborSummary[];
 }
 
+interface BackendBlogDiscoveryStep {
+  blog: BackendNeighborSummary | null;
+  blog_id: number;
+  url: string;
+  domain: string;
+  accepted_by: string | null;
+  accepted_label: string | null;
+  raw_id: number | null;
+  raw_source_blog_id: number | null;
+  raw_accepted_by: string | null;
+  discovered_at: string | null;
+}
+
+interface BackendBlogDiscoveryPath {
+  mode: "manual" | "crawled";
+  origin_source: string | null;
+  origin_label: string;
+  target_source: string | null;
+  truncated: boolean;
+  steps: BackendBlogDiscoveryStep[];
+}
+
+interface BackendBlogRelationGraph {
+  direction: "incoming" | "outgoing";
+  focus_blog_id: number;
+  depth: number;
+  nodes: BackendGraphNode[];
+  edges: BackendGraphEdge[];
+}
+
 interface BackendBlogDetail extends BackendGraphNode {
   incoming_edges: BackendBlogRelation[];
   outgoing_edges: BackendBlogRelation[];
   recommended_blogs: BackendRecommendedBlog[];
+  discovery_path?: BackendBlogDiscoveryPath | null;
+  relation_graphs?: {
+    incoming: BackendBlogRelationGraph;
+    outgoing: BackendBlogRelationGraph;
+  };
 }
 
 interface BackendStatsPayload {
@@ -360,6 +395,28 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
     connectionCount: node.connection_count ?? (node.incoming_count ?? 0) + (node.outgoing_count ?? 0),
     activityAt: node.activity_at ?? null,
     identityComplete: node.identity_complete ?? false,
+  };
+}
+
+/**
+ * Convert one backend relation graph into frontend graph coordinates.
+ *
+ * @param graph Backend directional relation graph.
+ * @returns Normalized relation graph.
+ */
+function toBlogRelationGraph(graph: BackendBlogRelationGraph) {
+  return {
+    direction: graph.direction,
+    focusBlogId: graph.focus_blog_id,
+    depth: graph.depth,
+    nodes: graph.nodes.map(toGraphNode),
+    edges: graph.edges.map((edge) => ({
+      id: String(edge.id ?? `${edge.from_blog_id}-${edge.to_blog_id}`),
+      source: edge.from_blog_id,
+      target: edge.to_blog_id,
+      linkText: edge.link_text,
+      linkUrlRaw: edge.link_url_raw,
+    })),
   };
 }
 
@@ -630,9 +687,16 @@ export async function fetchBlogDetail(blogId: number): Promise<BlogDetail> {
     .filter((neighbor): neighbor is BackendNeighborSummary => neighbor !== null)
     .map(toGraphNode);
   const outgoingNeighbors = payload.outgoing_edges
-    .map((edge) => edge.neighbor_blog)
-    .filter((neighbor): neighbor is BackendNeighborSummary => neighbor !== null)
-    .map(toGraphNode);
+    .map((edge) => {
+      if (!edge.neighbor_blog) {
+        return null;
+      }
+      return {
+        ...toGraphNode(edge.neighbor_blog),
+        url: edge.link_url_raw,
+      };
+    })
+    .filter((neighbor): neighbor is GraphNode => neighbor !== null);
   const relatedNodesById = new Map<number, GraphNode>();
   [...incomingNeighbors, ...outgoingNeighbors].forEach((node) => {
     relatedNodesById.set(node.id, node);
@@ -641,12 +705,75 @@ export async function fetchBlogDetail(blogId: number): Promise<BlogDetail> {
     ...toGraphNode(blog),
     viaBlogs: (blog.via_blogs ?? []).map(toGraphNode),
   }));
+  const discoveryPath = payload.discovery_path
+    ? {
+        mode: payload.discovery_path.mode,
+        originSource: payload.discovery_path.origin_source,
+        originLabel: payload.discovery_path.origin_label,
+        targetSource: payload.discovery_path.target_source,
+        truncated: payload.discovery_path.truncated,
+        steps: payload.discovery_path.steps.map((step) => ({
+          blog: step.blog
+            ? {
+                id: step.blog.blog_id ?? step.blog.id,
+                domain: step.blog.domain,
+                title: step.blog.title,
+                iconUrl: step.blog.icon_url,
+              }
+            : null,
+          blogId: step.blog_id,
+          url: step.url,
+          domain: step.domain,
+          acceptedBy: step.accepted_by,
+          acceptedLabel: step.accepted_label,
+          rawId: step.raw_id,
+          rawSourceBlogId: step.raw_source_blog_id,
+          rawAcceptedBy: step.raw_accepted_by,
+          discoveredAt: step.discovered_at,
+        })),
+      }
+    : null;
   return {
     ...toGraphNode(payload),
     incomingLinks: payload.incoming_edges.length,
     outgoingLinks: payload.outgoing_edges.length,
     relatedNodes: Array.from(relatedNodesById.values()),
+    outgoingNodes: outgoingNeighbors,
     recommendedBlogs,
+    discoveryPath,
+    relationGraphs: payload.relation_graphs
+      ? {
+          incoming: toBlogRelationGraph(payload.relation_graphs.incoming),
+          outgoing: toBlogRelationGraph(payload.relation_graphs.outgoing),
+        }
+      : {
+          incoming: {
+            direction: "incoming",
+            focusBlogId: payload.blog_id ?? payload.id,
+            depth: 2,
+            nodes: [toGraphNode(payload), ...incomingNeighbors],
+            edges: payload.incoming_edges.map((edge) => ({
+              id: String(edge.id),
+              source: edge.from_blog_id,
+              target: edge.to_blog_id,
+              linkText: edge.link_text,
+              linkUrlRaw: edge.link_url_raw,
+            })),
+          },
+          outgoing: {
+            direction: "outgoing",
+            focusBlogId: payload.blog_id ?? payload.id,
+            depth: 2,
+            nodes: [toGraphNode(payload), ...outgoingNeighbors],
+            edges: payload.outgoing_edges.map((edge) => ({
+              id: String(edge.id),
+              source: edge.from_blog_id,
+              target: edge.to_blog_id,
+              linkText: edge.link_text,
+              linkUrlRaw: edge.link_url_raw,
+            })),
+          },
+        },
   };
 }
 

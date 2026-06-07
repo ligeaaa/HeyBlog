@@ -1,11 +1,22 @@
-import { ArrowLeft, ArrowRight, ArrowUpRight, GitBranch, Loader2, Network, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpRight,
+  Loader2,
+  Network,
+  Route,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
 import { fetchBlogDetail } from "../lib/api";
-import { resolveBlogIconUrls } from "../lib/icon";
-import type { BlogDetail, GraphNode, RecommendedBlog } from "../types/graph";
+import { resolveBlogIconUrls, resolveIconProxyUrl } from "../lib/icon";
+import type { BlogDetail, BlogDiscoveryPath, BlogDiscoveryStep, BlogRelationGraph, GraphNode } from "../types/graph";
+
+const RELATION_GRAPH_LINK_DISTANCE = 78;
+const RELATION_GRAPH_CHARGE_STRENGTH = -260;
 
 /**
  * Format a numeric count for compact detail cards.
@@ -15,27 +26,6 @@ import type { BlogDetail, GraphNode, RecommendedBlog } from "../types/graph";
  */
 function formatCount(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-/**
- * Render one compact blog link in related and recommendation lists.
- *
- * @param props Blog row and optional supporting copy.
- * @returns Clickable blog summary row.
- */
-function BlogListItem({ blog, helperText }: { blog: GraphNode | RecommendedBlog; helperText?: string }) {
-  return (
-    <Link
-      to={`/blogs/${blog.id}`}
-      className="block rounded-lg border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-sky-300 hover:bg-sky-50"
-    >
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium text-slate-950">{blog.title || blog.domain}</div>
-        <div className="mt-1 truncate text-xs text-slate-500">{blog.domain}</div>
-        {helperText ? <div className="mt-2 text-xs leading-5 text-sky-700">{helperText}</div> : null}
-      </div>
-    </Link>
-  );
 }
 
 /**
@@ -72,6 +62,403 @@ function BlogHeroIcon({ detail }: { detail: BlogDetail }) {
 }
 
 /**
+ * Render one compact card for a historical discovery path step.
+ *
+ * @param props Discovery step returned by the blog detail API.
+ * @returns Clickable blog card with title, icon, and URL.
+ */
+function DiscoveryPathCard({ step }: { step: BlogDiscoveryStep }) {
+  const blog = {
+    id: step.blogId,
+    url: step.url,
+    domain: step.domain,
+    title: step.blog?.title ?? null,
+    iconUrl: step.blog?.iconUrl ?? null,
+  };
+  const iconUrls = resolveBlogIconUrls(blog);
+  const [iconIndex, setIconIndex] = useState(0);
+  const iconUrl = iconUrls[iconIndex];
+
+  useEffect(() => {
+    setIconIndex(0);
+  }, [step.blogId, step.url, step.domain, step.blog?.iconUrl]);
+
+  return (
+    <Link
+      to={`/blogs/${step.blogId}`}
+      className="flex w-56 items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 transition-colors hover:border-sky-300 hover:bg-sky-50"
+    >
+      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white text-sm font-semibold text-slate-500 ring-1 ring-slate-200">
+        {iconUrl ? (
+          <img
+            src={iconUrl}
+            alt={`${step.domain} icon`}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={() => setIconIndex((currentIndex) => currentIndex + 1)}
+          />
+        ) : (
+          <span>{(step.domain || "?").slice(0, 1).toUpperCase()}</span>
+        )}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-slate-950">{step.blog?.title || step.domain}</div>
+        <div className="mt-1 truncate text-xs text-slate-500">{step.url}</div>
+      </div>
+    </Link>
+  );
+}
+
+/**
+ * Render only the historical discovery path, without outgoing branches.
+ *
+ * @param props Discovery path payload.
+ * @returns Historical discovery path section or null when unavailable.
+ */
+function DiscoveryPathSection({ path }: { path: BlogDiscoveryPath | null }) {
+  if (!path || path.steps.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="mb-4 flex items-center gap-2">
+        <Route className="h-5 w-5 text-sky-600" />
+        <h2 className="text-xl text-slate-950">发现路径</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="flex min-w-max items-center gap-3">
+          {path.steps.map((step, index) => (
+            <div key={`${step.blogId}-${index}`} className="flex items-center gap-3">
+              <DiscoveryPathCard step={step} />
+              {index < path.steps.length - 1 ? (
+                <div className="flex items-center gap-2 text-slate-300">
+                  <div className="h-px w-6 bg-slate-300" />
+                  <ArrowRight className="h-4 w-4" />
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+interface RelationRenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
+  id: string;
+  blogId: number;
+  original: GraphNode;
+  label: string;
+  iconUrls: string[];
+  radius: number;
+}
+
+interface RelationRenderLink {
+  id: string;
+  source: string | RelationRenderNode;
+  target: string | RelationRenderNode;
+}
+
+interface RelationRenderGraph {
+  nodes: RelationRenderNode[];
+  links: RelationRenderLink[];
+}
+
+/**
+ * Build force-graph render data from the blog relation API payload.
+ *
+ * @param graph Directional relation graph payload.
+ * @returns Render nodes and links for react-force-graph-2d.
+ */
+function buildRelationRenderGraph(graph: BlogRelationGraph): RelationRenderGraph {
+  const nodes = graph.nodes.map((node) => {
+    const iconUrls = resolveBlogIconUrls(node).map(resolveIconProxyUrl);
+    return {
+      ...node,
+      id: String(node.id),
+      blogId: node.id,
+      original: node,
+      label: node.title?.trim() || node.domain || node.url,
+      iconUrls,
+      radius: node.id === graph.focusBlogId ? 18 : 13,
+    };
+  });
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return {
+    nodes,
+    links: graph.edges
+      .map((edge) => ({
+        id: edge.id,
+        source: String(edge.source),
+        target: String(edge.target),
+      }))
+      .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
+  };
+}
+
+/**
+ * Resolve a force-graph link endpoint id after d3 mutates links.
+ *
+ * @param endpoint Link source or target value.
+ * @returns Stable render node id.
+ */
+function relationEndpointId(endpoint: string | RelationRenderNode): string {
+  return typeof endpoint === "object" ? endpoint.id : String(endpoint);
+}
+
+/**
+ * Draw a relation graph node on a 2D force-graph canvas.
+ *
+ * @param node Render node to draw.
+ * @param context Canvas context from react-force-graph-2d.
+ * @param imageCache Loaded icon cache keyed by proxied icon URL.
+ * @param focusBlogId Current detail blog id.
+ * @param hoveredBlogId Hovered blog id, if any.
+ */
+function paintRelationNode(
+  node: RelationRenderNode,
+  context: CanvasRenderingContext2D,
+  imageCache: Map<string, HTMLImageElement>,
+  focusBlogId: number,
+  hoveredBlogId: number | null,
+) {
+  const x = node.x ?? 0;
+  const y = node.y ?? 0;
+  const isFocus = node.blogId === focusBlogId;
+  const isHovered = node.blogId === hoveredBlogId;
+  const radius = node.radius + (isHovered ? 3 : 0);
+  const icon = node.iconUrls.map((url) => imageCache.get(url)).find((image) => image?.complete && image.naturalWidth > 0);
+
+  context.save();
+  context.beginPath();
+  context.arc(x, y, radius + (isFocus ? 5 : 3), 0, Math.PI * 2);
+  context.fillStyle = isFocus ? "rgba(14, 165, 233, 0.2)" : "rgba(148, 163, 184, 0.18)";
+  context.fill();
+
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fillStyle = icon ? "#ffffff" : isFocus ? "#bae6fd" : "#cbd5e1";
+  context.fill();
+  context.lineWidth = isFocus ? 3 : 1.5;
+  context.strokeStyle = isFocus ? "#0284c7" : "#ffffff";
+  context.stroke();
+
+  if (icon) {
+    context.save();
+    context.beginPath();
+    context.arc(x, y, radius - 1, 0, Math.PI * 2);
+    context.clip();
+    context.drawImage(icon, x - radius, y - radius, radius * 2, radius * 2);
+    context.restore();
+  }
+  context.restore();
+}
+
+/**
+ * Paint the clickable pointer area for one relation graph node.
+ *
+ * @param node Render node to cover.
+ * @param paintColor Hidden pointer-picking color supplied by force graph.
+ * @param context Canvas context from react-force-graph-2d.
+ */
+function paintRelationPointerArea(node: RelationRenderNode, paintColor: string, context: CanvasRenderingContext2D) {
+  const radius = node.radius + 5;
+  context.fillStyle = paintColor;
+  context.beginPath();
+  context.arc(node.x ?? 0, node.y ?? 0, radius, 0, Math.PI * 2);
+  context.fill();
+}
+
+/**
+ * Render one paged blog relation graph as an interactive 2D force graph.
+ *
+ * @param props Directional relation graph payload.
+ * @returns 2D force-graph relation view.
+ */
+function RelationGraphView({ graph }: { graph: BlogRelationGraph }) {
+  const navigate = useNavigate();
+  const graphRef = useRef<ForceGraphMethods<RelationRenderNode, RelationRenderLink> | undefined>(undefined);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
+  const [size, setSize] = useState({ width: 960, height: 360 });
+  const [isMeasured, setIsMeasured] = useState(false);
+  const [hoveredBlog, setHoveredBlog] = useState<GraphNode | null>(null);
+  const [iconPaintVersion, setIconPaintVersion] = useState(0);
+  const renderGraph = useMemo(() => buildRelationRenderGraph(graph), [graph]);
+  const hoveredBlogId = hoveredBlog?.id ?? null;
+  const fitGraphToView = useCallback((durationMs = 500) => {
+    graphRef.current?.zoomToFit(durationMs, 44);
+  }, []);
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return undefined;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      setSize({
+        width: Math.max(320, Math.floor(entry.contentRect.width)),
+        height: Math.max(320, Math.floor(entry.contentRect.height)),
+      });
+      setIsMeasured(true);
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const graphInstance = graphRef.current;
+    if (!isMeasured || !graphInstance) {
+      return undefined;
+    }
+    graphInstance.d3Force("center", null);
+    const chargeForce = graphInstance.d3Force("charge") as { strength?: (value: number) => unknown } | undefined;
+    chargeForce?.strength?.(RELATION_GRAPH_CHARGE_STRENGTH);
+    const linkForce = graphInstance.d3Force("link") as { distance?: (value: number) => unknown } | undefined;
+    linkForce?.distance?.(RELATION_GRAPH_LINK_DISTANCE);
+    graphInstance.d3ReheatSimulation();
+    const firstFitTimer = window.setTimeout(() => fitGraphToView(450), 120);
+    const settledFitTimer = window.setTimeout(() => fitGraphToView(450), 620);
+    return () => {
+      window.clearTimeout(firstFitTimer);
+      window.clearTimeout(settledFitTimer);
+    };
+  }, [fitGraphToView, isMeasured, renderGraph, size.height, size.width]);
+
+  useEffect(() => {
+    let isDisposed = false;
+    const urls = Array.from(new Set(renderGraph.nodes.flatMap((node) => node.iconUrls)));
+    urls.forEach((url) => {
+      if (imageCacheRef.current.has(url)) {
+        return;
+      }
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = () => {
+        if (!isDisposed) {
+          imageCacheRef.current.set(url, image);
+          setIconPaintVersion((version) => version + 1);
+        }
+      };
+      image.onerror = () => {
+        imageCacheRef.current.delete(url);
+      };
+      image.src = url;
+      imageCacheRef.current.set(url, image);
+    });
+    return () => {
+      isDisposed = true;
+    };
+  }, [renderGraph.nodes]);
+
+  const nodeCanvasObject = useCallback(
+    (node: RelationRenderNode, context: CanvasRenderingContext2D) => {
+      paintRelationNode(node, context, imageCacheRef.current, graph.focusBlogId, hoveredBlogId);
+    },
+    [graph.focusBlogId, hoveredBlogId, iconPaintVersion],
+  );
+
+  return (
+    <div ref={containerRef} className="relative h-[380px] overflow-hidden rounded-lg bg-slate-50">
+      {isMeasured ? (
+        <ForceGraph2D<RelationRenderNode, RelationRenderLink>
+          ref={graphRef}
+          graphData={renderGraph}
+          nodeId="id"
+          width={size.width}
+          height={size.height}
+          backgroundColor="#f8fafc"
+          nodeLabel={(node) => `${node.label}\n${node.url}`}
+          nodeVal={(node) => node.radius}
+          nodeCanvasObjectMode={() => "replace"}
+          nodeCanvasObject={nodeCanvasObject}
+          nodePointerAreaPaint={paintRelationPointerArea}
+          linkSource="source"
+          linkTarget="target"
+          linkColor={() => (graph.direction === "incoming" ? "rgba(2, 132, 199, 0.58)" : "rgba(5, 150, 105, 0.58)")}
+          linkWidth={() => 1.7}
+          linkDirectionalArrowLength={5}
+          linkDirectionalArrowRelPos={1}
+          linkDirectionalArrowColor={() => (graph.direction === "incoming" ? "#0284c7" : "#059669")}
+          enableNodeDrag={false}
+          enablePointerInteraction
+          cooldownTicks={90}
+          d3VelocityDecay={0.34}
+          d3AlphaDecay={0.04}
+          onNodeHover={(node) => setHoveredBlog(node?.original ?? null)}
+          onNodeClick={(node) => navigate(`/blogs/${node.blogId}`)}
+          showPointerCursor={(item) => Boolean(item && "blogId" in item)}
+        />
+      ) : null}
+      <div className="sr-only" aria-live="polite">
+        {renderGraph.nodes.map((node) => (
+          <span key={node.id}>{`${node.label} ${node.url}`}</span>
+        ))}
+      </div>
+      {hoveredBlog ? (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute left-4 top-4 z-30 max-w-[min(360px,calc(100%-2rem))] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-lg"
+        >
+          <div className="truncate font-medium text-slate-950">{hoveredBlog.title || hoveredBlog.domain}</div>
+          <div className="mt-1 break-all text-xs text-slate-500">{hoveredBlog.url || hoveredBlog.domain}</div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Render the paged blog association module.
+ *
+ * @param props Incoming and outgoing relation graphs.
+ * @returns Blog association section with two graph pages.
+ */
+function BlogAssociationSection({ detail }: { detail: BlogDetail }) {
+  const [activeGraph, setActiveGraph] = useState<"incoming" | "outgoing">("incoming");
+  const graph = detail.relationGraphs[activeGraph];
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="mb-4 flex items-center gap-2">
+        <Network className="h-5 w-5 text-sky-600" />
+        <h2 className="text-xl text-slate-950">博客关联</h2>
+      </div>
+      <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+        <button
+          type="button"
+          onClick={() => setActiveGraph("incoming")}
+          className={[
+            "rounded-md px-4 py-2 text-sm transition-colors",
+            activeGraph === "incoming" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-900",
+          ].join(" ")}
+        >
+          入链关系
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveGraph("outgoing")}
+          className={[
+            "rounded-md px-4 py-2 text-sm transition-colors",
+            activeGraph === "outgoing" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-900",
+          ].join(" ")}
+        >
+          出链关系
+        </button>
+      </div>
+      {graph.nodes.length > 1 ? (
+        <RelationGraphView graph={graph} />
+      ) : (
+        <div className="flex h-[260px] items-center justify-center rounded-lg bg-slate-50 text-sm text-slate-500">
+          暂无{activeGraph === "incoming" ? "入链" : "出链"}关联。
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
  * Render the public blog detail page.
  *
  * @returns Blog detail route UI.
@@ -83,8 +470,6 @@ export function BlogDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const numericBlogId = Number(blogId);
-  const relatedBlogs = detail?.relatedNodes ?? [];
-  const recommendedBlogs = detail?.recommendedBlogs ?? [];
 
   useEffect(() => {
     let isDisposed = false;
@@ -196,71 +581,13 @@ export function BlogDetailPage() {
                   <Network className="h-5 w-5" />
                 </div>
                 <div className="text-sm text-slate-500">直接相关博客</div>
-                <div className="mt-2 text-3xl text-slate-950">{formatCount(relatedBlogs.length)}</div>
+                <div className="mt-2 text-3xl text-slate-950">{formatCount(detail.relatedNodes.length)}</div>
               </div>
             </section>
 
-            <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="mb-4 flex items-center gap-2">
-                  <GitBranch className="h-5 w-5 text-slate-500" />
-                  <h2 className="text-xl text-slate-950">直接相关博客</h2>
-                </div>
-                {relatedBlogs.length > 0 ? (
-                  <div className="grid max-h-[520px] gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
-                    {relatedBlogs.map((blog) => (
-                      <BlogListItem key={blog.id} blog={blog} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-lg bg-slate-50 px-4 py-8 text-sm text-slate-500">暂无直接相关博客。</div>
-                )}
-              </div>
+            <DiscoveryPathSection path={detail.discoveryPath} />
 
-              <aside className="space-y-6">
-                <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="mb-4 flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-sky-600" />
-                    <h2 className="text-xl text-slate-950">推荐博客</h2>
-                  </div>
-                  {recommendedBlogs.length > 0 ? (
-                    <div className="space-y-3">
-                      {recommendedBlogs.slice(0, 6).map((blog) => (
-                        <BlogListItem
-                          key={blog.id}
-                          blog={blog}
-                          helperText={
-                            blog.viaBlogs.length > 0
-                              ? `通过 ${blog.viaBlogs.map((viaBlog) => viaBlog.title || viaBlog.domain).join("、")} 关联`
-                              : undefined
-                          }
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-lg bg-slate-50 px-4 py-6 text-sm text-slate-500">暂无推荐博客。</div>
-                  )}
-                </section>
-
-                <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-                  <h2 className="text-xl text-slate-950">基础信息</h2>
-                  <dl className="mt-4 space-y-3 text-sm">
-                    <div>
-                      <dt className="text-slate-500">Blog ID</dt>
-                      <dd className="mt-1 text-slate-950">{detail.id}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-slate-500">域名</dt>
-                      <dd className="mt-1 break-all text-slate-950">{detail.domain}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-slate-500">URL</dt>
-                      <dd className="mt-1 break-all text-slate-950">{detail.url}</dd>
-                    </div>
-                  </dl>
-                </section>
-              </aside>
-            </section>
+            <BlogAssociationSection detail={detail} />
           </div>
         ) : null}
       </main>

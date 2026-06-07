@@ -62,11 +62,47 @@ export interface RecommendedBlog extends GraphNode {
   viaBlogs: GraphNode[];
 }
 
+export interface BlogDiscoveryStep {
+  blog: Pick<GraphNode, "id" | "domain" | "title" | "iconUrl"> | null;
+  blogId: number;
+  url: string;
+  domain: string;
+  acceptedBy: string | null;
+  acceptedLabel: string | null;
+  rawId: number | null;
+  rawSourceBlogId: number | null;
+  rawAcceptedBy: string | null;
+  discoveredAt: string | null;
+}
+
+export interface BlogDiscoveryPath {
+  mode: "manual" | "crawled";
+  originSource: string | null;
+  originLabel: string;
+  targetSource: string | null;
+  truncated: boolean;
+  steps: BlogDiscoveryStep[];
+}
+
+export interface BlogRelationGraph {
+  direction: "incoming" | "outgoing";
+  focusBlogId: number;
+  depth: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface BlogDetail extends GraphNode {
   incomingLinks: number;
   outgoingLinks: number;
   relatedNodes: GraphNode[];
+  outgoingNodes: GraphNode[];
   recommendedBlogs: RecommendedBlog[];
+  discoveryPath: BlogDiscoveryPath | null;
+  relationGraphs: {
+    incoming: BlogRelationGraph;
+    outgoing: BlogRelationGraph;
+  };
 }
 
 export interface StatsData {
