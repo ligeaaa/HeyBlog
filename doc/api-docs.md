@@ -528,9 +528,9 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 同一个 `event_uuid` 重复上报时不会重复计数，响应中会返回 `duplicate: true`
 - `entrance_kind` 与 `entrance_url` 为必填字段。`entrance_kind` 使用稳定、可聚合的路口种类，例如 `random_blog_page`、`home_search_result`、`blog_detail_discovery_path`、`blog_detail_relation_graph`；`entrance_url` 保留触发动作时的原始页面 URL 或上下文 URL，便于追溯具体来源。
-- 若传入 `request_uuid` 或 `impression_id`，服务端会校验它们存在且与 `blog_id` 匹配
+- 若传入 `request_uuid` 或 `impression_id`，服务端会校验它们存在且与当前 blog 的 `normalized_url` 匹配
 - 前端不应因为事件上报失败而阻塞用户跳转或标注主流程
-- 持久化时事件落到 `blog_interactions`，其中 `entrance_kind` 与 `entrance_url` 单独存列并建立索引，便于按稳定路口维度统计详情打开、外链打开和标签选择。
+- 持久化时事件落到 `blog_interactions`，以 `normalized_url` 作为博客归因键；其中 `entrance_kind` 与 `entrance_url` 单独存列并建立索引，便于按稳定路口维度统计详情打开、外链打开和标签选择。
 
 错误语义：
 
@@ -1291,7 +1291,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - 仅允许在 crawler 运行器不处于 `starting/running/stopping` 时调用
 - 若运行器忙碌，返回 `409`，错误详情为 `crawler_busy`
 - 会清空 `blogs`、`edges`、`raw_discovered_urls`
-- 不会删除人工 label 相关数据：`blog_labels(normalized_url, title, label_id, created_time, updated_time)` 和 `blog_label_tags` 会被保留
+- 不会删除 users、sessions、seeds、人工 label、recommendation 事件等其它表；`seeds.blog_id` 会置空以解除到 `blogs` 的引用
 - backend 在数据库重置后会尝试调用 `search /internal/search/reindex`
 - 即使 search 重建失败，数据库重置结果仍会返回，并附带 `search_reindexed=false`
 
@@ -1302,13 +1302,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
   "ok": true,
   "blogs_deleted": 12,
   "edges_deleted": 34,
+  "raw_discovered_urls_deleted": 56,
   "logs_deleted": 0,
-  "blog_link_labels_deleted": 0,
-  "blog_label_tags_deleted": 0,
-  "blog_labels_preserved": 8,
-  "blog_label_subjects_preserved": 0,
-  "blog_link_labels_preserved": 13,
-  "blog_label_tags_preserved": 6,
   "search_reindexed": true,
   "search": {
     "blogs": 0,
@@ -1573,13 +1568,13 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 ### `POST /internal/recommendations/random-blog-batches`
 
-用途：为 backend 创建随机博客推荐批次，并写入 `recommendation_requests` 与 `recommendation_impressions`。
+用途：为 backend 创建随机博客推荐批次，并写入 `recommendation_requests` 与 `recommendation_impressions`；曝光表以 `normalized_url` 持久归因，不保存 `blog_id`。
 
 请求体字段与 `POST /api/recommendations/random-blog-batches` 一致，额外允许 backend 传入已解析的 `user_id`。
 
 ### `POST /internal/recommendation-events`
 
-用途：为 backend 写入幂等推荐交互事件，数据落到 `blog_interactions`。
+用途：为 backend 写入幂等推荐交互事件，数据落到 `blog_interactions`，并以 `normalized_url` 持久归因。
 
 请求体字段与 `POST /api/recommendation-events` 一致，额外允许 backend 传入已解析的 `user_id`。其中 `entrance_kind` 与 `entrance_url` 仍为必填字段，persistence-api 会清洗长度并写入 `blog_interactions.entrance_kind` / `blog_interactions.entrance_url`。
 
@@ -1846,9 +1841,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 行为说明：
 
 - 清空 `blogs`、`edges`、`raw_discovered_urls`
-- 保留 URL-keyed 人工 label 数据与 tag 定义
+- 不删除其它表；`seeds.blog_id` 会置空以解除到 `blogs` 的引用
 - `logs_deleted` 固定返回 `0`
-- 重置主键计数器
 
 响应：
 
@@ -1857,13 +1851,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
   "ok": true,
   "blogs_deleted": 12,
   "edges_deleted": 34,
-  "logs_deleted": 0,
-  "blog_link_labels_deleted": 0,
-  "blog_label_tags_deleted": 0,
-  "blog_labels_preserved": 8,
-  "blog_label_subjects_preserved": 0,
-  "blog_link_labels_preserved": 13,
-  "blog_label_tags_preserved": 6
+  "raw_discovered_urls_deleted": 56,
+  "logs_deleted": 0
 }
 ```
 

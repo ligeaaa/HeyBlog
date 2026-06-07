@@ -78,7 +78,7 @@ def test_build_repository_enables_schema_sync_for_dsn(monkeypatch: pytest.Monkey
 
 
 def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -> None:
-    """Reset should wipe graph data while retaining durable seed records."""
+    """Reset should wipe only graph queue tables while retaining other records."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
     first_blog_id, inserted = repository.upsert_blog(
         url="https://blog.example.com/",
@@ -95,11 +95,24 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
         domain="friend.example.com",
     )
     assert inserted is True
+    repository.mark_blog_result(
+        blog_id=first_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="Blog Example",
+    )
     repository.add_edge(
         from_blog_id=first_blog_id,
         to_blog_id=second_blog_id,
         link_url_raw="https://friend.example.com/",
         link_text="Friend Blog",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=first_blog_id,
+        normalized_url="https://raw.example.com/",
+        status="success",
     )
     repository.add_log(
         blog_id=first_blog_id,
@@ -107,19 +120,42 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
         result="ok",
         message="This should not be persisted",
     )
+    user = repository.register_user(email="reset-user@example.com", password="long enough")
+    batch = repository.create_random_recommendation_batch(
+        count=1,
+        visitor_id="visitor-reset",
+        session_id="session-reset",
+        source="reset-test",
+        page_url="http://localhost/reset-test",
+    )
+    recommendation_item = batch["items"][0]
+    repository.record_blog_interaction(
+        event_uuid="reset-event",
+        event_type="detail_open",
+        blog_id=recommendation_item["id"],
+        visitor_id="visitor-reset",
+        session_id="session-reset",
+        entrance_kind="reset_test",
+        entrance_url="http://localhost/reset-test",
+        request_uuid=recommendation_item["request_uuid"],
+        impression_id=recommendation_item["impression_id"],
+        interaction_order=1,
+    )
 
     result = repository.reset()
 
     assert result["ok"] is True
     assert result["blogs_deleted"] == 2
     assert result["edges_deleted"] == 1
+    assert result["raw_discovered_urls_deleted"] == 1
     assert result["logs_deleted"] == 0
-    assert result["seeds_preserved"] == 1
-    assert result["blog_link_labels_deleted"] == 0
-    assert result["blog_label_tags_deleted"] == 0
-    assert result["recommendation_interactions_deleted"] == 0
-    assert result["recommendation_impressions_deleted"] == 0
-    assert result["recommendation_requests_deleted"] == 0
+    assert set(result) == {
+        "ok",
+        "blogs_deleted",
+        "edges_deleted",
+        "raw_discovered_urls_deleted",
+        "logs_deleted",
+    }
     assert repository.list_blogs() == []
     assert repository.list_edges() == []
     assert repository.list_logs() == []
@@ -130,6 +166,10 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
         assert seed is not None
         assert seed.normalized_url == "https://blog.example.com/"
         assert seed.blog_id is None
+        assert repository.get_user_by_session_token(token=user["token"]) is not None
+        assert session.scalar(select(RecommendationRequestModel).limit(1)) is not None
+        assert session.scalar(select(RecommendationImpressionModel).limit(1)) is not None
+        assert session.scalar(select(BlogInteractionModel).limit(1)) is not None
 
     new_blog_id, inserted = repository.upsert_blog(
         url="https://reset.example.com/",
@@ -138,6 +178,16 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
     )
     assert inserted is True
     assert new_blog_id == 1
+    restored_blog_id, inserted = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+    assert inserted is True
+    restored_stats = repository.get_blog_recommendation_stats(restored_blog_id)
+    assert restored_stats is not None
+    assert restored_stats["impressions"] == 1
+    assert restored_stats["detail_opens"] == 1
 
 
 def test_repository_register_login_and_session_profile(tmp_path: Path) -> None:
@@ -1131,8 +1181,14 @@ def test_repository_persists_random_recommendation_batch_and_interaction_stats(t
     assert strategy_stats["by_strategy"][0]["clicks"] == 1
     with session_scope(repository.session_factory) as session:
         assert session.scalar(select(RecommendationRequestModel).limit(1)) is not None
-        assert session.scalar(select(RecommendationImpressionModel).limit(1)) is not None
-        assert session.scalar(select(BlogInteractionModel).limit(1)) is not None
+        stored_impression = session.scalar(select(RecommendationImpressionModel).limit(1))
+        stored_interaction = session.scalar(select(BlogInteractionModel).limit(1))
+        assert stored_impression is not None
+        assert stored_impression.normalized_url == first["normalized_url"]
+        assert "blog_id" not in RecommendationImpressionModel.__table__.columns
+        assert stored_interaction is not None
+        assert stored_interaction.normalized_url == first["normalized_url"]
+        assert "blog_id" not in BlogInteractionModel.__table__.columns
 
 
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:
@@ -1493,7 +1549,7 @@ def test_repository_blog_labels_are_keyed_by_url_across_reset_and_recrawl(tmp_pa
     labeled = repository.list_blog_labeling_candidates(label="blog", labeled=True)
 
     assert first["blog_id"] == first_raw_id
-    assert reset["blog_link_labels_preserved"] == 1
+    assert reset["raw_discovered_urls_deleted"] == 1
     assert second_raw_id != first_raw_id
     assert [row["id"] for row in labeled["items"]] == [second_raw_id]
     assert labeled["items"][0]["label_id"] == {"1": 1}
@@ -1556,11 +1612,8 @@ def test_repository_blog_labeling_upsert_rejects_non_labelable_raw_targets_and_r
     assert labeled["items"][0]["label_id"] == {"1": 1, "4": 1}
 
     reset = repository.reset()
-    assert reset["blog_link_labels_deleted"] == 0
-    assert reset["blog_label_tags_deleted"] == 0
-    assert reset["blog_link_labels_preserved"] == 1
-    assert reset["blog_labels_preserved"] == 1
-    assert reset["blog_label_tags_preserved"] >= 6
+    assert reset["blogs_deleted"] == 2
+    assert reset["raw_discovered_urls_deleted"] == 1
     assert repository.list_blog_labeling_candidates()["items"] == []
     with session_scope(repository.session_factory) as session:
         label = session.scalar(
@@ -1568,6 +1621,8 @@ def test_repository_blog_labeling_upsert_rejects_non_labelable_raw_targets_and_r
         )
         assert label is not None
         assert label.label_id == {"1": 1, "4": 1}
+        assert session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == "blog")) is not None
+        assert session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == "unknown")) is not None
         assert set(label.__table__.columns.keys()) == {
             "normalized_url",
             "title",

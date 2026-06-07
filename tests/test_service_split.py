@@ -244,8 +244,9 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     reset = client.post("/internal/database/reset")
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 2
+    assert reset.json()["edges_deleted"] == 1
+    assert reset.json()["raw_discovered_urls_deleted"] == 0
     assert reset.json()["logs_deleted"] == 0
-    assert reset.json()["blog_link_labels_deleted"] == 0
 
     empty_catalog = client.get("/internal/blogs/catalog")
     assert empty_catalog.status_code == 200
@@ -1556,12 +1557,8 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "ok": True,
                 "blogs_deleted": 3,
                 "edges_deleted": 4,
+                "raw_discovered_urls_deleted": 5,
                 "logs_deleted": 0,
-                "blog_link_labels_deleted": 0,
-                "blog_label_tags_deleted": 0,
-                "blog_label_subjects_preserved": 1,
-                "blog_link_labels_preserved": 1,
-                "blog_label_tags_preserved": 2,
             },
             "requeue_failed_blogs": lambda self: {"requeued": 7},
         },
@@ -1740,10 +1737,8 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
     reset = client.post("/api/admin/database/reset", headers=admin_headers())
     assert reset.status_code == 200
     assert reset.json()["blogs_deleted"] == 3
-    assert reset.json()["blog_link_labels_deleted"] == 0
-    assert reset.json()["blog_label_tags_deleted"] == 0
-    assert reset.json()["blog_link_labels_preserved"] == 1
-    assert reset.json()["blog_label_tags_preserved"] == 2
+    assert reset.json()["edges_deleted"] == 4
+    assert reset.json()["raw_discovered_urls_deleted"] == 5
     assert reset.json()["search_reindexed"] is True
     assert search.reindex_calls == 3
 
@@ -1920,7 +1915,7 @@ def test_backend_blog_labeling_surfaces_upstream_errors() -> None:
             return []
 
         def reset(self) -> dict[str, object]:
-            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "raw_discovered_urls_deleted": 0, "logs_deleted": 0}
 
     app = create_backend_app(
         BackendState(persistence=LabelingValidationStub(), crawler=StubCrawler(), search=StubSearch(), admin_token="secret-token")
@@ -1995,7 +1990,7 @@ def test_backend_blog_catalog_surfaces_upstream_validation_errors() -> None:
             return []
 
         def reset(self) -> dict[str, object]:
-            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "raw_discovered_urls_deleted": 0, "logs_deleted": 0}
 
     app = create_backend_app(
         BackendState(persistence=CatalogValidationStub(), crawler=StubCrawler(), search=StubSearch())
@@ -2071,7 +2066,7 @@ def test_backend_lookup_and_user_seed_surface_upstream_validation_errors() -> No
             return []
 
         def reset(self) -> dict[str, object]:
-            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "raw_discovered_urls_deleted": 0, "logs_deleted": 0}
 
     app = create_backend_app(
         BackendState(persistence=LookupValidationStub(), crawler=StubCrawler(), search=StubSearch())
@@ -2136,7 +2131,7 @@ def test_backend_graph_neighbors_surfaces_upstream_not_found() -> None:
             return []
 
         def reset(self) -> dict[str, object]:
-            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "logs_deleted": 0}
+            return {"ok": True, "blogs_deleted": 0, "edges_deleted": 0, "raw_discovered_urls_deleted": 0, "logs_deleted": 0}
 
     app = create_backend_app(
         BackendState(persistence=GraphNeighborNotFoundStub(), crawler=StubCrawler(), search=StubSearch())
@@ -2184,6 +2179,7 @@ def test_backend_database_reset_requires_idle_runtime() -> None:
                 "ok": True,
                 "blogs_deleted": 0,
                 "edges_deleted": 0,
+                "raw_discovered_urls_deleted": 0,
                 "logs_deleted": 0,
             },
         },

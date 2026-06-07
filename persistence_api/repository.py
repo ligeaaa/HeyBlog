@@ -3532,7 +3532,6 @@ class SQLAlchemyRepository:
                 blog_id = _business_blog_id(blog)
                 impression = RecommendationImpressionModel(
                     request_id=recommendation.id,
-                    blog_id=int(blog_id),
                     normalized_url=str(blog.normalized_url),
                     position=position,
                     score=None,
@@ -3580,7 +3579,6 @@ class SQLAlchemyRepository:
             "event_uuid": interaction.event_uuid,
             "request_id": interaction.request_id,
             "impression_id": interaction.impression_id,
-            "blog_id": interaction.blog_id,
             "normalized_url": interaction.normalized_url,
             "event_type": interaction.event_type,
             "position": interaction.position,
@@ -3670,7 +3668,7 @@ class SQLAlchemyRepository:
                 impression = session.get(RecommendationImpressionModel, impression_id)
                 if impression is None:
                     raise ValueError("recommendation_impression_not_found")
-                if int(impression.blog_id) != int(blog_id):
+                if str(impression.normalized_url) != str(blog.normalized_url):
                     raise ValueError("recommendation_impression_blog_mismatch")
                 if recommendation is not None and int(impression.request_id) != int(recommendation.id):
                     raise ValueError("recommendation_impression_request_mismatch")
@@ -3680,7 +3678,6 @@ class SQLAlchemyRepository:
                 event_uuid=clean_event_uuid,
                 request_id=recommendation.id if recommendation is not None else None,
                 impression_id=impression.id if impression is not None else None,
-                blog_id=int(blog_id),
                 normalized_url=str(blog.normalized_url),
                 event_type=clean_event_type,
                 position=position,
@@ -3714,7 +3711,7 @@ class SQLAlchemyRepository:
             impressions = int(
                 session.scalar(
                     select(func.count(RecommendationImpressionModel.id)).where(
-                        RecommendationImpressionModel.blog_id == blog_id
+                        RecommendationImpressionModel.normalized_url == blog.normalized_url
                     )
                 )
                 or 0
@@ -3723,20 +3720,22 @@ class SQLAlchemyRepository:
                 str(event_type): int(count or 0)
                 for event_type, count in session.execute(
                     select(BlogInteractionModel.event_type, func.count(BlogInteractionModel.id))
-                    .where(BlogInteractionModel.blog_id == blog_id)
+                    .where(BlogInteractionModel.normalized_url == blog.normalized_url)
                     .group_by(BlogInteractionModel.event_type)
                 ).all()
             }
             unique_visitors = int(
                 session.scalar(
                     select(func.count(func.distinct(BlogInteractionModel.visitor_id))).where(
-                        BlogInteractionModel.blog_id == blog_id
+                        BlogInteractionModel.normalized_url == blog.normalized_url
                     )
                 )
                 or 0
             )
             last_interaction_at = session.scalar(
-                select(func.max(BlogInteractionModel.created_at)).where(BlogInteractionModel.blog_id == blog_id)
+                select(func.max(BlogInteractionModel.created_at)).where(
+                    BlogInteractionModel.normalized_url == blog.normalized_url
+                )
             )
             clicks = int(event_counts.get("click", 0))
             detail_opens = int(event_counts.get("detail_open", 0))
@@ -4683,21 +4682,10 @@ class SQLAlchemyRepository:
         with session_scope(self.session_factory) as session:
             blogs_deleted = _count_selectable_rows(session, BlogModel)
             edges_deleted = _count_selectable_rows(session, EdgeModel)
-            users_preserved = _count_selectable_rows(session, UserModel)
-            user_sessions_preserved = _count_selectable_rows(session, UserSessionModel)
-            labels_preserved = _count_selectable_rows(session, BlogLabelModel)
-            user_labels_preserved = _count_selectable_rows(session, BlogUserLabelModel)
-            user_label_selections_preserved = _count_selectable_rows(session, BlogUserLabelSelectionModel)
-            label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
-            seeds_preserved = _count_selectable_rows(session, SeedModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
-            recommendation_interactions_deleted = _count_selectable_rows(session, BlogInteractionModel)
-            recommendation_impressions_deleted = _count_selectable_rows(session, RecommendationImpressionModel)
-            recommendation_requests_deleted = _count_selectable_rows(session, RecommendationRequestModel)
+            # Seeds are durable configuration, but their nullable blog pointer
+            # must be cleared before deleting the referenced blog rows.
             session.query(SeedModel).update({SeedModel.blog_id: None})
-            session.query(BlogInteractionModel).delete()
-            session.query(RecommendationImpressionModel).delete()
-            session.query(RecommendationRequestModel).delete()
             session.query(RawDiscoveredUrlModel).delete()
             session.query(EdgeModel).delete()
             session.query(BlogModel).delete()
@@ -4705,22 +4693,8 @@ class SQLAlchemyRepository:
                 "ok": True,
                 "blogs_deleted": blogs_deleted,
                 "edges_deleted": edges_deleted,
-                "logs_deleted": 0,
-                "users_preserved": users_preserved,
-                "user_sessions_preserved": user_sessions_preserved,
-                "blog_link_labels_deleted": 0,
-                "blog_label_tags_deleted": 0,
-                "blog_labels_preserved": labels_preserved,
-                "blog_labels_userlabel_preserved": user_labels_preserved,
-                "blog_user_label_selections_preserved": user_label_selections_preserved,
-                "blog_label_subjects_preserved": 0,
-                "blog_link_labels_preserved": labels_preserved,
-                "blog_label_tags_preserved": label_tags_preserved,
-                "seeds_preserved": seeds_preserved,
                 "raw_discovered_urls_deleted": raw_urls_deleted,
-                "recommendation_interactions_deleted": recommendation_interactions_deleted,
-                "recommendation_impressions_deleted": recommendation_impressions_deleted,
-                "recommendation_requests_deleted": recommendation_requests_deleted,
+                "logs_deleted": 0,
             }
 
 

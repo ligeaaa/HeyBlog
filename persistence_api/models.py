@@ -303,8 +303,8 @@ class RecommendationImpressionModel(Base):
     __tablename__ = "recommendation_impressions"
     __table_args__ = (
         UniqueConstraint("request_id", "position", name="uq_recommendation_impression_request_position"),
-        UniqueConstraint("request_id", "blog_id", name="uq_recommendation_impression_request_blog"),
-        Index("ix_recommendation_impressions_blog_created", "blog_id", "created_at"),
+        UniqueConstraint("request_id", "normalized_url", name="uq_recommendation_impression_request_url"),
+        Index("ix_recommendation_impressions_url_created", "normalized_url", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -313,7 +313,6 @@ class RecommendationImpressionModel(Base):
         nullable=False,
         index=True,
     )
-    blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False, index=True)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -334,7 +333,7 @@ class BlogInteractionModel(Base):
 
     __tablename__ = "blog_interactions"
     __table_args__ = (
-        Index("ix_blog_interactions_blog_event_created", "blog_id", "event_type", "created_at"),
+        Index("ix_blog_interactions_url_event_created", "normalized_url", "event_type", "created_at"),
         Index("ix_blog_interactions_request_event", "request_id", "event_type"),
     )
 
@@ -350,7 +349,6 @@ class BlogInteractionModel(Base):
         nullable=True,
         index=True,
     )
-    blog_id: Mapped[int] = mapped_column(ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False, index=True)
     normalized_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)

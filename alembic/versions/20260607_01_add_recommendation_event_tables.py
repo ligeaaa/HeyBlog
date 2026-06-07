@@ -87,22 +87,20 @@ def upgrade() -> None:
                 sa.ForeignKey("recommendation_requests.id", ondelete="CASCADE"),
                 nullable=False,
             ),
-            sa.Column("blog_id", sa.Integer(), sa.ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False),
             sa.Column("normalized_url", sa.Text(), nullable=False),
             sa.Column("position", sa.Integer(), nullable=False),
             sa.Column("score", sa.Integer(), nullable=True),
             sa.Column("reason_json", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.UniqueConstraint("request_id", "position", name="uq_recommendation_impression_request_position"),
-            sa.UniqueConstraint("request_id", "blog_id", name="uq_recommendation_impression_request_blog"),
+            sa.UniqueConstraint("request_id", "normalized_url", name="uq_recommendation_impression_request_url"),
         )
         op.create_index("ix_recommendation_impressions_request_id", "recommendation_impressions", ["request_id"])
-        op.create_index("ix_recommendation_impressions_blog_id", "recommendation_impressions", ["blog_id"])
         op.create_index("ix_recommendation_impressions_normalized_url", "recommendation_impressions", ["normalized_url"])
         op.create_index(
-            "ix_recommendation_impressions_blog_created",
+            "ix_recommendation_impressions_url_created",
             "recommendation_impressions",
-            ["blog_id", "created_at"],
+            ["normalized_url", "created_at"],
         )
 
     tables = _tables()
@@ -123,7 +121,6 @@ def upgrade() -> None:
                 sa.ForeignKey("recommendation_impressions.id", ondelete="SET NULL"),
                 nullable=True,
             ),
-            sa.Column("blog_id", sa.Integer(), sa.ForeignKey("blogs.blog_id", ondelete="CASCADE"), nullable=False),
             sa.Column("normalized_url", sa.Text(), nullable=False),
             sa.Column("event_type", sa.Text(), nullable=False),
             sa.Column("position", sa.Integer(), nullable=True),
@@ -141,7 +138,6 @@ def upgrade() -> None:
         op.create_index("ix_blog_interactions_event_uuid", "blog_interactions", ["event_uuid"])
         op.create_index("ix_blog_interactions_request_id", "blog_interactions", ["request_id"])
         op.create_index("ix_blog_interactions_impression_id", "blog_interactions", ["impression_id"])
-        op.create_index("ix_blog_interactions_blog_id", "blog_interactions", ["blog_id"])
         op.create_index("ix_blog_interactions_normalized_url", "blog_interactions", ["normalized_url"])
         op.create_index("ix_blog_interactions_event_type", "blog_interactions", ["event_type"])
         op.create_index("ix_blog_interactions_entrance_kind", "blog_interactions", ["entrance_kind"])
@@ -150,9 +146,9 @@ def upgrade() -> None:
         op.create_index("ix_blog_interactions_user_id", "blog_interactions", ["user_id"])
         op.create_index("ix_blog_interactions_session_id", "blog_interactions", ["session_id"])
         op.create_index(
-            "ix_blog_interactions_blog_event_created",
+            "ix_blog_interactions_url_event_created",
             "blog_interactions",
-            ["blog_id", "event_type", "created_at"],
+            ["normalized_url", "event_type", "created_at"],
         )
         op.create_index("ix_blog_interactions_request_event", "blog_interactions", ["request_id", "event_type"])
 
