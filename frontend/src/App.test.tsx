@@ -707,6 +707,23 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   });
 });
 
+test("lets random blog users open one blog detail route", async () => {
+  window.history.replaceState({}, "", "/random");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[0]);
+
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/blogs/32"), expect.anything());
+  });
+  expect(await screen.findByRole("heading", { name: "Extra Blog 32" })).toBeInTheDocument();
+});
+
 test("lets visualization users choose a graph size with a blog-count slider", async () => {
   window.history.replaceState({}, "", "/visualization");
 

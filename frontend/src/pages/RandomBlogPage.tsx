@@ -1,5 +1,6 @@
-import { Loader2, RefreshCw } from "lucide-react";
+import { Eye, Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { BlogCard } from "../components/BlogCard";
 import { Navigation } from "../components/Navigation";
@@ -21,6 +22,7 @@ const RANDOM_LABELS = [
  * @returns Random finished-blog discovery page.
  */
 export function RandomBlogPage() {
+  const navigate = useNavigate();
   const [blogs, setBlogs] = useState<BlogCatalogItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -96,6 +98,15 @@ export function RandomBlogPage() {
     }
   }
 
+  /**
+   * Open the internal blog detail route for a random blog card.
+   *
+   * @param blog Blog selected from the random catalog.
+   */
+  function openBlogDetail(blog: BlogCatalogItem) {
+    navigate(`/blogs/${blog.id}`);
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-white">
@@ -136,6 +147,14 @@ export function RandomBlogPage() {
         <section className="mx-auto grid max-w-6xl grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
           {blogs.map((blog) => (
             <BlogCard key={blog.id} blog={blog}>
+              <button
+                type="button"
+                onClick={() => openBlogDetail(blog)}
+                className="mb-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-950 px-3 text-sm text-white transition-colors hover:bg-slate-800"
+              >
+                <Eye className="h-4 w-4" />
+                查看详情
+              </button>
               <div className="grid grid-cols-4 gap-2">
                 {RANDOM_LABELS.map((label) => {
                   const isSaving = savingLabelKey === `${blog.id}:${label.slug}`;
