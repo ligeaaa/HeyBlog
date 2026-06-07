@@ -9,6 +9,7 @@ interface BlogDetailLinkProps extends Omit<ButtonHTMLAttributes<HTMLButtonElemen
   entranceUrl: string;
   children: ReactNode;
   eventAttributes?: Record<string, unknown>;
+  openInNewTab?: boolean;
 }
 
 /**
@@ -19,6 +20,7 @@ interface BlogDetailLinkProps extends Omit<ButtonHTMLAttributes<HTMLButtonElemen
  * @param entranceUrl Raw entry-point URL for analytics.
  * @param children Visible button content.
  * @param eventAttributes Optional event metadata sent with the interaction.
+ * @param openInNewTab Whether to open the detail route in a new browser tab.
  * @returns Button that records `detail_open` and navigates to `/blogs/:id`.
  */
 export function BlogDetailLink({
@@ -27,6 +29,7 @@ export function BlogDetailLink({
   entranceUrl,
   children,
   eventAttributes,
+  openInNewTab,
   ...buttonProps
 }: BlogDetailLinkProps) {
   const navigate = useNavigate();
@@ -36,7 +39,7 @@ export function BlogDetailLink({
       {...buttonProps}
       type={buttonProps.type ?? "button"}
       onClick={() => {
-        openTrackedBlogDetail(navigate, blog, entrance, eventAttributes);
+        openTrackedBlogDetail(navigate, blog, entrance, eventAttributes, { newTab: openInNewTab });
       }}
     >
       {children}

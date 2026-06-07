@@ -758,8 +758,10 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   });
 });
 
-test("lets random blog users open one blog detail route", async () => {
+test("lets random blog users open one blog detail route in a new tab", async () => {
   window.history.replaceState({}, "", "/random");
+  const openMock = vi.fn();
+  vi.stubGlobal("open", openMock);
 
   render(<App />);
 
@@ -769,9 +771,6 @@ test("lets random blog users open one blog detail route", async () => {
 
   fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[0]);
 
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/blogs/32"), expect.anything());
-  });
   await waitFor(() => {
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/api/recommendation-events"),
@@ -791,7 +790,9 @@ test("lets random blog users open one blog detail route", async () => {
           String(init?.body).includes('"entrance_url"'),
       ),
   ).toBe(true);
-  expect(await screen.findByRole("heading", { name: "Extra Blog 32" })).toBeInTheDocument();
+  expect(openMock).toHaveBeenCalledWith("/blogs/32", "_blank", "noopener,noreferrer");
+  expect(window.location.pathname).toBe("/random");
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/32"), expect.anything());
 });
 
 test("records random blog external URL opens as recommendation interactions", async () => {

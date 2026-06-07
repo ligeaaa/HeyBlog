@@ -166,6 +166,7 @@ export function RandomBlogPage() {
                 blog={blog}
                 entranceKind={RANDOM_PAGE_ENTRANCE_KIND}
                 entranceUrl={window.location.href}
+                openInNewTab
                 className="mb-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-950 px-3 text-sm text-white transition-colors hover:bg-slate-800"
               >
                 <Eye className="h-4 w-4" />

@@ -121,13 +121,20 @@ export function recordBlogInteraction(
  * @param blog Blog target whose detail route should open.
  * @param entrance Required entry-point metadata for later aggregation.
  * @param attributes Optional event metadata.
+ * @param options Optional browser navigation behavior.
  */
 export function openTrackedBlogDetail(
   navigate: NavigateFunction,
   blog: BlogCatalogItem | GraphNode,
   entrance: BlogInteractionEntrance,
   attributes?: Record<string, unknown>,
+  options?: { newTab?: boolean },
 ) {
   recordBlogInteraction(blogInteractionTarget(blog), "detail_open", entrance, attributes);
-  navigate(`/blogs/${blog.id}`);
+  const detailPath = `/blogs/${blog.id}`;
+  if (options?.newTab) {
+    window.open(detailPath, "_blank", "noopener,noreferrer");
+    return;
+  }
+  navigate(detailPath);
 }
