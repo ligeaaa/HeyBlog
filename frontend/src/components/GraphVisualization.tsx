@@ -10,10 +10,12 @@ const GRAPH_RENDER_MIN_STABILITY_TICKS = 80;
 const GRAPH_RENDER_STABLE_SAMPLE_TICKS = 20;
 const GRAPH_RENDER_AVERAGE_MOVEMENT_THRESHOLD = 0.15;
 const GRAPH_RENDER_MAX_MOVEMENT_THRESHOLD = 1;
-const GRAPH_LINK_DISTANCE = 58;
-const GRAPH_LINK_STRENGTH = 0.56;
-const GRAPH_CHARGE_STRENGTH = -190;
-const GRAPH_CHARGE_DISTANCE_MAX = 720;
+const GRAPH_LINK_DISTANCE = 96;
+const GRAPH_LINK_STRENGTH = 0.24;
+const GRAPH_CHARGE_STRENGTH = -280;
+const GRAPH_CHARGE_DISTANCE_MAX = 1400;
+const GRAPH_SEEDED_GROUP_SIZE = 18;
+const GRAPH_SEEDED_LAYOUT_SPACING = 360;
 
 interface GraphVisualizationProps {
   data: GraphData;
@@ -150,6 +152,169 @@ function targetIdOf(link: RenderLink): string {
   return typeof link.target === "object" ? link.target.id : String(link.target);
 }
 
+/**
+ * Build an undirected adjacency map from renderable links.
+ *
+ * @param nodes Nodes that can be displayed in the graph.
+ * @param links Links whose endpoints both exist in the graph.
+ * @returns Map keyed by node id with neighboring node ids.
+ */
+function buildAdjacency(nodes: RenderNode[], links: RenderLink[]): Map<string, Set<string>> {
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    adjacency.set(node.id, new Set());
+  }
+
+  for (const link of links) {
+    const source = sourceIdOf(link);
+    const target = targetIdOf(link);
+    if (source === target || !adjacency.has(source) || !adjacency.has(target)) {
+      continue;
+    }
+    adjacency.get(source)?.add(target);
+    adjacency.get(target)?.add(source);
+  }
+
+  return adjacency;
+}
+
+/**
+ * Find deterministic weakly connected components for initial graph placement.
+ *
+ * @param nodes Nodes that can be displayed in the graph.
+ * @param adjacency Undirected adjacency map.
+ * @returns Components sorted by size and id for stable layout.
+ */
+function findConnectedComponents(nodes: RenderNode[], adjacency: Map<string, Set<string>>): string[][] {
+  const visited = new Set<string>();
+  const nodeIds = nodes.map((node) => node.id).sort((left, right) => Number(left) - Number(right));
+  const components: string[][] = [];
+
+  for (const nodeId of nodeIds) {
+    if (visited.has(nodeId)) {
+      continue;
+    }
+
+    const component: string[] = [];
+    const queue = [nodeId];
+    visited.add(nodeId);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      component.push(current);
+      const neighbors = Array.from(adjacency.get(current) ?? []).sort((left, right) => Number(left) - Number(right));
+      for (const neighbor of neighbors) {
+        if (visited.has(neighbor)) {
+          continue;
+        }
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+
+    components.push(component);
+  }
+
+  return components.sort((left, right) => right.length - left.length || Number(left[0]) - Number(right[0]));
+}
+
+/**
+ * Split a large connected component into deterministic layout groups.
+ *
+ * @param component Node ids in one connected component.
+ * @param adjacency Undirected adjacency map.
+ * @returns Layout groups used only for initial spatial seeding.
+ */
+function splitComponentIntoLayoutGroups(component: string[], adjacency: Map<string, Set<string>>): string[][] {
+  if (component.length <= GRAPH_SEEDED_GROUP_SIZE) {
+    return [component];
+  }
+
+  const seedCount = Math.max(2, Math.ceil(component.length / GRAPH_SEEDED_GROUP_SIZE));
+  const componentIds = new Set(component);
+  const seeds = component
+    .slice()
+    .sort((left, right) => {
+      const degreeDelta = (adjacency.get(right)?.size ?? 0) - (adjacency.get(left)?.size ?? 0);
+      return degreeDelta || Number(left) - Number(right);
+    })
+    .slice(0, seedCount);
+
+  const groupByNodeId = new Map<string, number>();
+  const queues = seeds.map((seed, index) => {
+    groupByNodeId.set(seed, index);
+    return [seed];
+  });
+
+  for (let queueIndex = 0; queues.some((queue) => queue.length > 0); queueIndex = (queueIndex + 1) % queues.length) {
+    const current = queues[queueIndex].shift();
+    if (!current) {
+      continue;
+    }
+
+    const neighbors = Array.from(adjacency.get(current) ?? []).sort((left, right) => Number(left) - Number(right));
+    for (const neighbor of neighbors) {
+      if (!componentIds.has(neighbor) || groupByNodeId.has(neighbor)) {
+        continue;
+      }
+      groupByNodeId.set(neighbor, queueIndex);
+      queues[queueIndex].push(neighbor);
+    }
+  }
+
+  const groups = seeds.map((): string[] => []);
+  for (const nodeId of component) {
+    const groupIndex = groupByNodeId.get(nodeId) ?? 0;
+    groups[groupIndex].push(nodeId);
+  }
+
+  return groups.filter((group) => group.length > 0);
+}
+
+/**
+ * Seed deterministic 3D positions so force layout starts from separated regions.
+ *
+ * @param nodes Nodes to position.
+ * @param links Links used to infer components and layout groups.
+ * @returns Nodes with initial x/y/z coordinates.
+ */
+export function seedGraphInitialPositions(nodes: RenderNode[], links: RenderLink[]): RenderNode[] {
+  const adjacency = buildAdjacency(nodes, links);
+  const layoutGroups = findConnectedComponents(nodes, adjacency).flatMap((component) =>
+    splitComponentIntoLayoutGroups(component, adjacency),
+  );
+  const groupIndexByNodeId = new Map<string, number>();
+  for (const [groupIndex, group] of layoutGroups.entries()) {
+    for (const nodeId of group) {
+      groupIndexByNodeId.set(nodeId, groupIndex);
+    }
+  }
+
+  const nodeIndexInGroup = new Map<string, number>();
+  for (const group of layoutGroups) {
+    const sortedGroup = group.slice().sort((left, right) => Number(left) - Number(right));
+    sortedGroup.forEach((nodeId, index) => nodeIndexInGroup.set(nodeId, index));
+  }
+
+  const groupCount = Math.max(1, layoutGroups.length);
+  return nodes.map((node) => {
+    const groupIndex = groupIndexByNodeId.get(node.id) ?? 0;
+    const indexInGroup = nodeIndexInGroup.get(node.id) ?? 0;
+    const groupSize = Math.max(1, layoutGroups[groupIndex]?.length ?? 1);
+    const groupAngle = (Math.PI * 2 * groupIndex) / groupCount;
+    const groupRing = GRAPH_SEEDED_LAYOUT_SPACING * (1 + Math.floor(groupIndex / Math.max(1, Math.ceil(Math.sqrt(groupCount)))));
+    const localAngle = (Math.PI * 2 * indexInGroup) / groupSize;
+    const localRadius = 34 + 8 * Math.sqrt(groupSize) + 5 * (indexInGroup % 5);
+
+    return {
+      ...node,
+      x: Math.cos(groupAngle) * groupRing + Math.cos(localAngle) * localRadius,
+      y: Math.sin(groupAngle) * groupRing + Math.sin(localAngle) * localRadius,
+      z: ((indexInGroup % 7) - 3) * 24 + (groupIndex % 3) * 60,
+    };
+  });
+}
+
 function buildExplicitIconUrls(node: GraphNode, useNodeIcons: boolean): string[] {
   const iconUrl = node.iconUrl?.trim();
   if (!useNodeIcons || !iconUrl) {
@@ -203,7 +368,7 @@ function buildGraphData(data: GraphData, useNodeIcons: boolean): RenderGraphData
     val: Math.max(1, degreeById.get(node.id) ?? node.degree ?? 1),
   }));
 
-  return { nodes, links };
+  return { nodes: seedGraphInitialPositions(nodes, links), links };
 }
 
 function buildNeighborIds(graphData: RenderGraphData, highlightNodeId?: number): Set<string> {
@@ -316,7 +481,7 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
 }
 
 /**
- * Tune the d3 force engine so related blogs cluster without a global spherical pull.
+ * Tune the d3 force engine so related blogs cluster without collapsing into a global sphere.
  *
  * @param graph Force graph instance exposed by react-force-graph-3d.
  */
@@ -523,7 +688,7 @@ export function GraphVisualization({
             node.fy = node.y;
             node.fz = node.z;
           }}
-          d3VelocityDecay={0.38}
+          d3VelocityDecay={0.44}
           d3AlphaDecay={0.025}
           cooldownTicks={cooldownTicks}
           onEngineTick={handleEngineTick}

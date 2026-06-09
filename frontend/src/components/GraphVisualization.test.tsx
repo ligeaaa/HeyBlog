@@ -206,6 +206,9 @@ describe("GraphVisualization", () => {
               label: "Alpha Blog",
               iconUrl: "/api/icons/proxy?url=https%3A%2F%2Falpha.example.com%2Ffavicon.ico",
               val: 1,
+              x: expect.any(Number),
+              y: expect.any(Number),
+              z: expect.any(Number),
             }),
             expect.objectContaining({
               id: "2",
@@ -213,6 +216,9 @@ describe("GraphVisualization", () => {
               label: "Beta Blog",
               iconUrl: undefined,
               val: 1,
+              x: expect.any(Number),
+              y: expect.any(Number),
+              z: expect.any(Number),
             }),
           ]),
           links: [
@@ -225,6 +231,66 @@ describe("GraphVisualization", () => {
         }),
       }),
     );
+  });
+
+  test("seeds disconnected graph regions into separated initial positions", () => {
+    const twoRegionGraph: GraphData = {
+      nodes: [
+        {
+          id: 1,
+          url: "https://alpha.example.com/",
+          domain: "alpha.example.com",
+          title: "Alpha Blog",
+          iconUrl: null,
+        },
+        {
+          id: 2,
+          url: "https://beta.example.com/",
+          domain: "beta.example.com",
+          title: "Beta Blog",
+          iconUrl: null,
+        },
+        {
+          id: 3,
+          url: "https://gamma.example.com/",
+          domain: "gamma.example.com",
+          title: "Gamma Blog",
+          iconUrl: null,
+        },
+        {
+          id: 4,
+          url: "https://delta.example.com/",
+          domain: "delta.example.com",
+          title: "Delta Blog",
+          iconUrl: null,
+        },
+      ],
+      edges: [
+        {
+          id: "1-2",
+          source: 1,
+          target: 2,
+          linkText: null,
+          linkUrlRaw: "https://alpha.example.com/link",
+        },
+        {
+          id: "3-4",
+          source: 3,
+          target: 4,
+          linkText: null,
+          linkUrlRaw: "https://gamma.example.com/link",
+        },
+      ],
+    };
+
+    render(<GraphVisualization data={twoRegionGraph} />);
+
+    const graphProps = forceGraphRenders.at(-1)!;
+    const [firstRegionNode] = graphProps.graphData.nodes;
+    const thirdNode = graphProps.graphData.nodes[2];
+    const distance = Math.hypot(firstRegionNode.x - thirdNode.x, firstRegionNode.y - thirdNode.y, firstRegionNode.z - thirdNode.z);
+
+    expect(distance).toBeGreaterThan(500);
   });
 
   test("uses the original graph node for click callbacks", () => {
@@ -373,10 +439,10 @@ describe("GraphVisualization", () => {
     tuneNaturalClusterForces(graph as never);
 
     expect(forceCalls).toContainEqual(["center", null]);
-    expect(chargeForce.strength).toHaveBeenCalledWith(-190);
-    expect(chargeForce.distanceMax).toHaveBeenCalledWith(720);
-    expect(linkForce.distance).toHaveBeenCalledWith(58);
-    expect(linkForce.strength).toHaveBeenCalledWith(0.56);
+    expect(chargeForce.strength).toHaveBeenCalledWith(-280);
+    expect(chargeForce.distanceMax).toHaveBeenCalledWith(1400);
+    expect(linkForce.distance).toHaveBeenCalledWith(96);
+    expect(linkForce.strength).toHaveBeenCalledWith(0.24);
     expect(d3ReheatSimulation).toHaveBeenCalled();
   });
 });
