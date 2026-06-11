@@ -15,6 +15,7 @@ import type {
   GraphEdge,
   GraphMeta,
   GraphNode,
+  AuthLifecycleToken,
   LookupResult,
   RandomRecommendationBatch,
   RecommendationEventInput,
@@ -234,6 +235,10 @@ interface BackendUserProfile {
   id: number;
   email: string;
   display_name: string;
+  role: "admin" | "user";
+  is_active: boolean;
+  email_verified: boolean;
+  email_verified_at: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -242,6 +247,17 @@ interface BackendAuthSession {
   token: string;
   expires_at: string | null;
   user: BackendUserProfile;
+  email_verification?: BackendAuthLifecycleToken;
+}
+
+interface BackendAuthLifecycleToken {
+  sent: boolean;
+  verification_token?: string;
+  verification_url?: string;
+  reset_token?: string;
+  reset_url?: string;
+  expires_at?: string | null;
+  already_verified?: boolean;
 }
 
 interface BackendUserLabelSelection {
@@ -634,8 +650,27 @@ function toUserProfile(user: BackendUserProfile): UserProfile {
     id: user.id,
     email: user.email,
     displayName: user.display_name,
+    role: user.role,
+    isActive: user.is_active,
+    emailVerified: user.email_verified,
+    emailVerifiedAt: user.email_verified_at,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
+  };
+}
+
+function toAuthLifecycleToken(payload: BackendAuthLifecycleToken | undefined): AuthLifecycleToken | undefined {
+  if (!payload) {
+    return undefined;
+  }
+  return {
+    sent: payload.sent,
+    verificationToken: payload.verification_token,
+    verificationUrl: payload.verification_url,
+    resetToken: payload.reset_token,
+    resetUrl: payload.reset_url,
+    expiresAt: payload.expires_at,
+    alreadyVerified: payload.already_verified,
   };
 }
 
@@ -644,6 +679,7 @@ function toAuthSession(session: BackendAuthSession): AuthSession {
     token: session.token,
     expiresAt: session.expires_at,
     user: toUserProfile(session.user),
+    emailVerification: toAuthLifecycleToken(session.email_verification),
   };
 }
 
@@ -1054,15 +1090,15 @@ const USER_SEED_RULE_REASON_MESSAGES: Record<string, string> = {
   "rule:blocked_path": "链接路径属于登录、搜索、RSS、管理页等非博客首页",
 };
 
-export async function registerUser(data: { email: string; password: string }): Promise<AuthSession> {
-  const payload = await apiJson<BackendAuthSession>("/api/auth/register", {
+export async function registerUser(data: { email: string; password: string }): Promise<AuthLifecycleToken> {
+  const payload = await apiJson<BackendAuthLifecycleToken>("/api/auth/register", {
     method: "POST",
     body: JSON.stringify({
       email: data.email.trim(),
       password: data.password,
     }),
   });
-  return toAuthSession(payload);
+  return toAuthLifecycleToken(payload) ?? { sent: true };
 }
 
 export async function loginUser(data: { email: string; password: string }): Promise<AuthSession> {
@@ -1088,6 +1124,38 @@ export async function logoutUser(token: string): Promise<void> {
     method: "POST",
     headers: authHeaders(token),
   });
+}
+
+export async function requestEmailVerification(email: string): Promise<AuthLifecycleToken> {
+  const payload = await apiJson<BackendAuthLifecycleToken>("/api/auth/email/verify/request", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim() }),
+  });
+  return toAuthLifecycleToken(payload) ?? { sent: true };
+}
+
+export async function confirmEmailVerification(token: string): Promise<UserProfile> {
+  const payload = await apiJson<BackendUserProfile>("/api/auth/email/verify/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token: token.trim() }),
+  });
+  return toUserProfile(payload);
+}
+
+export async function requestPasswordReset(email: string): Promise<AuthLifecycleToken> {
+  const payload = await apiJson<BackendAuthLifecycleToken>("/api/auth/password/forgot", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim() }),
+  });
+  return toAuthLifecycleToken(payload) ?? { sent: true };
+}
+
+export async function resetPassword(data: { token: string; password: string }): Promise<UserProfile> {
+  const payload = await apiJson<BackendUserProfile>("/api/auth/password/reset", {
+    method: "POST",
+    body: JSON.stringify({ token: data.token.trim(), password: data.password }),
+  });
+  return toUserProfile(payload);
 }
 
 export async function fetchMyLabelSelections(token: string, limit = 50): Promise<UserLabelSelection[]> {

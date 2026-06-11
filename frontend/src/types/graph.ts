@@ -188,6 +188,10 @@ export interface UserProfile {
   id: number;
   email: string;
   displayName: string;
+  role: "admin" | "user";
+  isActive: boolean;
+  emailVerified: boolean;
+  emailVerifiedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -196,6 +200,17 @@ export interface AuthSession {
   token: string;
   expiresAt: string | null;
   user: UserProfile;
+  emailVerification?: AuthLifecycleToken;
+}
+
+export interface AuthLifecycleToken {
+  sent: boolean;
+  verificationToken?: string;
+  verificationUrl?: string;
+  resetToken?: string;
+  resetUrl?: string;
+  expiresAt?: string | null;
+  alreadyVerified?: boolean;
 }
 
 export interface UserLabelSelection {

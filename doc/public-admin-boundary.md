@@ -20,6 +20,7 @@ Public capabilities:
 - inspect blog detail and graph relationships
 - search by blog/site/relation clues
 - submit user seed blog URLs for crawling
+- register, log in, verify email, reset password, and save personal label selections
 
 ### Admin
 
@@ -37,6 +38,7 @@ Admin capabilities:
 - manual crawl/bootstrap triggers
 - database maintenance
 - blog labeling
+- user list and simple role management
 
 ## API Boundary
 
@@ -52,6 +54,14 @@ Admin capabilities:
 - `GET /api/graph/snapshots/{version}`
 - `GET /api/stats`
 - `POST /api/blogs/user-seeds`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+- `POST /api/auth/email/verify/request`
+- `POST /api/auth/email/verify/confirm`
+- `POST /api/auth/password/forgot`
+- `POST /api/auth/password/reset`
 
 ### Admin API
 
@@ -67,10 +77,17 @@ Admin capabilities:
 - `GET /api/admin/blog-labeling/tags`
 - `POST /api/admin/blog-labeling/tags`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
+- `GET /api/admin/users`
+- `PATCH /api/admin/users/{user_id}/role`
 
 ## Auth
 
-- Admin API requires `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>` unless `HEYBLOG_ADMIN_DEV_BYPASS=true` is explicitly enabled.
+- HeyBlog has three identities: guest, regular user, and admin.
+- Guest is any request without a valid user session.
+- Regular users are stored with `role=user`.
+- Admin users are stored with `role=admin` and must have a verified email to access admin APIs.
+- Admin API accepts either `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>` as a migration/bootstrap fallback, or an admin user session token.
 - Missing token returns `401 admin_auth_required`.
 - Invalid token returns `403 admin_auth_invalid`.
-- Unconfigured admin auth returns `503 admin_auth_not_configured`.
+- Non-admin or unverified user tokens return `403 admin_auth_forbidden`.
+- Unconfigured legacy admin auth with no valid admin user session returns `503 admin_auth_not_configured`.

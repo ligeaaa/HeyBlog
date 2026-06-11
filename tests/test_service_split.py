@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import BackendState
 from backend.main import create_app as create_backend_app
+from persistence_api.email_delivery import EmailDeliveryError
 from frontend.server import create_app as create_frontend_app
 from persistence_api.main import PersistenceState
 from persistence_api.main import build_persistence_state
@@ -221,15 +222,25 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
         json={"email": "Member@Example.com", "password": "long enough"},
     )
     assert auth.status_code == 200
-    assert auth.json()["user"]["email"] == "member@example.com"
-    token = auth.json()["token"]
-    assert client.get("/internal/users/me", params={"session_token": token}).json()["id"] == auth.json()["user"]["id"]
+    assert auth.json()["sent"] is True
+    assert client.post(
+        "/internal/users/login",
+        json={"email": "member@example.com", "password": "long enough"},
+    ).status_code == 401
+    verified_auth = client.post(
+        "/internal/users/email-verification/confirm",
+        json={"token": auth.json()["verification_token"]},
+    )
+    assert verified_auth.status_code == 200
+    assert verified_auth.json()["email"] == "member@example.com"
     login = client.post(
         "/internal/users/login",
         json={"email": "member@example.com", "password": "long enough"},
     )
     assert login.status_code == 200
-    assert login.json()["user"]["id"] == auth.json()["user"]["id"]
+    assert login.json()["user"]["id"] == verified_auth.json()["id"]
+    token = login.json()["token"]
+    assert client.get("/internal/users/me", params={"session_token": token}).json()["id"] == verified_auth.json()["id"]
 
     lookup = client.get("/internal/blogs/lookup", params={"url": "https://blog.example.com/"})
     assert lookup.status_code == 200
@@ -250,6 +261,56 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
     empty_catalog = client.get("/internal/blogs/catalog")
     assert empty_catalog.status_code == 200
     assert empty_catalog.json()["items"] == []
+
+
+def test_persistence_user_registration_translates_email_delivery_failure(tmp_path: Path) -> None:
+    """SMTP failures should return a stable API error instead of leaking provider details."""
+
+    class FailingEmailDelivery:
+        """Email sender that always fails during lifecycle delivery."""
+
+        def send_verification_email(self, *, to_email: str, verification_url: str) -> None:
+            """Raise a delivery error for one verification message.
+
+            Args:
+                to_email: Recipient email address.
+                verification_url: One-time verification URL.
+
+            Returns:
+                None.
+            """
+
+            del to_email, verification_url
+            raise EmailDeliveryError("email_delivery_failed")
+
+        def send_password_reset_email(self, *, to_email: str, reset_url: str) -> None:
+            """Raise a delivery error for one password reset message.
+
+            Args:
+                to_email: Recipient email address.
+                reset_url: One-time password reset URL.
+
+            Returns:
+                None.
+            """
+
+            del to_email, reset_url
+            raise EmailDeliveryError("email_delivery_failed")
+
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+    )
+    state = build_persistence_state(settings)
+    state.repository.email_delivery = FailingEmailDelivery()
+    app = create_persistence_app(state)
+    client = TestClient(app)
+
+    response = client.post("/internal/users/register", json={"email": "user@example.com", "password": "long enough"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "email_delivery_failed"
 
 
 def test_persistence_service_removes_legacy_read_shortcuts(tmp_path: Path) -> None:
@@ -642,18 +703,23 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
     assert switched_user_label.json()["label_slugs"] == ["other"]
     account = client.post("/internal/users/register", json={"email": "voter@example.com", "password": "long enough"})
     assert account.status_code == 200
+    verified_account = client.post(
+        "/internal/users/email-verification/confirm",
+        json={"token": account.json()["verification_token"]},
+    )
+    assert verified_account.status_code == 200
     account_user_label = client.post(
         f"/internal/blogs/{finished.json()['id']}/user-labels",
-        json={"label": "blog", "user_id": account.json()["user"]["id"]},
+        json={"label": "blog", "user_id": verified_account.json()["id"]},
     )
     assert account_user_label.status_code == 200
     account_user_label_switch = client.post(
         f"/internal/blogs/{finished.json()['id']}/user-labels",
-        json={"label": "other", "user_id": account.json()["user"]["id"]},
+        json={"label": "other", "user_id": verified_account.json()["id"]},
     )
     assert account_user_label_switch.status_code == 200
     selections = client.get(
-        f"/internal/users/{account.json()['user']['id']}/label-selections",
+        f"/internal/users/{verified_account.json()['id']}/label-selections",
         params={"limit": 5},
     )
     assert selections.status_code == 200
@@ -826,13 +892,15 @@ def test_persistence_http_client_can_manage_user_auth_and_labels() -> None:
         def post(self, path: str, json: dict[str, object], **kwargs: object) -> StubResponse:
             del kwargs
             self.post_calls.append((path, json))
+            if path == "/internal/users/register":
+                return StubResponse({"sent": True, "verification_token": "verify-token"})
             return StubResponse({"token": "token", "user": {"id": 7, "email": "user@example.com"}})
 
     client = PersistenceHttpClient("http://persistence.internal")
     stub = StubClient()
     client.client = stub  # type: ignore[assignment]
 
-    assert client.register_user(email="user@example.com", password="long enough")["token"] == "token"
+    assert client.register_user(email="user@example.com", password="long enough")["sent"] is True
     assert client.login_user(email="user@example.com", password="long enough")["token"] == "token"
     assert client.get_user_by_session_token(token="token")["id"] == 7
     assert client.list_user_label_selections(user_id=7) == []
@@ -1036,6 +1104,33 @@ def test_settings_loads_candidate_link_page_limit(monkeypatch) -> None:
     settings = Settings.from_env()
 
     assert settings.max_candidate_links_per_page == 17
+
+
+def test_settings_loads_smtp_email_delivery_configuration(monkeypatch) -> None:
+    """Environment loading should expose SMTP lifecycle email settings."""
+    monkeypatch.setenv("HEYBLOG_EMAIL_PROVIDER", "smtp")
+    monkeypatch.setenv("HEYBLOG_EMAIL_FROM", "no-reply@heyblog.example")
+    monkeypatch.setenv("HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS", "false")
+    monkeypatch.setenv("HEYBLOG_SMTP_HOST", "smtp.heyblog.example")
+    monkeypatch.setenv("HEYBLOG_SMTP_PORT", "465")
+    monkeypatch.setenv("HEYBLOG_SMTP_USERNAME", "smtp-user")
+    monkeypatch.setenv("HEYBLOG_SMTP_PASSWORD", "smtp-password")
+    monkeypatch.setenv("HEYBLOG_SMTP_USE_TLS", "false")
+    monkeypatch.setenv("HEYBLOG_SMTP_USE_SSL", "true")
+    monkeypatch.setenv("HEYBLOG_SMTP_TIMEOUT_SECONDS", "3.5")
+
+    settings = Settings.from_env()
+
+    assert settings.email_provider == "smtp"
+    assert settings.email_from == "no-reply@heyblog.example"
+    assert settings.email_dev_expose_tokens is False
+    assert settings.smtp_host == "smtp.heyblog.example"
+    assert settings.smtp_port == 465
+    assert settings.smtp_username == "smtp-user"
+    assert settings.smtp_password == "smtp-password"
+    assert settings.smtp_use_tls is False
+    assert settings.smtp_use_ssl is True
+    assert settings.smtp_timeout_seconds == 3.5
 
 
 def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch) -> None:
@@ -1265,15 +1360,9 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
                 "is_labeled": bool(tag_ids or label_id),
             },
             "register_user": lambda self, email, password: {
-                "token": "user-token",
-                "expires_at": "2026-06-25T00:00:00Z",
-                "user": {
-                    "id": 42,
-                    "email": email.lower(),
-                    "display_name": email.split("@", 1)[0],
-                    "created_at": "2026-05-26T00:00:00Z",
-                    "updated_at": "2026-05-26T00:00:00Z",
-                },
+                "sent": True,
+                "verification_token": "verify-token",
+                "expires_at": "2026-06-12T00:00:00Z",
             },
             "login_user": lambda self, email, password: {
                 "token": "login-token",
@@ -1603,8 +1692,8 @@ def test_backend_service_preserves_supported_public_api_shape(monkeypatch) -> No
 
     auth = client.post("/api/auth/register", json={"email": "Member@Example.com", "password": "long enough"})
     assert auth.status_code == 200
-    assert auth.json()["token"] == "user-token"
-    assert auth.json()["user"]["email"] == "member@example.com"
+    assert auth.json()["sent"] is True
+    assert auth.json()["verification_token"] == "verify-token"
     login = client.post("/api/auth/login", json={"email": "member@example.com", "password": "long enough"})
     assert login.status_code == 200
     assert login.json()["token"] == "login-token"
@@ -2217,6 +2306,59 @@ def test_backend_admin_routes_require_valid_token() -> None:
     invalid = client.get("/api/admin/runtime/status", headers=admin_headers("wrong-token"))
     assert invalid.status_code == 403
     assert invalid.json()["detail"] == "admin_auth_invalid"
+
+
+def test_backend_admin_routes_require_verified_admin_session_role() -> None:
+    """Admin APIs should reject non-admin sessions even when called directly."""
+
+    class PersistenceStub:
+        def stats(self) -> dict[str, object]:
+            return {}
+
+        def get_user_by_session_token(self, *, token: str) -> dict[str, object] | None:
+            users = {
+                "plain-user-token": {
+                    "id": 1,
+                    "role": "user",
+                    "is_active": True,
+                    "email_verified": True,
+                },
+                "unverified-admin-token": {
+                    "id": 2,
+                    "role": "admin",
+                    "is_active": True,
+                    "email_verified": False,
+                },
+                "admin-session-token": {
+                    "id": 3,
+                    "role": "admin",
+                    "is_active": True,
+                    "email_verified": True,
+                },
+            }
+            return users.get(token)
+
+    app = create_backend_app(
+        BackendState(
+            persistence=PersistenceStub(),
+            crawler=StubCrawler(),
+            search=StubSearch(),
+            admin_token="secret-token",
+        )
+    )
+    client = TestClient(app)
+
+    user_response = client.get("/api/admin/runtime/status", headers=admin_headers("plain-user-token"))
+    assert user_response.status_code == 403
+    assert user_response.json()["detail"] == "admin_auth_forbidden"
+
+    unverified_response = client.get("/api/admin/runtime/status", headers=admin_headers("unverified-admin-token"))
+    assert unverified_response.status_code == 403
+    assert unverified_response.json()["detail"] == "admin_auth_forbidden"
+
+    admin_response = client.get("/api/admin/runtime/status", headers=admin_headers("admin-session-token"))
+    assert admin_response.status_code == 200
+    assert admin_response.json()["runner_status"] == "idle"
 
 
 def test_backend_admin_routes_fail_when_auth_not_configured() -> None:

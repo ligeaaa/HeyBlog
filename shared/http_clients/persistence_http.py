@@ -69,6 +69,11 @@ class PersistenceHttpClient:
         response.raise_for_status()
         return response.json()
 
+    def _patch(self, path: str, payload: dict[str, Any]) -> Any:
+        response = self.client.patch(path, json=payload, **context_header_kwargs())
+        response.raise_for_status()
+        return response.json()
+
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         response = self.client.get(path, params=params, **context_header_kwargs())
         response.raise_for_status()
@@ -376,6 +381,36 @@ class PersistenceHttpClient:
         """Revoke one user session token."""
 
         return self._post(f"/internal/users/logout?session_token={token}", {})
+
+    def request_email_verification(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh email verification token for one account."""
+
+        return self._post("/internal/users/email-verification/request", {"email": email})
+
+    def confirm_email_verification(self, *, token: str) -> dict[str, Any]:
+        """Confirm a user email verification token."""
+
+        return self._post("/internal/users/email-verification/confirm", {"token": token})
+
+    def request_password_reset(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh password reset token for one account."""
+
+        return self._post("/internal/users/password-reset/request", {"email": email})
+
+    def reset_user_password(self, *, token: str, password: str) -> dict[str, Any]:
+        """Confirm a password reset token and set a new password."""
+
+        return self._post("/internal/users/password-reset/confirm", {"token": token, "password": password})
+
+    def list_users(self, *, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        """Fetch a paginated admin user list."""
+
+        return self._get("/internal/users", {"page": page, "page_size": page_size})
+
+    def update_user_role(self, *, user_id: int, role: str) -> dict[str, Any]:
+        """Update one user's role."""
+
+        return self._patch(f"/internal/users/{user_id}/role", {"role": role})
 
     def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch recent random-page selections for one user."""

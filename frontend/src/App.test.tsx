@@ -376,6 +376,48 @@ beforeEach(() => {
     if (url.pathname === "/api/status") {
       return new Response(JSON.stringify(statusPayload));
     }
+    if (url.pathname === "/api/auth/register") {
+      return new Response(
+        JSON.stringify({
+          sent: true,
+          verification_token: "mail-token",
+          expires_at: "2026-06-11T00:00:00Z",
+        }),
+      );
+    }
+    if (url.pathname === "/api/auth/email/verify/confirm") {
+      return new Response(
+        JSON.stringify({
+          id: 7,
+          email: "new@example.com",
+          display_name: "new",
+          role: "user",
+          is_active: true,
+          email_verified: true,
+          email_verified_at: "2026-06-10T00:10:00Z",
+          created_at: "2026-06-10T00:00:00Z",
+          updated_at: "2026-06-10T00:10:00Z",
+        }),
+      );
+    }
+    if (url.pathname === "/api/auth/me") {
+      return new Response(
+        JSON.stringify({
+          id: 7,
+          email: "new@example.com",
+          display_name: "new",
+          role: "user",
+          is_active: true,
+          email_verified: false,
+          email_verified_at: null,
+          created_at: "2026-06-10T00:00:00Z",
+          updated_at: "2026-06-10T00:00:00Z",
+        }),
+      );
+    }
+    if (url.pathname === "/api/me/label-stats") {
+      return new Response(JSON.stringify({ label_count: 3 }));
+    }
     if (url.pathname === "/api/stats") {
       return new Response(JSON.stringify({ total_blogs: statusPayload.total_blogs, total_edges: statusPayload.total_edges }));
     }
@@ -579,6 +621,60 @@ test("renders the home summary with URL search while keeping queue metrics and c
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
 });
 
+test("shows the admin navigation item only for active verified admin sessions", async () => {
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "admin-session-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 70,
+        email: "admin@magic-knowledge.top",
+        displayName: "admin",
+        role: "admin",
+        isActive: true,
+        emailVerified: true,
+        emailVerifiedAt: "2026-06-11T00:00:00Z",
+        createdAt: "2026-06-11T00:00:00Z",
+        updatedAt: "2026-06-11T00:00:00Z",
+      },
+    }),
+  );
+
+  render(<App />);
+
+  expect(await screen.findByRole("link", { name: "管理" })).toHaveAttribute("href", "/admin");
+});
+
+test("hides admin navigation and renders 404 for non-admin direct admin URLs", async () => {
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "user-session-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 71,
+        email: "1304412077@qq.com",
+        displayName: "user",
+        role: "user",
+        isActive: true,
+        emailVerified: true,
+        emailVerifiedAt: "2026-06-11T00:00:00Z",
+        createdAt: "2026-06-11T00:00:00Z",
+        updatedAt: "2026-06-11T00:00:00Z",
+      },
+    }),
+  );
+  window.history.replaceState({}, "", "/admin");
+
+  render(<App />);
+
+  expect(await screen.findByText("404")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "页面不存在" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "管理" })).not.toBeInTheDocument();
+  expect(screen.queryByText("管理控制台")).not.toBeInTheDocument();
+});
+
 test("lets home users search normalized URLs and open the blog detail route", async () => {
   catalogItems = catalogItems.map((item) =>
     Number(item.id) === 3 ? { ...item, icon_url: "https://finished-blog.example.com/favicon.ico" } : item,
@@ -721,6 +817,84 @@ test("shows the exact rule-filter reason when user seed submission fails", async
 
   expect(await screen.findByText("规则过滤未通过：域名后缀被屏蔽（rule:blocked_tld）")).toBeInTheDocument();
   expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+});
+
+test("keeps new registrations signed out until email verification", async () => {
+  window.history.replaceState({}, "", "/profile");
+
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "没有账号，注册一个" }));
+  fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "New@Example.com" } });
+  fireEvent.change(screen.getByLabelText("密码"), { target: { value: "correct horse" } });
+  fireEvent.click(screen.getByRole("button", { name: "注册并发送验证邮件" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "登录账号" })).toBeInTheDocument();
+  });
+  expect(screen.getByText("验证邮件已发送，请验证邮箱后登录。")).toBeInTheDocument();
+  expect(window.localStorage.getItem("heyblog_user_session")).toBeNull();
+  expect(screen.queryByText("当前账号")).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "数据标注" })).not.toBeInTheDocument();
+});
+
+test("confirms email automatically when opened from a verification email link", async () => {
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "new-user-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 7,
+        email: "new@example.com",
+        displayName: "new",
+        role: "user",
+        isActive: true,
+        emailVerified: false,
+        emailVerifiedAt: null,
+        createdAt: "2026-06-10T00:00:00Z",
+        updatedAt: "2026-06-10T00:00:00Z",
+      },
+    }),
+  );
+  window.history.replaceState({}, "", "/profile?verify_token=mail-token");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText(/已验证/)).toBeInTheDocument();
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/auth/email/verify/confirm") &&
+          String(init?.body).includes('"token":"mail-token"'),
+      ),
+  ).toBe(true);
+  expect(screen.getByRole("heading", { name: "数据标注" })).toBeInTheDocument();
+  expect(screen.getByText(/当前总共标注了/)).toBeInTheDocument();
+});
+
+test("confirms email links without requiring a local session", async () => {
+  window.history.replaceState({}, "", "/profile?verify_token=mail-token");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "登录账号" })).toBeInTheDocument();
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/auth/email/verify/confirm") &&
+          String(init?.body).includes('"token":"mail-token"'),
+      ),
+  ).toBe(true);
+  expect(screen.queryByText(/Token/)).not.toBeInTheDocument();
 });
 
 test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {

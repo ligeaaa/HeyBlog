@@ -18,12 +18,66 @@ from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogInteractionModel
 from persistence_api.models import BlogModel
+from persistence_api.models import PendingUserRegistrationModel
 from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.models import RecommendationImpressionModel
 from persistence_api.models import RecommendationRequestModel
 from persistence_api.models import SeedModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
+
+
+class CapturingEmailDelivery:
+    """Test email sender that records lifecycle messages.
+
+    Attributes:
+        verification_urls: Verification messages captured as `(email, url)`.
+        reset_urls: Password reset messages captured as `(email, url)`.
+    """
+
+    def __init__(self) -> None:
+        self.verification_urls: list[tuple[str, str]] = []
+        self.reset_urls: list[tuple[str, str]] = []
+
+    def send_verification_email(self, *, to_email: str, verification_url: str) -> None:
+        """Capture one verification email.
+
+        Args:
+            to_email: Recipient email address.
+            verification_url: One-time verification URL.
+
+        Returns:
+            None.
+        """
+
+        self.verification_urls.append((to_email, verification_url))
+
+    def send_password_reset_email(self, *, to_email: str, reset_url: str) -> None:
+        """Capture one password reset email.
+
+        Args:
+            to_email: Recipient email address.
+            reset_url: One-time password reset URL.
+
+        Returns:
+            None.
+        """
+
+        self.reset_urls.append((to_email, reset_url))
+
+
+def register_and_verify_user(
+    repository: repository_module.SQLAlchemyRepository,
+    *,
+    email: str,
+    password: str,
+) -> dict[str, object]:
+    """Create a user through the verify-before-persist registration flow."""
+
+    pending = repository.register_user(email=email, password=password)
+    token = pending.get("verification_token")
+    assert isinstance(token, str)
+    return repository.confirm_email_verification(token=token)
 
 
 def test_build_repository_roundtrip_works_with_path_backed_repository(tmp_path: Path) -> None:
@@ -120,7 +174,8 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
         result="ok",
         message="This should not be persisted",
     )
-    user = repository.register_user(email="reset-user@example.com", password="long enough")
+    verified_user = register_and_verify_user(repository, email="reset-user@example.com", password="long enough")
+    user = repository.login_user(email=str(verified_user["email"]), password="long enough")
     batch = repository.create_random_recommendation_batch(
         count=1,
         visitor_id="visitor-reset",
@@ -191,32 +246,124 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
 
 
 def test_repository_register_login_and_session_profile(tmp_path: Path) -> None:
-    """Users can register, log in, and resolve their bearer session profile."""
+    """Users persist only after email verification, then can log in."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
 
-    created = repository.register_user(email="User@Example.com", password="correct horse")
-    assert created["user"]["email"] == "user@example.com"
-    assert created["token"]
-    resolved_user = repository.get_user_by_session_token(token=created["token"])
-    assert resolved_user is not None
-    assert resolved_user["id"] == created["user"]["id"]
-    assert resolved_user["email"] == created["user"]["email"]
+    pending = repository.register_user(email="User@Example.com", password="correct horse")
+    assert pending["sent"] is True
+    assert pending["verification_token"]
+    with session_scope(repository.session_factory) as session:
+        assert session.scalar(select(PendingUserRegistrationModel).where(PendingUserRegistrationModel.email == "user@example.com")) is not None
+        assert session.scalar(select(repository_module.UserModel).where(repository_module.UserModel.email == "user@example.com")) is None
+    with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
+        repository.login_user(email="user@example.com", password="correct horse")
+
+    created = repository.confirm_email_verification(token=str(pending["verification_token"]))
+    assert created["email"] == "user@example.com"
+    assert created["role"] == "user"
+    assert created["email_verified"] is True
 
     logged_in = repository.login_user(email="user@example.com", password="correct horse")
-    assert logged_in["user"]["id"] == created["user"]["id"]
-    assert logged_in["token"] != created["token"]
+    assert logged_in["user"]["id"] == created["id"]
+    assert logged_in["token"]
 
-    assert repository.revoke_user_session(token=created["token"]) is True
-    assert repository.get_user_by_session_token(token=created["token"]) is None
+    assert repository.revoke_user_session(token=logged_in["token"]) is True
+    assert repository.get_user_by_session_token(token=logged_in["token"]) is None
+
+
+def test_repository_email_verification_and_password_reset_flow(tmp_path: Path) -> None:
+    """Email verification and password reset tokens should be single-use."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    created = repository.register_user(email="verify@example.com", password="correct horse")
+    verification_token = created["verification_token"]
+    verified = repository.confirm_email_verification(token=verification_token)
+    assert verified["email_verified"] is True
+
+    with pytest.raises(repository_module.UserAuthError, match="invalid_token"):
+        repository.confirm_email_verification(token=verification_token)
+
+    login = repository.login_user(email="verify@example.com", password="correct horse")
+    reset_request = repository.request_password_reset(email="verify@example.com")
+    reset_token = reset_request["reset_token"]
+    reset_user = repository.reset_user_password(token=reset_token, password="new correct horse")
+    assert reset_user["email"] == "verify@example.com"
+    assert repository.get_user_by_session_token(token=login["token"]) is None
+
+    with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
+        repository.login_user(email="verify@example.com", password="correct horse")
+    assert repository.login_user(email="verify@example.com", password="new correct horse")["token"]
+
+
+def test_repository_sends_lifecycle_email_and_hides_tokens_when_configured(tmp_path: Path) -> None:
+    """Production email mode should send links without exposing raw tokens."""
+    email_delivery = CapturingEmailDelivery()
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        public_base_url="https://heyblog.example.com",
+        email_dev_expose_tokens=False,
+    )
+    repository = repository_module.build_repository(
+        db_path=tmp_path / "db.sqlite",
+        settings=settings,
+        email_delivery=email_delivery,
+    )
+
+    verification_payload = repository.register_user(email="Mail@Example.com", password="correct horse")
+    assert verification_payload == {
+        "sent": True,
+        "expires_at": verification_payload["expires_at"],
+    }
+    assert len(email_delivery.verification_urls) == 1
+    sent_email, verification_url = email_delivery.verification_urls[0]
+    assert sent_email == "mail@example.com"
+    assert verification_url.startswith("https://heyblog.example.com/profile?verify_token=")
+    verification_token = verification_url.rsplit("=", 1)[1]
+    assert repository.confirm_email_verification(token=verification_token)["email_verified"] is True
+
+    reset_payload = repository.request_password_reset(email="mail@example.com")
+    assert reset_payload == {
+        "sent": True,
+        "expires_at": reset_payload["expires_at"],
+    }
+    assert len(email_delivery.reset_urls) == 1
+    reset_email, reset_url = email_delivery.reset_urls[0]
+    assert reset_email == "mail@example.com"
+    assert reset_url.startswith("https://heyblog.example.com/profile?reset_token=")
+    reset_token = reset_url.rsplit("=", 1)[1]
+    assert repository.reset_user_password(token=reset_token, password="new correct horse")["email"] == "mail@example.com"
+
+
+def test_repository_admin_role_updates_user_identity(tmp_path: Path) -> None:
+    """Users should be promotable between regular user and admin roles."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    created = register_and_verify_user(repository, email="admin@example.com", password="correct horse")
+    user_id = int(created["id"])
+    promoted = repository.update_user_role(user_id=user_id, role="admin")
+    assert promoted["role"] == "admin"
+    listed = repository.list_users()
+    assert listed["items"][0]["role"] == "admin"
+
+    demoted = repository.update_user_role(user_id=user_id, role="user")
+    assert demoted["role"] == "user"
+    with pytest.raises(ValueError, match="invalid_user_role"):
+        repository.update_user_role(user_id=user_id, role="label_admin")
 
 
 def test_repository_rejects_duplicate_user_and_bad_credentials(tmp_path: Path) -> None:
     """Email uniqueness and password validation should produce stable errors."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    repository.register_user(email="dupe@example.com", password="long enough")
+    register_and_verify_user(repository, email="dupe@example.com", password="long enough")
 
     with pytest.raises(repository_module.UserAuthError, match="email_already_registered"):
         repository.register_user(email="DUPE@example.com", password="long enough")
+
+    repository.register_user(email="pending@example.com", password="long enough")
+    with pytest.raises(repository_module.UserAuthError, match="email_registration_pending"):
+        repository.register_user(email="PENDING@example.com", password="long enough")
     with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
         repository.login_user(email="dupe@example.com", password="wrong password")
     with pytest.raises(ValueError, match="password_too_short"):
@@ -1029,8 +1176,8 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     user_label = repository.increment_blog_user_label(blog_id=kept_id, label="blog")
     duplicate_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", previous_label="blog")
     user_non_blog = repository.increment_blog_user_label(blog_id=kept_id, label="other", previous_label="blog")
-    account = repository.register_user(email="labeler@example.com", password="long enough")
-    user_id = int(account["user"]["id"])
+    account = register_and_verify_user(repository, email="labeler@example.com", password="long enough")
+    user_id = int(account["id"])
     account_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", user_id=user_id)
     account_other = repository.increment_blog_user_label(blog_id=kept_id, label="other", user_id=user_id)
 

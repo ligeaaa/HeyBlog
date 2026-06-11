@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from persistence_api.email_delivery import EmailDeliveryError
+from persistence_api.email_delivery import build_email_delivery
 from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
 from persistence_api.repository import BLOG_LABELING_DEFAULT_PAGE_SIZE
 from persistence_api.age_graph import AgeGraphManager
@@ -61,6 +63,23 @@ class CreateUserSeedRequest(BaseModel):
 class UserAuthRequest(BaseModel):
     email: str
     password: str
+
+
+class EmailRequest(BaseModel):
+    email: str
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+class PasswordResetRequest(BaseModel):
+    token: str
+    password: str
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: str
 
 
 class BlogResultRequest(BaseModel):
@@ -274,7 +293,12 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
     resolved = settings or Settings.from_env()
     if resolved.db_dsn:
         run_postgres_migrations(resolved.db_dsn)
-    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn, settings=resolved)
+    repository = build_repository(
+        db_path=resolved.db_path,
+        db_dsn=resolved.db_dsn,
+        settings=resolved,
+        email_delivery=build_email_delivery(resolved),
+    )
     age_manager = AgeGraphManager(
         getattr(repository, "engine", None),
         enabled=resolved.age_enabled and resolved.age_shadow_reads,
@@ -399,6 +423,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             exception_translations=(
                 (ValueError, 422, None),
                 (UserAuthError, 409, None),
+                (EmailDeliveryError, 502, "email_delivery_failed"),
             ),
         )
 
@@ -422,6 +447,57 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.post("/internal/users/logout")
     def logout_user(session_token: str) -> dict[str, bool]:
         return {"ok": get_state().repository.revoke_user_session(token=session_token)}
+
+    @app.post("/internal/users/email-verification/request")
+    def request_email_verification(payload: EmailRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.request_email_verification(email=payload.email),
+            exception_translations=(
+                (ValueError, 422, None),
+                (EmailDeliveryError, 502, "email_delivery_failed"),
+            ),
+        )
+
+    @app.post("/internal/users/email-verification/confirm")
+    def confirm_email_verification(payload: TokenRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.confirm_email_verification(token=payload.token),
+            exception_translations=((UserAuthError, 401, None),),
+        )
+
+    @app.post("/internal/users/password-reset/request")
+    def request_password_reset(payload: EmailRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.request_password_reset(email=payload.email),
+            exception_translations=(
+                (ValueError, 422, None),
+                (EmailDeliveryError, 502, "email_delivery_failed"),
+            ),
+        )
+
+    @app.post("/internal/users/password-reset/confirm")
+    def reset_user_password(payload: PasswordResetRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.reset_user_password(token=payload.token, password=payload.password),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.get("/internal/users")
+    def list_users(page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        return get_state().repository.list_users(page=page, page_size=page_size)
+
+    @app.patch("/internal/users/{user_id}/role")
+    def update_user_role(user_id: int, payload: UpdateUserRoleRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.update_user_role(user_id=user_id, role=payload.role),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 404, None),
+            ),
+        )
 
     @app.get("/internal/users/{user_id}/label-selections")
     def list_user_label_selections(user_id: int, limit: int = 50) -> list[dict[str, Any]]:

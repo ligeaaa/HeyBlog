@@ -36,6 +36,8 @@ from sqlalchemy.orm import Session
 from persistence_api.db import create_persistence_engine
 from persistence_api.db import create_session_factory
 from persistence_api.db import session_scope
+from persistence_api.email_delivery import EmailDelivery
+from persistence_api.email_delivery import NoopEmailDelivery
 from persistence_api.models import Base
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
@@ -48,7 +50,10 @@ from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.models import RecommendationImpressionModel
 from persistence_api.models import RecommendationRequestModel
 from persistence_api.models import SeedModel
+from persistence_api.models import PendingUserRegistrationModel
+from persistence_api.models import UserAuditEventModel
 from persistence_api.models import UserModel
+from persistence_api.models import UserVerificationTokenModel
 from persistence_api.models import UserSessionModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.decisions.chain import build_url_decision_chain
@@ -106,6 +111,14 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 USER_SESSION_TTL_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 210_000
+USER_ROLE_ADMIN = "admin"
+USER_ROLE_USER = "user"
+USER_ROLES = frozenset({USER_ROLE_ADMIN, USER_ROLE_USER})
+USER_TOKEN_EMAIL_VERIFICATION = "email_verification"
+USER_TOKEN_PASSWORD_RESET = "password_reset"
+USER_EMAIL_VERIFICATION_TTL_HOURS = 24
+USER_PASSWORD_RESET_TTL_HOURS = 2
+PENDING_REGISTRATION_TTL_HOURS = 24
 
 
 class BlogLabelingError(Exception):
@@ -236,6 +249,19 @@ def _hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _hash_user_lifecycle_token(token: str) -> str:
+    """Return the storage hash for an email verification or reset token.
+
+    Args:
+        token: Raw lifecycle token returned once to a caller.
+
+    Returns:
+        SHA-256 hex digest used for lookup without storing the raw token.
+    """
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def _user_payload(model: UserModel) -> dict[str, Any]:
     """Return the public user profile payload.
 
@@ -250,9 +276,33 @@ def _user_payload(model: UserModel) -> dict[str, Any]:
         "id": int(model.id),
         "email": model.email,
         "display_name": model.display_name,
+        "role": model.role,
+        "is_active": bool(model.is_active),
+        "email_verified": model.email_verified_at is not None,
+        "email_verified_at": _iso(model.email_verified_at),
         "created_at": _iso(model.created_at),
         "updated_at": _iso(model.updated_at),
     }
+
+
+def _user_admin_payload(model: UserModel) -> dict[str, Any]:
+    """Return an admin-safe user management payload.
+
+    Args:
+        model: User database row.
+
+    Returns:
+        JSON-serializable account summary for admin user lists.
+    """
+
+    payload = _user_payload(model)
+    payload.update(
+        {
+            "last_login_at": _iso(model.last_login_at),
+            "password_changed_at": _iso(model.password_changed_at),
+        }
+    )
+    return payload
 
 
 def _sortable_datetime(value: datetime | None) -> datetime:
@@ -785,6 +835,17 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     "email TEXT NOT NULL UNIQUE, "
                     "password_hash TEXT NOT NULL, "
                     "display_name TEXT DEFAULT '' NOT NULL, "
+                    "role TEXT DEFAULT 'user' NOT NULL, "
+                    "is_active BOOLEAN DEFAULT 1 NOT NULL, "
+                    "email_verified_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ", "
+                    "password_changed_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ", "
+                    "last_login_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ", "
                     "created_at "
                     + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
                     + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
@@ -795,6 +856,18 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             )
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_users_email ON users (email)"))
             existing_tables.add("users")
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        user_timestamp_type = "TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME"
+        if "role" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user' NOT NULL"))
+        if "is_active" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1 NOT NULL"))
+        if "email_verified_at" not in user_columns:
+            connection.execute(text(f"ALTER TABLE users ADD COLUMN email_verified_at {user_timestamp_type}"))
+        if "password_changed_at" not in user_columns:
+            connection.execute(text(f"ALTER TABLE users ADD COLUMN password_changed_at {user_timestamp_type}"))
+        if "last_login_at" not in user_columns:
+            connection.execute(text(f"ALTER TABLE users ADD COLUMN last_login_at {user_timestamp_type}"))
         if "user_sessions" not in existing_tables:
             connection.execute(
                 text(
@@ -816,6 +889,88 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON user_sessions (user_id)"))
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_sessions_token_hash ON user_sessions (token_hash)"))
             existing_tables.add("user_sessions")
+        if "user_verification_tokens" not in existing_tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE user_verification_tokens ("
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+                    "token_hash TEXT NOT NULL UNIQUE, "
+                    "purpose TEXT NOT NULL, "
+                    "created_at "
+                    + user_timestamp_type
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "expires_at "
+                    + user_timestamp_type
+                    + " NOT NULL, "
+                    "consumed_at "
+                    + user_timestamp_type
+                    + ")"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_user_verification_tokens_user_id ON user_verification_tokens (user_id)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_user_verification_tokens_token_hash "
+                    "ON user_verification_tokens (token_hash)"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_user_verification_tokens_purpose ON user_verification_tokens (purpose)")
+            )
+            existing_tables.add("user_verification_tokens")
+        if "pending_user_registrations" not in existing_tables:
+            pending_id_type = "SERIAL PRIMARY KEY" if connection.dialect.name == "postgresql" else "INTEGER PRIMARY KEY"
+            connection.execute(
+                text(
+                    "CREATE TABLE pending_user_registrations ("
+                    f"id {pending_id_type}, "
+                    "email TEXT NOT NULL UNIQUE, "
+                    "password_hash TEXT NOT NULL, "
+                    "token_hash TEXT NOT NULL UNIQUE, "
+                    "created_at "
+                    + user_timestamp_type
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "expires_at "
+                    + user_timestamp_type
+                    + " NOT NULL, "
+                    "consumed_at "
+                    + user_timestamp_type
+                    + ")"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_pending_user_registrations_email ON pending_user_registrations (email)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_pending_user_registrations_token_hash "
+                    "ON pending_user_registrations (token_hash)"
+                )
+            )
+            existing_tables.add("pending_user_registrations")
+        if "user_audit_events" not in existing_tables:
+            json_type = "JSONB" if connection.dialect.name == "postgresql" else "JSON"
+            json_default = "'{}'::jsonb" if connection.dialect.name == "postgresql" else "'{}'"
+            connection.execute(
+                text(
+                    "CREATE TABLE user_audit_events ("
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, "
+                    "event_type TEXT NOT NULL, "
+                    f"details {json_type} DEFAULT {json_default} NOT NULL, "
+                    "created_at "
+                    + user_timestamp_type
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                )
+            )
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_audit_events_user_id ON user_audit_events (user_id)"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_user_audit_events_event_type ON user_audit_events (event_type)")
+            )
+            existing_tables.add("user_audit_events")
         if "blog_user_label_selections" not in existing_tables:
             connection.execute(
                 text(
@@ -1603,6 +1758,18 @@ class RepositoryProtocol(Protocol):
 
     def revoke_user_session(self, *, token: str) -> bool: ...
 
+    def request_email_verification(self, *, email: str) -> dict[str, Any]: ...
+
+    def confirm_email_verification(self, *, token: str) -> dict[str, Any]: ...
+
+    def request_password_reset(self, *, email: str) -> dict[str, Any]: ...
+
+    def reset_user_password(self, *, token: str, password: str) -> dict[str, Any]: ...
+
+    def list_users(self, *, page: int = 1, page_size: int = 50) -> dict[str, Any]: ...
+
+    def update_user_role(self, *, user_id: int, role: str) -> dict[str, Any]: ...
+
     def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]: ...
 
     def count_user_label_selections(self, *, user_id: int) -> int: ...
@@ -1780,10 +1947,16 @@ class SQLAlchemyRepository:
     database_url: str
     decision_settings: Settings | None = None
     startup_schema_sync: bool = True
+    public_base_url: str = "http://127.0.0.1:3000"
+    email_delivery: EmailDelivery = field(default_factory=NoopEmailDelivery)
+    email_dev_expose_tokens: bool = True
     engine: Any = field(init=False, repr=False)
     session_factory: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.decision_settings is not None:
+            self.public_base_url = self.decision_settings.public_base_url
+            self.email_dev_expose_tokens = self.decision_settings.email_dev_expose_tokens
         self.engine = create_persistence_engine(self.database_url)
         self.session_factory = create_session_factory(self.engine)
         if self.startup_schema_sync:
@@ -2749,6 +2922,7 @@ class SQLAlchemyRepository:
             revoked_at=None,
         )
         session.add(session_row)
+        user.last_login_at = timestamp
         user.updated_at = timestamp
         session.flush()
         return {
@@ -2757,19 +2931,201 @@ class SQLAlchemyRepository:
             "user": _user_payload(user),
         }
 
+    def _record_user_audit_event(
+        self,
+        session: Session,
+        *,
+        user_id: int | None,
+        event_type: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Append one user audit event without storing raw secrets.
+
+        Args:
+            session: Active SQLAlchemy session.
+            user_id: Optional user ID attached to the event.
+            event_type: Stable event name.
+            details: Optional JSON-safe metadata. Raw tokens and passwords must
+                not be supplied.
+
+        Returns:
+            None.
+        """
+
+        session.add(
+            UserAuditEventModel(
+                user_id=user_id,
+                event_type=event_type,
+                details=_coerce_json_object(details),
+                created_at=now_utc(),
+            )
+        )
+
+    def _create_lifecycle_token(
+        self,
+        session: Session,
+        *,
+        user: UserModel,
+        purpose: str,
+        ttl_hours: int,
+    ) -> dict[str, Any]:
+        """Create one hashed lifecycle token and return its raw one-time value.
+
+        Args:
+            session: Active SQLAlchemy session.
+            user: User row that owns the token.
+            purpose: Token purpose such as email verification or password reset.
+            ttl_hours: Token lifetime in hours.
+
+        Returns:
+            JSON payload containing the raw token once and expiry metadata.
+        """
+
+        timestamp = now_utc()
+        token = token_urlsafe(32)
+        row = UserVerificationTokenModel(
+            user_id=int(user.id),
+            token_hash=_hash_user_lifecycle_token(token),
+            purpose=purpose,
+            created_at=timestamp,
+            expires_at=timestamp + timedelta(hours=ttl_hours),
+            consumed_at=None,
+        )
+        session.add(row)
+        session.flush()
+        return {
+            "token": token,
+            "expires_at": _iso(row.expires_at),
+        }
+
+    def _consume_lifecycle_token(
+        self,
+        session: Session,
+        *,
+        token: str,
+        purpose: str,
+    ) -> tuple[UserVerificationTokenModel, UserModel]:
+        """Consume one valid lifecycle token and return its row plus user.
+
+        Args:
+            session: Active SQLAlchemy session.
+            token: Raw token supplied by the caller.
+            purpose: Required token purpose.
+
+        Returns:
+            Tuple of token row and owning user row.
+
+        Raises:
+            UserAuthError: Raised when the token is invalid, expired, consumed,
+                or points to a missing/inactive user.
+        """
+
+        clean_token = token.strip()
+        if not clean_token:
+            raise UserAuthError("invalid_token")
+        timestamp = now_utc()
+        row = session.scalar(
+            select(UserVerificationTokenModel).where(
+                UserVerificationTokenModel.token_hash == _hash_user_lifecycle_token(clean_token),
+                UserVerificationTokenModel.purpose == purpose,
+                UserVerificationTokenModel.consumed_at.is_(None),
+                UserVerificationTokenModel.expires_at > timestamp,
+            ).limit(1)
+        )
+        if row is None:
+            raise UserAuthError("invalid_token")
+        user = session.scalar(select(UserModel).where(UserModel.id == row.user_id).limit(1))
+        if user is None or not user.is_active:
+            raise UserAuthError("invalid_token")
+        row.consumed_at = timestamp
+        return row, user
+
+    def _email_verification_payload(self, token_payload: dict[str, Any]) -> dict[str, Any]:
+        """Return an email verification response payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Payload containing delivery status and expiry. Development mode also
+            includes the raw token and verification URL for local manual flows.
+        """
+
+        token = str(token_payload["token"])
+        verification_url = f"{self.public_base_url}/profile?verify_token={token}"
+        payload = {
+            "sent": True,
+            "expires_at": token_payload["expires_at"],
+        }
+        if self.email_dev_expose_tokens:
+            payload["verification_token"] = token
+            payload["verification_url"] = verification_url
+        return payload
+
+    def _verification_url(self, token_payload: dict[str, Any]) -> str:
+        """Build the public email verification URL for one raw token payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Public frontend URL that consumes the one-time verification token.
+        """
+
+        return f"{self.public_base_url}/profile?verify_token={token_payload['token']}"
+
+    def _password_reset_payload(self, token_payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a password reset response payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Payload containing delivery status and expiry. Development mode also
+            includes the raw token and reset URL for local manual flows.
+        """
+
+        token = str(token_payload["token"])
+        reset_url = f"{self.public_base_url}/profile?reset_token={token}"
+        payload = {
+            "sent": True,
+            "expires_at": token_payload["expires_at"],
+        }
+        if self.email_dev_expose_tokens:
+            payload["reset_token"] = token
+            payload["reset_url"] = reset_url
+        return payload
+
+    def _password_reset_url(self, token_payload: dict[str, Any]) -> str:
+        """Build the public password reset URL for one raw token payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Public frontend URL that consumes the one-time reset token.
+        """
+
+        return f"{self.public_base_url}/profile?reset_token={token_payload['token']}"
+
     def register_user(self, *, email: str, password: str) -> dict[str, Any]:
-        """Create a user account and first login session.
+        """Create a pending registration and send a verification email.
 
         Args:
             email: User email address used as the login identifier.
-            password: Plaintext password to hash and store.
+            password: Plaintext password to hash and hold until verification.
 
         Returns:
-            Auth payload with bearer token and user profile.
+            Email verification delivery payload.
 
         Raises:
             ValueError: Raised for invalid email or weak password.
-            UserAuthError: Raised when the email is already registered.
+            UserAuthError: Raised when the email is already registered or has a
+                still-valid pending registration.
         """
 
         normalized_email = _normalize_user_email(email)
@@ -2779,16 +3135,45 @@ class SQLAlchemyRepository:
             existing = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
             if existing is not None:
                 raise UserAuthError("email_already_registered")
-            user = UserModel(
+            pending = session.scalar(
+                select(PendingUserRegistrationModel)
+                .where(
+                    PendingUserRegistrationModel.email == normalized_email,
+                    PendingUserRegistrationModel.consumed_at.is_(None),
+                    PendingUserRegistrationModel.expires_at > timestamp,
+                )
+                .limit(1)
+            )
+            if pending is not None:
+                raise UserAuthError("email_registration_pending")
+            session.query(PendingUserRegistrationModel).filter(
+                PendingUserRegistrationModel.email == normalized_email
+            ).delete(synchronize_session=False)
+            token_payload = {
+                "token": token_urlsafe(32),
+                "expires_at": _iso(timestamp + timedelta(hours=PENDING_REGISTRATION_TTL_HOURS)),
+            }
+            pending = PendingUserRegistrationModel(
                 email=normalized_email,
                 password_hash=_hash_password(validated_password),
-                display_name=normalized_email.split("@", 1)[0],
+                token_hash=_hash_user_lifecycle_token(str(token_payload["token"])),
                 created_at=timestamp,
-                updated_at=timestamp,
+                expires_at=timestamp + timedelta(hours=PENDING_REGISTRATION_TTL_HOURS),
+                consumed_at=None,
             )
-            session.add(user)
+            session.add(pending)
+            self.email_delivery.send_verification_email(
+                to_email=normalized_email,
+                verification_url=self._verification_url(token_payload),
+            )
+            self._record_user_audit_event(
+                session,
+                user_id=None,
+                event_type="user.registration_verification_sent",
+                details={"email": normalized_email},
+            )
             session.flush()
-            return self._create_user_session_payload(session, user)
+            return self._email_verification_payload(token_payload)
 
     def login_user(self, *, email: str, password: str) -> dict[str, Any]:
         """Authenticate an existing user and create a fresh session.
@@ -2808,8 +3193,9 @@ class SQLAlchemyRepository:
         normalized_email = _normalize_user_email(email)
         with session_scope(self.session_factory) as session:
             user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
-            if user is None or not _verify_password(password, user.password_hash):
+            if user is None or not user.is_active or not _verify_password(password, user.password_hash):
                 raise UserAuthError("invalid_credentials")
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.login")
             return self._create_user_session_payload(session, user)
 
     def _active_user_by_session_token(self, session: Session, *, token: str) -> UserModel | None:
@@ -2837,7 +3223,8 @@ class SQLAlchemyRepository:
         )
         if row is None:
             return None
-        return session.scalar(select(UserModel).where(UserModel.id == row.user_id).limit(1))
+        user = session.scalar(select(UserModel).where(UserModel.id == row.user_id, UserModel.is_active.is_(True)).limit(1))
+        return user
 
     def get_user_by_session_token(self, *, token: str) -> dict[str, Any] | None:
         """Load the current user for one bearer token.
@@ -2878,6 +3265,218 @@ class SQLAlchemyRepository:
             row.revoked_at = now_utc()
             session.flush()
             return True
+
+    def request_email_verification(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh email verification token for one account.
+
+        Args:
+            email: Account email address.
+
+        Returns:
+            Dev-friendly verification payload. Unknown emails receive the same
+            neutral `sent` shape without token fields.
+        """
+
+        normalized_email = _normalize_user_email(email)
+        with session_scope(self.session_factory) as session:
+            user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
+            if user is None or not user.is_active:
+                return {"sent": True}
+            if user.email_verified_at is not None:
+                return {"sent": True, "already_verified": True}
+            token_payload = self._create_lifecycle_token(
+                session,
+                user=user,
+                purpose=USER_TOKEN_EMAIL_VERIFICATION,
+                ttl_hours=USER_EMAIL_VERIFICATION_TTL_HOURS,
+            )
+            self.email_delivery.send_verification_email(
+                to_email=normalized_email,
+                verification_url=self._verification_url(token_payload),
+            )
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.email_verification_requested")
+            return self._email_verification_payload(token_payload)
+
+    def confirm_email_verification(self, *, token: str) -> dict[str, Any]:
+        """Consume an email verification token and activate the account.
+
+        Args:
+            token: Raw verification token supplied by the user.
+
+        Returns:
+            Created or updated user profile payload.
+        """
+
+        clean_token = token.strip()
+        if not clean_token:
+            raise UserAuthError("invalid_token")
+        with session_scope(self.session_factory) as session:
+            timestamp = now_utc()
+            pending = session.scalar(
+                select(PendingUserRegistrationModel)
+                .where(
+                    PendingUserRegistrationModel.token_hash == _hash_user_lifecycle_token(clean_token),
+                    PendingUserRegistrationModel.consumed_at.is_(None),
+                    PendingUserRegistrationModel.expires_at > timestamp,
+                )
+                .limit(1)
+            )
+            if pending is not None:
+                existing = session.scalar(select(UserModel).where(UserModel.email == pending.email).limit(1))
+                if existing is not None:
+                    pending.consumed_at = timestamp
+                    raise UserAuthError("email_already_registered")
+                user = UserModel(
+                    email=str(pending.email),
+                    password_hash=str(pending.password_hash),
+                    display_name=str(pending.email).split("@", 1)[0],
+                    role=USER_ROLE_USER,
+                    is_active=True,
+                    email_verified_at=timestamp,
+                    password_changed_at=None,
+                    last_login_at=None,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                session.add(user)
+                pending.consumed_at = timestamp
+                session.flush()
+                self._record_user_audit_event(session, user_id=int(user.id), event_type="user.registered")
+                self._record_user_audit_event(session, user_id=int(user.id), event_type="user.email_verified")
+                session.flush()
+                return _user_payload(user)
+
+            _, user = self._consume_lifecycle_token(
+                session,
+                token=clean_token,
+                purpose=USER_TOKEN_EMAIL_VERIFICATION,
+            )
+            user.email_verified_at = timestamp
+            user.updated_at = timestamp
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.email_verified")
+            session.flush()
+            return _user_payload(user)
+
+    def request_password_reset(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh password reset token for one account.
+
+        Args:
+            email: Account email address.
+
+        Returns:
+            Neutral reset payload. Known active users include a dev token so
+            local tests and manual flows can complete without SMTP.
+        """
+
+        normalized_email = _normalize_user_email(email)
+        with session_scope(self.session_factory) as session:
+            user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
+            if user is None or not user.is_active:
+                return {"sent": True}
+            token_payload = self._create_lifecycle_token(
+                session,
+                user=user,
+                purpose=USER_TOKEN_PASSWORD_RESET,
+                ttl_hours=USER_PASSWORD_RESET_TTL_HOURS,
+            )
+            self.email_delivery.send_password_reset_email(
+                to_email=normalized_email,
+                reset_url=self._password_reset_url(token_payload),
+            )
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.password_reset_requested")
+            return self._password_reset_payload(token_payload)
+
+    def reset_user_password(self, *, token: str, password: str) -> dict[str, Any]:
+        """Consume a reset token, update password, and revoke active sessions.
+
+        Args:
+            token: Raw password reset token supplied by the user.
+            password: New plaintext password.
+
+        Returns:
+            Updated user profile payload.
+        """
+
+        validated_password = _validate_password(password)
+        with session_scope(self.session_factory) as session:
+            _, user = self._consume_lifecycle_token(
+                session,
+                token=token,
+                purpose=USER_TOKEN_PASSWORD_RESET,
+            )
+            timestamp = now_utc()
+            user.password_hash = _hash_password(validated_password)
+            user.password_changed_at = timestamp
+            user.updated_at = timestamp
+            session.query(UserSessionModel).filter(
+                UserSessionModel.user_id == int(user.id),
+                UserSessionModel.revoked_at.is_(None),
+            ).update({UserSessionModel.revoked_at: timestamp})
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.password_reset_completed")
+            session.flush()
+            return _user_payload(user)
+
+    def list_users(self, *, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        """List registered users for the admin user table.
+
+        Args:
+            page: One-based page number.
+            page_size: Number of users per page.
+
+        Returns:
+            Paginated user management payload.
+        """
+
+        safe_page = max(1, page)
+        safe_page_size = min(max(1, page_size), 200)
+        offset = (safe_page - 1) * safe_page_size
+        with session_scope(self.session_factory) as session:
+            total_items = int(session.scalar(select(func.count(UserModel.id))) or 0)
+            users = session.scalars(
+                select(UserModel)
+                .order_by(UserModel.id.asc())
+                .limit(safe_page_size)
+                .offset(offset)
+            ).all()
+            total_pages = max(1, ceil(total_items / safe_page_size)) if total_items else 1
+            return {
+                "items": [_user_admin_payload(user) for user in users],
+                "page": safe_page,
+                "page_size": safe_page_size,
+                "total_items": total_items,
+                "total_pages": total_pages,
+                "has_next": safe_page < total_pages,
+                "has_prev": safe_page > 1,
+            }
+
+    def update_user_role(self, *, user_id: int, role: str) -> dict[str, Any]:
+        """Update one user's role in the simplified admin/user role model.
+
+        Args:
+            user_id: Target user ID.
+            role: New role. Supported values are `admin` and `user`.
+
+        Returns:
+            Updated admin user payload.
+        """
+
+        clean_role = role.strip().lower()
+        if clean_role not in USER_ROLES:
+            raise ValueError("invalid_user_role")
+        with session_scope(self.session_factory) as session:
+            user = session.scalar(select(UserModel).where(UserModel.id == user_id).limit(1))
+            if user is None:
+                raise UserAuthError("user_not_found")
+            user.role = clean_role
+            user.updated_at = now_utc()
+            self._record_user_audit_event(
+                session,
+                user_id=int(user.id),
+                event_type="user.role_updated",
+                details={"role": clean_role},
+            )
+            session.flush()
+            return _user_admin_payload(user)
 
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         normalized = normalize_url(url)
@@ -4700,10 +5299,17 @@ class SQLAlchemyRepository:
 class Repository(SQLAlchemyRepository):
     """Compatibility wrapper for test call sites that still pass a db path."""
 
-    def __init__(self, db_path: Path, *, decision_settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        decision_settings: Settings | None = None,
+        email_delivery: EmailDelivery | None = None,
+    ) -> None:
         super().__init__(
             f"sqlite+pysqlite:///{db_path}",
             decision_settings=decision_settings,
+            email_delivery=email_delivery or NoopEmailDelivery(),
             startup_schema_sync=True,
         )
 
@@ -4713,12 +5319,19 @@ def build_repository(
     db_path: Path,
     db_dsn: str | None = None,
     settings: Settings | None = None,
+    email_delivery: EmailDelivery | None = None,
 ) -> RepositoryProtocol:
     """Build the configured repository implementation."""
     if db_dsn is not None:
         try:
-            return SQLAlchemyRepository(db_dsn, decision_settings=settings, startup_schema_sync=True)
+            kwargs: dict[str, Any] = {
+                "decision_settings": settings,
+                "startup_schema_sync": True,
+            }
+            if email_delivery is not None:
+                kwargs["email_delivery"] = email_delivery
+            return SQLAlchemyRepository(db_dsn, **kwargs)
         except ModuleNotFoundError as exc:
             if exc.name != "psycopg":
                 raise
-    return Repository(db_path, decision_settings=settings)
+    return Repository(db_path, decision_settings=settings, email_delivery=email_delivery)

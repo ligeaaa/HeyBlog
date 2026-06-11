@@ -113,6 +113,17 @@ class Settings:
     friend_link_prefix_blocklist: tuple[str, ...] = ()
     admin_token: str | None = None
     admin_dev_bypass: bool = False
+    public_base_url: str = "http://127.0.0.1:3000"
+    email_provider: str = "disabled"
+    email_from: str = ""
+    email_dev_expose_tokens: bool = True
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_timeout_seconds: float = 10.0
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
     filter_chain_config_path: Path = DEFAULT_FILTER_CHAIN_CONFIG_PATH
     rss_discovery_enabled: bool = True
@@ -221,6 +232,17 @@ class Settings:
             friend_link_prefix_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST"),
             admin_token=os.getenv("HEYBLOG_ADMIN_TOKEN"),
             admin_dev_bypass=_parse_bool_env("HEYBLOG_ADMIN_DEV_BYPASS"),
+            public_base_url=os.getenv("HEYBLOG_PUBLIC_BASE_URL", "http://127.0.0.1:3000").rstrip("/"),
+            email_provider=os.getenv("HEYBLOG_EMAIL_PROVIDER", "disabled").strip().lower() or "disabled",
+            email_from=os.getenv("HEYBLOG_EMAIL_FROM", "").strip(),
+            email_dev_expose_tokens=_parse_bool_env("HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS", default=True),
+            smtp_host=os.getenv("HEYBLOG_SMTP_HOST", "").strip(),
+            smtp_port=max(1, int(os.getenv("HEYBLOG_SMTP_PORT", "587"))),
+            smtp_username=os.getenv("HEYBLOG_SMTP_USERNAME") or None,
+            smtp_password=os.getenv("HEYBLOG_SMTP_PASSWORD") or None,
+            smtp_use_tls=_parse_bool_env("HEYBLOG_SMTP_USE_TLS", default=True),
+            smtp_use_ssl=_parse_bool_env("HEYBLOG_SMTP_USE_SSL"),
+            smtp_timeout_seconds=max(0.001, float(os.getenv("HEYBLOG_SMTP_TIMEOUT_SECONDS", "10.0"))),
             decision_model_root=Path(
                 os.getenv("HEYBLOG_DECISION_MODEL_ROOT", str(DEFAULT_DECISION_MODEL_ROOT))
             ),

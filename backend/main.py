@@ -55,6 +55,23 @@ class UserAuthRequest(BaseModel):
     password: str
 
 
+class EmailRequest(BaseModel):
+    email: str
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+class PasswordResetRequest(BaseModel):
+    token: str
+    password: str
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: str
+
+
 class ReplaceBlogLabelsRequest(BaseModel):
     tag_ids: list[int] | None = None
     label_id: dict[str, int] | None = None
@@ -422,16 +439,29 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         state = get_state()
         if state.admin_dev_bypass:
             return
-        if not state.admin_token:
-            raise HTTPException(status_code=503, detail="admin_auth_not_configured")
         authorization = request.headers.get("authorization", "").strip()
         if not authorization:
             raise HTTPException(status_code=401, detail="admin_auth_required")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(status_code=401, detail="admin_auth_required")
-        if token != state.admin_token:
+        if state.admin_token and token == state.admin_token:
+            return
+        get_user_by_session_token = getattr(state.persistence, "get_user_by_session_token", None)
+        if get_user_by_session_token is None:
+            if not state.admin_token:
+                raise HTTPException(status_code=503, detail="admin_auth_not_configured")
             raise HTTPException(status_code=403, detail="admin_auth_invalid")
+        try:
+            user = get_user_by_session_token(token=token)
+        except httpx.HTTPStatusError as exc:
+            _raise_upstream_http_error(exc, default="admin_auth_invalid", detail_override="admin_auth_invalid")
+        if user is None:
+            if not state.admin_token:
+                raise HTTPException(status_code=503, detail="admin_auth_not_configured")
+            raise HTTPException(status_code=403, detail="admin_auth_invalid")
+        if user.get("role") != "admin" or not user.get("is_active") or not user.get("email_verified"):
+            raise HTTPException(status_code=403, detail="admin_auth_forbidden")
 
     def optional_user(request: Request) -> dict[str, Any] | None:
         authorization = request.headers.get("authorization", "").strip()
@@ -605,6 +635,30 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.revoke_user_session(token=token)
         )
 
+    @app.post("/api/auth/email/verify/request")
+    def request_email_verification(payload: EmailRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.request_email_verification(email=payload.email)
+        )
+
+    @app.post("/api/auth/email/verify/confirm")
+    def confirm_email_verification(payload: TokenRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.confirm_email_verification(token=payload.token)
+        )
+
+    @app.post("/api/auth/password/forgot")
+    def request_password_reset(payload: EmailRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.request_password_reset(email=payload.email)
+        )
+
+    @app.post("/api/auth/password/reset")
+    def reset_user_password(payload: PasswordResetRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.reset_user_password(token=payload.token, password=payload.password)
+        )
+
     @app.get("/api/me/label-selections")
     def get_my_label_selections(
         limit: int = 50,
@@ -618,6 +672,26 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_my_label_stats(user: dict[str, Any] = Depends(require_user)) -> dict[str, int]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.get_user_label_stats(user_id=int(user["id"]))
+        )
+
+    @app.get("/api/admin/users")
+    def list_admin_users(
+        page: int = 1,
+        page_size: int = 50,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_users(page=page, page_size=page_size)
+        )
+
+    @app.patch("/api/admin/users/{user_id}/role")
+    def patch_admin_user_role(
+        user_id: int,
+        payload: UpdateUserRoleRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.update_user_role(user_id=user_id, role=payload.role)
         )
 
     @app.get("/api/admin/blog-labeling/candidates")

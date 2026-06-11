@@ -72,6 +72,10 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与用�
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
+- `POST /api/auth/email/verify/request`
+- `POST /api/auth/email/verify/confirm`
+- `POST /api/auth/password/forgot`
+- `POST /api/auth/password/reset`
 - `GET /api/me/label-selections`
 - `GET /api/blogs/catalog`
 - `POST /api/recommendations/random-blog-batches`
@@ -100,7 +104,7 @@ Public API 由 `backend` 服务统一暴露，供 public 浏览、图谱与用�
 
 ### 2.2 Admin API
 
-Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并要求 `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>`：
+Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并要求 `Authorization: Bearer <token>`。该 token 可以是 legacy `HEYBLOG_ADMIN_TOKEN`，也可以是已登录、已验证邮箱且 `role=admin` 的用户 session token：
 
 - `GET /api/admin/runtime/status`
 - `GET /api/admin/runtime/current`
@@ -122,6 +126,8 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `POST /api/admin/blog-labeling/title-preview`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
 - `GET /api/admin/recommendation-stats`
+- `GET /api/admin/users`
+- `PATCH /api/admin/users/{user_id}/role`
 
 补充脚本：
 
@@ -131,9 +137,11 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 认证语义：
 
+- Admin API 接受 legacy `HEYBLOG_ADMIN_TOKEN`，也接受已登录、已验证邮箱且 `role=admin` 的用户 session token。
 - 未提供 token：`401 admin_auth_required`
 - token 不合法：`403 admin_auth_invalid`
-- 未配置 `HEYBLOG_ADMIN_TOKEN` 且未开启 `HEYBLOG_ADMIN_DEV_BYPASS=true`：`503 admin_auth_not_configured`
+- token 属于普通用户或未验证 admin 候选账号：`403 admin_auth_forbidden`
+- 未配置 `HEYBLOG_ADMIN_TOKEN` 且未开启 `HEYBLOG_ADMIN_DEV_BYPASS=true`，同时请求也不是合法 admin 用户 session：`503 admin_auth_not_configured`
 
 ### 2.2 内部服务 API
 
@@ -286,7 +294,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 #### `POST /api/auth/register`
 
-用途：使用邮箱和密码注册普通用户，并立即创建登录会话。当前版本不做邮箱验证。
+用途：提交邮箱和密码并发送验证邮件。该接口只创建临时待验证注册记录，不创建登录 session，也不会把用户账号写入 `users`。只有用户通过验证码/验证链接完成 `/api/auth/email/verify/confirm` 后，系统才会创建持久化用户账号。游客无需入库；未登录请求即游客身份。
 
 请求体：
 
@@ -301,23 +309,20 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 ```json
 {
-  "token": "session-token",
-  "expires_at": "2026-06-25T00:00:00+00:00",
-  "user": {
-    "id": 1,
-    "email": "user@example.com",
-    "display_name": "user",
-    "created_at": "2026-05-26T22:04:50+00:00",
-    "updated_at": "2026-05-26T22:04:50+00:00"
-  }
+  "sent": true,
+  "verification_token": "dev-verification-token",
+  "verification_url": "http://127.0.0.1:3000/profile?verify_token=dev-verification-token",
+  "expires_at": "2026-06-12T00:00:00+00:00"
 }
 ```
 
 错误语义：
 
 - `409 email_already_registered`
+- `409 email_registration_pending`
 - `422 invalid_email`
 - `422 password_too_short`
+- `502 email_delivery_failed`
 
 #### `POST /api/auth/login`
 
@@ -343,6 +348,100 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 #### `POST /api/auth/logout`
 
 用途：注销当前 session token。请求头同 `/api/auth/me`。
+
+#### `POST /api/auth/email/verify/request`
+
+用途：为已经创建但尚未验证的普通用户或 admin 用户重新生成邮箱验证 token。未知邮箱和仍处于注册待验证阶段、尚未持久化的邮箱返回中性成功语义，避免暴露账号是否存在；待验证新注册应继续使用注册邮件中的链接完成账号创建。
+
+邮件通道由 `persistence-api` 的 `HEYBLOG_EMAIL_PROVIDER` 控制。默认 `disabled` 模式不会连接 SMTP，并会在响应体中返回一次性验证 token/link，方便本地调试和手动验证。设置 `HEYBLOG_EMAIL_PROVIDER=smtp` 后，系统会把验证链接发送到用户邮箱；生产环境应设置 `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS=false`，让 API 响应只保留发送状态和过期时间，不暴露明文 token。
+
+请求体：
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+成功响应：
+
+```json
+{
+  "sent": true,
+  "verification_token": "dev-verification-token",
+  "verification_url": "http://127.0.0.1:3000/profile?verify_token=dev-verification-token",
+  "expires_at": "2026-06-10T00:00:00+00:00"
+}
+```
+
+生产 SMTP 且关闭 dev token 暴露后的成功响应：
+
+```json
+{
+  "sent": true,
+  "expires_at": "2026-06-10T00:00:00+00:00"
+}
+```
+
+错误语义：
+
+- `502 email_delivery_failed`
+
+#### `POST /api/auth/email/verify/confirm`
+
+用途：消费邮箱验证邮件链接中的一次性 token。对于新注册 token，该接口先创建持久化用户账号，再返回已验证用户资料；对于历史未验证账号 token，该接口把已有用户标记为已验证。token 只保存 hash，过期或已消费后不可复用。浏览器打开 `/profile?verify_token=...` 时，前端会自动调用该接口完成验证，随后提示用户登录。
+
+请求体：
+
+```json
+{
+  "token": "dev-verification-token"
+}
+```
+
+返回：创建或更新后的用户资料。新注册用户默认 `role=user`、`email_verified=true`，不会自动创建登录 session。
+
+#### `POST /api/auth/password/forgot`
+
+用途：请求密码重置 token。未知邮箱返回中性成功语义。
+
+请求体：
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+默认开发响应包含可直接使用的 `reset_token` 与 `reset_url`。设置 `HEYBLOG_EMAIL_PROVIDER=smtp` 后，系统会把 reset link 发送到用户邮箱；生产环境应设置 `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS=false`，让 API 响应隐藏明文 reset token。后端始终只持久化 token hash。
+
+生产 SMTP 且关闭 dev token 暴露后的成功响应：
+
+```json
+{
+  "sent": true,
+  "expires_at": "2026-06-10T00:00:00+00:00"
+}
+```
+
+错误语义：
+
+- `502 email_delivery_failed`
+
+#### `POST /api/auth/password/reset`
+
+用途：消费一次性密码重置 token，设置新密码，并撤销该用户所有旧 session。
+
+请求体：
+
+```json
+{
+  "token": "dev-reset-token",
+  "password": "new long enough"
+}
+```
+
+返回：更新后的用户资料。
 
 #### `GET /api/me/label-selections`
 

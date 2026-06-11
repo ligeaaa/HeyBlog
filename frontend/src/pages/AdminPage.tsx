@@ -18,6 +18,7 @@ import {
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
+import { readStoredAuthSession } from "../lib/auth";
 import {
   downloadAdminBlogLabelParquet,
   fetchAdminBlogLabelCounts,
@@ -63,6 +64,19 @@ function readStoredAdminToken(): string {
     return "";
   }
   return window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ?? "";
+}
+
+function readDefaultAdminToken(): string {
+  const session = readStoredAuthSession();
+  if (
+    session?.token &&
+    session.user.role === "admin" &&
+    session.user.isActive &&
+    session.user.emailVerified
+  ) {
+    return session.token;
+  }
+  return readStoredAdminToken();
 }
 
 /**
@@ -116,8 +130,8 @@ function resolveLabelingIconUrl(candidate: AdminBlogLabelingCandidate): string {
  * @returns Admin page UI.
  */
 export function AdminPage() {
-  const [adminTokenInput, setAdminTokenInput] = useState(readStoredAdminToken());
-  const [activeAdminToken, setActiveAdminToken] = useState(readStoredAdminToken());
+  const [adminTokenInput, setAdminTokenInput] = useState(readDefaultAdminToken());
+  const [activeAdminToken, setActiveAdminToken] = useState(readDefaultAdminToken());
   const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
   const [runtimeStatus, setRuntimeStatus] = useState<AdminRuntimeStatus | null>(null);
   const [runtimeCurrent, setRuntimeCurrent] = useState<AdminRuntimeCurrent | null>(null);
@@ -183,7 +197,7 @@ export function AdminPage() {
         setLabelParquetStatus(null);
         setLabelingTotalItems(0);
         setLabelingTotalPages(1);
-        setAdminError("请输入管理员 Token 以加载受保护接口。");
+        setAdminError("请输入管理员 Token 或 Admin 账号登录 Token 以加载受保护接口。");
         return;
       }
 
@@ -227,7 +241,7 @@ export function AdminPage() {
       setLabelParquetStatus(null);
       setLabelingTotalItems(0);
       setLabelingTotalPages(1);
-      setAdminError("管理员接口加载失败，请确认 Token 是否正确。");
+      setAdminError("管理员接口加载失败，请确认 Token 是否正确且账号具备 Admin 身份。");
     } finally {
       if (!options?.silent) {
         setIsLoading(false);
@@ -305,7 +319,7 @@ export function AdminPage() {
    */
   async function refreshLabelingWorkbench(options: { page?: number; query?: string } = {}) {
     if (!activeAdminToken.trim()) {
-      toast.error("请先输入管理员 Token。");
+      toast.error("请先输入管理员 Token 或 Admin 账号登录 Token。");
       return;
     }
     try {
@@ -324,7 +338,7 @@ export function AdminPage() {
       setLabelParquetStatus(parquetStatus);
     } catch (error) {
       console.error(error);
-      toast.error("标注台加载失败，请检查 token 或服务状态。");
+      toast.error("标注台加载失败，请检查 Token、Admin 身份或服务状态。");
     } finally {
       setIsLabelingLoading(false);
     }
@@ -339,7 +353,7 @@ export function AdminPage() {
    */
   async function handleApplyCandidateLabel(candidate: AdminBlogLabelingCandidate, tag: AdminBlogLabelTag) {
     if (!activeAdminToken.trim()) {
-      toast.error("请先输入管理员 Token。");
+      toast.error("请先输入管理员 Token 或 Admin 账号登录 Token。");
       return;
     }
     try {
