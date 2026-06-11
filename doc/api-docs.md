@@ -354,7 +354,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 用途：为已经创建但尚未验证的普通用户或 admin 用户重新生成邮箱验证 token。未知邮箱和仍处于注册待验证阶段、尚未持久化的邮箱返回中性成功语义，避免暴露账号是否存在；待验证新注册应继续使用注册邮件中的链接完成账号创建。
 
-邮件通道由 `persistence-api` 的 `HEYBLOG_EMAIL_PROVIDER` 控制。默认 `disabled` 模式不会连接 SMTP，并会在响应体中返回一次性验证 token/link，方便本地调试和手动验证。设置 `HEYBLOG_EMAIL_PROVIDER=smtp` 后，系统会把验证链接发送到用户邮箱；生产环境应设置 `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS=false`，让 API 响应只保留发送状态和过期时间，不暴露明文 token。
+邮件通道由 `persistence-api` 的 `HEYBLOG_EMAIL_PROVIDER` 控制。默认 `disabled` 模式不会连接 SMTP，API 响应默认只返回发送状态和过期时间，不暴露明文 token。需要本地调试或手动验证时，可显式设置 `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS=true` 让响应体返回一次性验证 token/link。设置 `HEYBLOG_EMAIL_PROVIDER=smtp` 后，系统会把验证链接发送到用户邮箱。
 
 请求体：
 
@@ -414,7 +414,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 }
 ```
 
-默认开发响应包含可直接使用的 `reset_token` 与 `reset_url`。设置 `HEYBLOG_EMAIL_PROVIDER=smtp` 后，系统会把 reset link 发送到用户邮箱；生产环境应设置 `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS=false`，让 API 响应隐藏明文 reset token。后端始终只持久化 token hash。
+默认响应隐藏明文 reset token，只返回发送状态和过期时间。需要本地调试或手动验证时，可显式设置 `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS=true` 返回可直接使用的 `reset_token` 与 `reset_url`。设置 `HEYBLOG_EMAIL_PROVIDER=smtp` 后，系统会把 reset link 发送到用户邮箱。后端始终只持久化 token hash。
 
 生产 SMTP 且关闭 dev token 暴露后的成功响应：
 

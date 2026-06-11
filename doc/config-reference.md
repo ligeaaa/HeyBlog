@@ -47,7 +47,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_PUBLIC_BASE_URL` | `http://127.0.0.1:3000` | `persistence-api` | 生成邮箱验证与密码重置链接时使用的公开前端基准地址 |
 | `HEYBLOG_EMAIL_PROVIDER` | `disabled` | `persistence-api` | 用户生命周期邮件 provider。可选 `disabled`/`noop` 或 `smtp`；默认不连接邮件服务 |
 | `HEYBLOG_EMAIL_FROM` | 空 | `persistence-api` | SMTP 邮件发件人地址；启用 `smtp` 时必须设置 |
-| `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS` | `true` | `persistence-api` | 是否在验证/重置 API 响应中暴露 raw token/link。生产 SMTP 应设置为 `false` |
+| `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS` | `false` | `persistence-api` | 是否在验证/重置 API 响应中暴露 raw token/link。仅本地调试需要手动设置为 `true` |
 | `HEYBLOG_SMTP_HOST` | 空 | `persistence-api` | SMTP 服务器主机名 |
 | `HEYBLOG_SMTP_PORT` | `587` | `persistence-api` | SMTP 服务器端口 |
 | `HEYBLOG_SMTP_USERNAME` | 未设置 | `persistence-api` | SMTP 用户名；为空时不执行登录 |

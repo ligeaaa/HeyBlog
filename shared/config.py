@@ -116,7 +116,7 @@ class Settings:
     public_base_url: str = "http://127.0.0.1:3000"
     email_provider: str = "disabled"
     email_from: str = ""
-    email_dev_expose_tokens: bool = True
+    email_dev_expose_tokens: bool = False
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str | None = None
@@ -235,7 +235,7 @@ class Settings:
             public_base_url=os.getenv("HEYBLOG_PUBLIC_BASE_URL", "http://127.0.0.1:3000").rstrip("/"),
             email_provider=os.getenv("HEYBLOG_EMAIL_PROVIDER", "disabled").strip().lower() or "disabled",
             email_from=os.getenv("HEYBLOG_EMAIL_FROM", "").strip(),
-            email_dev_expose_tokens=_parse_bool_env("HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS", default=True),
+            email_dev_expose_tokens=_parse_bool_env("HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS"),
             smtp_host=os.getenv("HEYBLOG_SMTP_HOST", "").strip(),
             smtp_port=max(1, int(os.getenv("HEYBLOG_SMTP_PORT", "587"))),
             smtp_username=os.getenv("HEYBLOG_SMTP_USERNAME") or None,

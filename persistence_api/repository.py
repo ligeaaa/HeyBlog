@@ -1976,7 +1976,7 @@ class SQLAlchemyRepository:
     startup_schema_sync: bool = True
     public_base_url: str = "http://127.0.0.1:3000"
     email_delivery: EmailDelivery = field(default_factory=NoopEmailDelivery)
-    email_dev_expose_tokens: bool = True
+    email_dev_expose_tokens: bool = False
     engine: Any = field(init=False, repr=False)
     session_factory: Any = field(init=False, repr=False)
 

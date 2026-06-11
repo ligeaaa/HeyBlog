@@ -1140,6 +1140,15 @@ def test_settings_loads_smtp_email_delivery_configuration(monkeypatch) -> None:
     assert settings.smtp_timeout_seconds == 3.5
 
 
+def test_settings_defaults_to_hiding_lifecycle_tokens(monkeypatch) -> None:
+    """Environment loading should keep lifecycle tokens hidden unless opted in."""
+    monkeypatch.delenv("HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.email_dev_expose_tokens is False
+
+
 def test_settings_default_runtime_model_root_uses_runtime_resources(monkeypatch) -> None:
     """Environment loading should default runtime model reads to published resources."""
     monkeypatch.delenv("HEYBLOG_DECISION_MODEL_ROOT", raising=False)
