@@ -48,6 +48,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_EMAIL_PROVIDER` | `disabled` | `persistence-api` | 用户生命周期邮件 provider。可选 `disabled`/`noop` 或 `smtp`；默认不连接邮件服务 |
 | `HEYBLOG_EMAIL_FROM` | 空 | `persistence-api` | SMTP 邮件发件人地址；启用 `smtp` 时必须设置 |
 | `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS` | `false` | `persistence-api` | 是否在验证/重置 API 响应中暴露 raw token/link。仅本地调试需要手动设置为 `true` |
+| `HEYBLOG_ADMIN_STATS_SCHEDULER_ENABLED` | `true` | `persistence-api` | 是否启动后台整点任务刷新 admin hourly stats；开启后不依赖打开 admin 页面 |
 | `HEYBLOG_SMTP_HOST` | 空 | `persistence-api` | SMTP 服务器主机名 |
 | `HEYBLOG_SMTP_PORT` | `587` | `persistence-api` | SMTP 服务器端口 |
 | `HEYBLOG_SMTP_USERNAME` | 未设置 | `persistence-api` | SMTP 用户名；为空时不执行登录 |
@@ -99,6 +100,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `persistence-api` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 全库规则重扫读取的容器内运行时模型根目录 |
 | `persistence-api` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 全库规则重扫使用的模型共识策略与 weighted 阈值 |
 | `persistence-api` | `HEYBLOG_EMAIL_PROVIDER` / `HEYBLOG_EMAIL_FROM` / `HEYBLOG_SMTP_*` | 发送邮箱验证与密码重置邮件 |
+| `persistence-api` | `HEYBLOG_ADMIN_STATS_SCHEDULER_ENABLED` | 控制 admin hourly stats 后台整点刷新任务 |
 
 ## 3.1 运行时资源目录约定
 

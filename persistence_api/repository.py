@@ -1906,6 +1906,8 @@ class RepositoryProtocol(Protocol):
 
     def get_recommendation_strategy_stats(self) -> dict[str, Any]: ...
 
+    def refresh_admin_hourly_stats(self, *, hour_start: datetime | None = None) -> dict[str, Any]: ...
+
     def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]: ...
 
     def list_blog_labeling_candidates(
@@ -4409,14 +4411,14 @@ class SQLAlchemyRepository:
         return {
             "id": row.id,
             "hour_start": _iso(row.hour_start),
-            "user_count": row.user_count,
-            "random_request_count": row.random_request_count,
-            "random_impression_count": row.random_impression_count,
-            "detail_open_count": row.detail_open_count,
-            "external_open_count": row.external_open_count,
-            "detail_ctr": row.detail_ctr,
-            "external_ctr": row.external_ctr,
-            "total_click_ctr": row.total_click_ctr,
+            "user_count": row.user_count or 0,
+            "random_request_count": row.random_request_count or 0,
+            "random_impression_count": row.random_impression_count or 0,
+            "detail_open_count": row.detail_open_count or 0,
+            "external_open_count": row.external_open_count or 0,
+            "detail_ctr": row.detail_ctr or 0.0,
+            "external_ctr": row.external_ctr or 0.0,
+            "total_click_ctr": row.total_click_ctr or 0.0,
             "refreshed_at": _iso(row.refreshed_at),
             "created_at": _iso(row.created_at),
         }
@@ -4496,20 +4498,37 @@ class SQLAlchemyRepository:
         session.flush()
         return row
 
+    def refresh_admin_hourly_stats(self, *, hour_start: datetime | None = None) -> dict[str, Any]:
+        """Refresh or create one admin statistics snapshot.
+
+        Args:
+            hour_start: Optional UTC natural-hour boundary. The current UTC
+                hour is used when omitted.
+
+        Returns:
+            JSON-ready hourly statistics snapshot.
+        """
+
+        normalized_hour = self._hour_start(hour_start)
+        with session_scope(self.session_factory) as session:
+            row = self._refresh_admin_hourly_stats(session, normalized_hour)
+            return self._admin_hourly_stats_payload(row)
+
     def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]:
-        """Return hourly admin statistics and refresh the current hour.
+        """Return persisted hourly admin statistics.
 
         Args:
             limit: Maximum number of hourly snapshots to return.
 
         Returns:
-            Admin statistics payload with latest/current snapshots first.
+            Admin statistics payload with latest/current persisted snapshots
+            first. Snapshot refresh is owned by the service scheduler, not this
+            read path.
         """
 
         normalized_limit = max(1, min(int(limit), 168))
         with session_scope(self.session_factory) as session:
             current_hour = self._hour_start()
-            current = self._refresh_admin_hourly_stats(session, current_hour)
             rows = list(
                 session.scalars(
                     select(AdminHourlyStatsModel)
@@ -4517,6 +4536,9 @@ class SQLAlchemyRepository:
                     .limit(normalized_limit)
                 )
             )
+            current = next((row for row in rows if self._hour_start(row.hour_start) == current_hour), None)
+            if current is None:
+                current = AdminHourlyStatsModel(hour_start=current_hour)
             latest = rows[0] if rows else current
             return {
                 "current_hour": self._admin_hourly_stats_payload(current),

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from dataclasses import dataclass
+from threading import Event
+from threading import Lock
+from threading import Thread
 from typing import Callable
 from typing import Any
 from typing import TypeVar
@@ -36,6 +42,142 @@ SERVICE_NAME = "persistence-api"
 LOGGER = get_logger(__name__)
 
 
+def _utc_hour_start(value: datetime | None = None) -> datetime:
+    """Return the UTC natural-hour boundary for one timestamp.
+
+    Args:
+        value: Optional timestamp. Current UTC time is used when omitted.
+
+    Returns:
+        Timezone-aware UTC datetime truncated to the hour.
+    """
+
+    current = value or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return current.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def _seconds_until_next_hour(now: datetime | None = None) -> float:
+    """Return seconds from one timestamp until the next UTC hour boundary.
+
+    Args:
+        now: Optional timestamp. Current UTC time is used when omitted.
+
+    Returns:
+        Positive number of seconds until the next natural-hour boundary.
+    """
+
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+    next_hour = _utc_hour_start(current) + timedelta(hours=1)
+    return max((next_hour - current).total_seconds(), 0.001)
+
+
+class AdminStatsScheduler:
+    """Refresh admin hourly statistics independently of admin page reads."""
+
+    def __init__(
+        self,
+        repository: RepositoryProtocol,
+        *,
+        enabled: bool = True,
+        tick_seconds_factory: Callable[[], float] = _seconds_until_next_hour,
+    ) -> None:
+        """Initialize the hourly admin stats scheduler.
+
+        Args:
+            repository: Persistence repository that owns snapshot refreshes.
+            enabled: Whether scheduler startup should create a background
+                thread.
+            tick_seconds_factory: Delay factory used before each hourly tick.
+
+        Returns:
+            None.
+        """
+
+        self.repository = repository
+        self.enabled = enabled
+        self.tick_seconds_factory = tick_seconds_factory
+        self._stop_event = Event()
+        self._lock = Lock()
+        self._thread: Thread | None = None
+
+    def start(self) -> dict[str, Any]:
+        """Start the background scheduler if enabled.
+
+        Args:
+            None.
+
+        Returns:
+            Payload describing scheduler startup state.
+        """
+
+        if not self.enabled:
+            return {"accepted": False, "reason": "scheduler_disabled"}
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return {"accepted": False, "reason": "scheduler_already_running"}
+            self._stop_event.clear()
+            self._thread = Thread(target=self._run, daemon=True, name="admin-stats-scheduler")
+            self._thread.start()
+            return {"accepted": True}
+
+    def stop(self) -> dict[str, Any]:
+        """Request scheduler shutdown.
+
+        Args:
+            None.
+
+        Returns:
+            Payload describing whether a running scheduler was asked to stop.
+        """
+
+        self._stop_event.set()
+        with self._lock:
+            running = self._thread is not None and self._thread.is_alive()
+        return {"accepted": running}
+
+    def _run(self) -> None:
+        """Run hourly refresh ticks until shutdown is requested.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
+
+        while not self._stop_event.wait(self.tick_seconds_factory()):
+            self._refresh_due_hours()
+
+    def _refresh_due_hours(self) -> None:
+        """Refresh the previous and current UTC natural-hour snapshots.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
+
+        current_hour = _utc_hour_start()
+        for hour_start in (current_hour - timedelta(hours=1), current_hour):
+            try:
+                self.repository.refresh_admin_hourly_stats(hour_start=hour_start)
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                log_event(
+                    LOGGER,
+                    event="persistence.admin_stats.refresh_failed",
+                    message="admin hourly stats refresh failed",
+                    stage="admin_stats",
+                    hour_start=hour_start.isoformat(),
+                    error=str(exc),
+                )
+
+
 @dataclass(slots=True)
 class PersistenceState:
     """State container for the persistence service."""
@@ -43,6 +185,7 @@ class PersistenceState:
     repository: RepositoryProtocol
     graph_service: GraphService
     stats_service: StatsService
+    admin_stats_scheduler: AdminStatsScheduler
 
 
 class UpsertBlogRequest(BaseModel):
@@ -316,6 +459,10 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
             age_manager=age_manager,
         ),
         stats_service=StatsService(repository),
+        admin_stats_scheduler=AdminStatsScheduler(
+            repository,
+            enabled=resolved.admin_stats_scheduler_enabled,
+        ),
     )
 
 
@@ -339,6 +486,31 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         if app.state.persistence_state is None:
             app.state.persistence_state = build_persistence_state()
         return app.state.persistence_state
+
+    @app.on_event("startup")
+    def start_admin_stats_scheduler() -> None:
+        """Start hourly admin statistics refresh when the service starts."""
+        scheduler_result = get_state().admin_stats_scheduler.start()
+        log_event(
+            LOGGER,
+            event="persistence.admin_stats.scheduler.started",
+            message="admin hourly stats scheduler started",
+            stage="admin_stats",
+            accepted=scheduler_result.get("accepted"),
+            reason=scheduler_result.get("reason"),
+        )
+
+    @app.on_event("shutdown")
+    def stop_admin_stats_scheduler() -> None:
+        """Stop hourly admin statistics refresh when the service shuts down."""
+        scheduler_result = get_state().admin_stats_scheduler.stop()
+        log_event(
+            LOGGER,
+            event="persistence.admin_stats.scheduler.stopped",
+            message="admin hourly stats scheduler stopped",
+            stage="admin_stats",
+            accepted=scheduler_result.get("accepted"),
+        )
 
     @app.get("/internal/health")
     def health() -> dict[str, Any]:

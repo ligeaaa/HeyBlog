@@ -6,6 +6,7 @@ import sys
 import pyarrow.parquet as pq
 import pytest
 from sqlalchemy import event
+from sqlalchemy import func
 from sqlalchemy import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -1342,6 +1343,7 @@ def test_repository_persists_random_recommendation_batch_and_interaction_stats(t
     )
     stats = repository.get_blog_recommendation_stats(first["id"])
     strategy_stats = repository.get_recommendation_strategy_stats()
+    repository.refresh_admin_hourly_stats()
     hourly_stats = repository.get_admin_hourly_stats()
 
     assert event["duplicate"] is False
@@ -1379,6 +1381,26 @@ def test_repository_persists_random_recommendation_batch_and_interaction_stats(t
         assert "blog_id" not in BlogInteractionModel.__table__.columns
         assert stored_hourly_stats is not None
         assert stored_hourly_stats.random_impression_count == 2
+
+
+def test_repository_admin_hourly_stats_read_does_not_refresh(tmp_path: Path) -> None:
+    """Reading admin hourly stats should not create snapshots implicitly."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+
+    empty_stats = repository.get_admin_hourly_stats()
+
+    assert empty_stats["items"] == []
+    assert empty_stats["current_hour"]["random_request_count"] == 0
+    with session_scope(repository.session_factory) as session:
+        assert session.scalar(select(func.count(AdminHourlyStatsModel.id))) == 0
+
+    refreshed = repository.refresh_admin_hourly_stats()
+    read_stats = repository.get_admin_hourly_stats()
+
+    assert refreshed["random_request_count"] == read_stats["current_hour"]["random_request_count"]
+    assert len(read_stats["items"]) == 1
+    with session_scope(repository.session_factory) as session:
+        assert session.scalar(select(func.count(AdminHourlyStatsModel.id))) == 1
 
 
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:

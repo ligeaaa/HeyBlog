@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from threading import Event
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from backend.main import BackendState
 from backend.main import create_app as create_backend_app
 from persistence_api.email_delivery import EmailDeliveryError
 from frontend.server import create_app as create_frontend_app
+from persistence_api.main import AdminStatsScheduler
 from persistence_api.main import PersistenceState
 from persistence_api.main import build_persistence_state
 from persistence_api.main import create_app as create_persistence_app
@@ -74,6 +76,16 @@ class StubCrawler:
 
     def run_batch(self, max_nodes: int) -> dict[str, object]:
         return {"accepted": True, "mode": "batch", "result": {"processed": max_nodes}}
+
+
+class NoopAdminStatsScheduler:
+    """Test scheduler stub used when routes do not exercise app startup."""
+
+    def start(self) -> dict[str, object]:
+        return {"accepted": False, "reason": "test_noop"}
+
+    def stop(self) -> dict[str, object]:
+        return {"accepted": False}
 
 
 
@@ -353,6 +365,7 @@ def test_persistence_service_queue_routes_preserve_optional_row_serialization() 
             repository=repository,  # type: ignore[arg-type]
             graph_service=object(),  # type: ignore[arg-type]
             stats_service=object(),  # type: ignore[arg-type]
+            admin_stats_scheduler=NoopAdminStatsScheduler(),  # type: ignore[arg-type]
         )
     )
     client = TestClient(app)
@@ -384,6 +397,7 @@ def test_persistence_service_zero_arg_list_routes_preserve_payload_passthrough()
             repository=StubRepository(),  # type: ignore[arg-type]
             graph_service=object(),  # type: ignore[arg-type]
             stats_service=object(),  # type: ignore[arg-type]
+            admin_stats_scheduler=NoopAdminStatsScheduler(),  # type: ignore[arg-type]
         )
     )
     client = TestClient(app)
@@ -412,6 +426,7 @@ def test_persistence_service_zero_arg_dict_routes_preserve_payload_passthrough()
             repository=object(),  # type: ignore[arg-type]
             graph_service=StubGraphService(),  # type: ignore[arg-type]
             stats_service=object(),  # type: ignore[arg-type]
+            admin_stats_scheduler=NoopAdminStatsScheduler(),  # type: ignore[arg-type]
         )
     )
     client = TestClient(app)
@@ -451,6 +466,7 @@ def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -
             repository=StubRepository(),  # type: ignore[arg-type]
             graph_service=object(),  # type: ignore[arg-type]
             stats_service=StubStatsService(),  # type: ignore[arg-type]
+            admin_stats_scheduler=NoopAdminStatsScheduler(),  # type: ignore[arg-type]
         )
     )
     client = TestClient(app)
@@ -472,6 +488,65 @@ def test_persistence_service_stats_routes_preserve_zero_arg_dict_passthrough() -
             "rule:same_domain": 9,
         }
     }
+
+
+def test_persistence_service_starts_admin_stats_scheduler() -> None:
+    """Persistence app startup should start the admin stats scheduler without refreshing immediately."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.refreshed_hours: list[object] = []
+
+        def refresh_admin_hourly_stats(self, *, hour_start: object | None = None) -> dict[str, object]:
+            self.refreshed_hours.append(hour_start)
+            return {"hour_start": str(hour_start)}
+
+    repository = StubRepository()
+    scheduler = AdminStatsScheduler(
+        repository,  # type: ignore[arg-type]
+        tick_seconds_factory=lambda: 3600.0,
+    )
+    app = create_persistence_app(
+        PersistenceState(
+            repository=repository,  # type: ignore[arg-type]
+            graph_service=object(),  # type: ignore[arg-type]
+            stats_service=object(),  # type: ignore[arg-type]
+            admin_stats_scheduler=scheduler,
+        )
+    )
+
+    with TestClient(app):
+        assert repository.refreshed_hours == []
+
+    assert scheduler.stop()["accepted"] is False
+
+
+def test_admin_stats_scheduler_refreshes_only_on_scheduled_tick() -> None:
+    """Admin stats scheduler should refresh after its scheduled delay, not at start."""
+
+    class StubRepository:
+        def __init__(self) -> None:
+            self.refreshed = Event()
+            self.refreshed_hours: list[object] = []
+
+        def refresh_admin_hourly_stats(self, *, hour_start: object | None = None) -> dict[str, object]:
+            self.refreshed_hours.append(hour_start)
+            self.refreshed.set()
+            return {"hour_start": str(hour_start)}
+
+    repository = StubRepository()
+    scheduler = AdminStatsScheduler(
+        repository,  # type: ignore[arg-type]
+        tick_seconds_factory=lambda: 0.01,
+    )
+
+    try:
+        assert scheduler.start()["accepted"] is True
+        assert repository.refreshed.wait(0.002) is False
+        assert repository.refreshed.wait(1.0) is True
+        assert len(repository.refreshed_hours) == 2
+    finally:
+        scheduler.stop()
 
 
 def test_backend_icon_proxy_returns_valid_image(monkeypatch) -> None:
