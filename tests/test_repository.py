@@ -67,6 +67,17 @@ class CapturingEmailDelivery:
         self.reset_urls.append((to_email, reset_url))
 
 
+def build_dev_token_repository(tmp_path: Path) -> repository_module.SQLAlchemyRepository:
+    """Build a repository that exposes lifecycle tokens for local flow tests."""
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        email_dev_expose_tokens=True,
+    )
+    return repository_module.build_repository(db_path=settings.db_path, settings=settings)
+
+
 def register_and_verify_user(
     repository: repository_module.SQLAlchemyRepository,
     *,
@@ -134,7 +145,7 @@ def test_build_repository_enables_schema_sync_for_dsn(monkeypatch: pytest.Monkey
 
 def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -> None:
     """Reset should wipe only graph queue tables while retaining other records."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    repository = build_dev_token_repository(tmp_path)
     first_blog_id, inserted = repository.upsert_blog(
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
@@ -248,7 +259,7 @@ def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -
 
 def test_repository_register_login_and_session_profile(tmp_path: Path) -> None:
     """Users persist only after email verification, then can log in."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    repository = build_dev_token_repository(tmp_path)
 
     pending = repository.register_user(email="User@Example.com", password="correct horse")
     assert pending["sent"] is True
@@ -274,7 +285,7 @@ def test_repository_register_login_and_session_profile(tmp_path: Path) -> None:
 
 def test_repository_email_verification_and_password_reset_flow(tmp_path: Path) -> None:
     """Email verification and password reset tokens should be single-use."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    repository = build_dev_token_repository(tmp_path)
 
     created = repository.register_user(email="verify@example.com", password="correct horse")
     verification_token = created["verification_token"]
@@ -339,7 +350,7 @@ def test_repository_sends_lifecycle_email_and_hides_tokens_when_configured(tmp_p
 
 def test_repository_admin_role_updates_user_identity(tmp_path: Path) -> None:
     """Users should be promotable between regular user and admin roles."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    repository = build_dev_token_repository(tmp_path)
 
     created = register_and_verify_user(repository, email="admin@example.com", password="correct horse")
     user_id = int(created["id"])
@@ -356,7 +367,7 @@ def test_repository_admin_role_updates_user_identity(tmp_path: Path) -> None:
 
 def test_repository_rejects_duplicate_user_and_bad_credentials(tmp_path: Path) -> None:
     """Email uniqueness and password validation should produce stable errors."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    repository = build_dev_token_repository(tmp_path)
     register_and_verify_user(repository, email="dupe@example.com", password="long enough")
 
     with pytest.raises(repository_module.UserAuthError, match="email_already_registered"):
@@ -1124,7 +1135,13 @@ def test_repository_blog_catalog_supports_random_sort_for_finished_sampling(tmp_
 
 def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(tmp_path: Path) -> None:
     """Random catalog should exclude admin non-blog URLs and store public votes separately."""
-    repository = repository_module.build_repository(db_path=tmp_path / "heyblog.sqlite")
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        email_dev_expose_tokens=True,
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
     blog_tag = repository.create_blog_label_tag(name="blog")
     company_tag = repository.create_blog_label_tag(name="company")
     other_tag = repository.create_blog_label_tag(name="other")

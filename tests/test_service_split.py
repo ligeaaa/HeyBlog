@@ -109,6 +109,7 @@ def test_persistence_service_exposes_supported_repository_data(tmp_path: Path) -
         db_path=tmp_path / "heyblog.sqlite",
         seed_path=tmp_path / "seed.csv",
         export_dir=tmp_path / "exports",
+        email_dev_expose_tokens=True,
     )
     state = build_persistence_state(settings)
     app = create_persistence_app(state)
@@ -562,6 +563,7 @@ def test_persistence_service_exposes_blog_labeling_endpoints(tmp_path: Path) -> 
         db_path=tmp_path / "heyblog.sqlite",
         seed_path=tmp_path / "seed.csv",
         export_dir=tmp_path / "exports",
+        email_dev_expose_tokens=True,
     )
     app = create_persistence_app(build_persistence_state(settings))
     client = TestClient(app)
