@@ -15,6 +15,7 @@ DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
 DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS = 3600.0
+DEFAULT_ADMIN_STATS_SCHEDULER_ENABLED = True
 DEFAULT_MAX_FETCHED_PAGE_BYTES = 2_000_000
 DEFAULT_RAW_DISCOVERED_URL_LIMIT = 1_000_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -107,6 +108,7 @@ class Settings:
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
     runtime_auto_start_interval_seconds: float = DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS
+    admin_stats_scheduler_enabled: bool = DEFAULT_ADMIN_STATS_SCHEDULER_ENABLED
     max_fetched_page_bytes: int = DEFAULT_MAX_FETCHED_PAGE_BYTES
     raw_discovered_url_limit: int = DEFAULT_RAW_DISCOVERED_URL_LIMIT
     friend_link_domain_blocklist: tuple[str, ...] = ()
@@ -221,6 +223,10 @@ class Settings:
                         str(DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS),
                     )
                 ),
+            ),
+            admin_stats_scheduler_enabled=_parse_bool_env(
+                "HEYBLOG_ADMIN_STATS_SCHEDULER_ENABLED",
+                default=DEFAULT_ADMIN_STATS_SCHEDULER_ENABLED,
             ),
             max_fetched_page_bytes=max(
                 1,

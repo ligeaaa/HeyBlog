@@ -695,7 +695,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 #### `GET /api/admin/hourly-stats`
 
-用途：返回后台统计小时快照，并在读取时刷新当前自然小时的数据。该接口位于 admin API 下，需要 `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>` 或已验证 admin 用户 session token。
+用途：返回后台统计小时快照。快照由 `persistence-api` 后台整点任务刷新，不依赖打开 admin 页面；该接口位于 admin API 下，需要 `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>` 或已验证 admin 用户 session token。
 
 查询参数：
 
@@ -704,6 +704,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 统计语义：
 
 - 数据写入 `admin_hourly_stats` 表，每条记录对应一个 UTC 自然小时窗口 `[hour_start, hour_start + 1h)`
+- `persistence-api` 会在每个 UTC 整点刷新刚结束的小时和新的当前小时；服务启动和 admin 页面读取都不会触发实时刷新
 - `user_count`: 当前 active 用户总数
 - `random_request_count`: 该小时内 random blog 推荐请求数
 - `random_impression_count`: 该小时内 random blog 推荐曝光数；随机页每次通常请求 9 个
