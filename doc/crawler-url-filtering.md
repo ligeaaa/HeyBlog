@@ -105,15 +105,9 @@ crawler 的两种主要运行方式：
 6. 每个博客结束后累计 `processed / discovered / failed`
 7. 本轮结束后执行 `write_exports()`
 
-### 3.3 队列公平策略
+### 3.3 队列领取策略
 
-`CrawlPipeline._claim_next_scheduled_blog()` 当前不是简单 FIFO，而是带优先队列公平窗口：
-
-- 优先种子队列优先级更高
-- 但不会无限饿死普通 waiting 队列
-- 参数 `priority_seed_normal_queue_slots` 控制“处理一个 priority 后，允许多少个 normal queue 项穿插执行”
-
-这套逻辑也被 runtime 模式复用。
+`CrawlPipeline` 与 runtime 模式都会通过 `persistence-api /internal/queue/next` 领取下一个 `WAITING` blog，并在领取时把状态切换为 `PROCESSING`。
 
 ## 4. 单博客抓取链路
 
@@ -137,9 +131,10 @@ crawler 的两种主要运行方式：
 - `status_code=首页 HTTP 状态码`
 - `friend_links_count=本次接受的外链博客数`
 - `title`
-- `icon_url`
+- `icon_url`，仅当页面 metadata 提取出的 icon 候选能通过轻量 HTTP 验证时写入；无候选或验证失败时保持 `NULL`
 
 如果超时或异常，则由 `CrawlPipeline._mark_blog_failed()` 标记为 `FAILED`。
+`FAILED` 只表示最近一次抓取尝试没有完整结束，不会撤销 `acceptance_status=ACCEPTED` 的博客判定；RSS、模型或 seed 接受来源会保留在 `accepted_by` / `accepted_at` 中。
 
 ## 5. 首页友链页发现逻辑
 
@@ -556,7 +551,7 @@ identity 输出里会记录：
 - 一个博客的整次 crawl 有总超时预算
 - 候选页可并发抓取
 - 单页超出字节上限会触发 `PageTooLargeError`
-- 若候选页超大，当前 blog 会被标记为 `FAILED`
+- 若候选页超大，当前 blog 会被标记为 `FAILED`，并记录 `crawl_error_kind=page_too_large`；这只影响抓取生命周期，不表示该 URL 不是博客
 
 因此“没有抓到友链”不一定是过滤规则问题，也可能是：
 

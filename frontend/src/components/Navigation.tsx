@@ -1,5 +1,6 @@
-import { Dices, Filter, Home, Info, Network, UserCircle } from "lucide-react";
+import { Dices, Filter, Home, Info, Network, Shield, UserCircle } from "lucide-react";
 import { NavLink } from "react-router-dom";
+import { hasStoredAdminSession } from "../lib/auth";
 
 const navigationItems = [
   { to: "/", label: "首页", icon: Home },
@@ -16,10 +17,13 @@ const navigationItems = [
  * @returns Floating route navigation bar.
  */
 export function Navigation() {
+  const visibleItems = hasStoredAdminSession()
+    ? [...navigationItems, { to: "/admin", label: "管理", icon: Shield }]
+    : navigationItems;
   return (
     <nav className="fixed right-6 top-6 z-40">
       <div className="flex items-center gap-2 rounded-2xl border border-white/70 bg-white/92 p-1.5 shadow-[0_20px_60px_rgba(15,23,42,0.14)] backdrop-blur-md">
-        {navigationItems.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon;
           return (
             <NavLink

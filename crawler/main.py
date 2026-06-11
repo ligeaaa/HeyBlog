@@ -72,7 +72,7 @@ def build_crawler_state(settings: Settings | None = None) -> CrawlerState:
         runtime=CrawlerRuntimeService(
             pipeline,
             worker_count=resolved.runtime_worker_count,
-            priority_seed_normal_queue_slots=resolved.priority_seed_normal_queue_slots,
+            auto_start_interval_seconds=resolved.runtime_auto_start_interval_seconds,
         ),
     )
 
@@ -99,6 +99,32 @@ def create_app(state: CrawlerState | None = None) -> FastAPI:
     app = FastAPI(title="HeyBlog Crawler Service", version="0.1.0")
     app.add_middleware(RequestIdMiddleware, service=SERVICE_NAME)
     app.state.crawler_state = state or build_crawler_state()
+
+    @app.on_event("startup")
+    def start_runtime_auto_scheduler() -> None:
+        """Start runtime auto scheduling when the ASGI app starts serving."""
+        scheduler_result = app.state.crawler_state.runtime.start_auto_scheduler()
+        log_event(
+            LOGGER,
+            event="crawler.runtime.auto_scheduler.started",
+            message="crawler runtime auto scheduler started",
+            stage="runtime",
+            accepted=scheduler_result.get("accepted"),
+            interval_seconds=scheduler_result.get("interval_seconds"),
+            reason=scheduler_result.get("reason"),
+        )
+
+    @app.on_event("shutdown")
+    def stop_runtime_auto_scheduler() -> None:
+        """Stop runtime auto scheduling when the ASGI app shuts down."""
+        scheduler_result = app.state.crawler_state.runtime.stop_auto_scheduler()
+        log_event(
+            LOGGER,
+            event="crawler.runtime.auto_scheduler.stopped",
+            message="crawler runtime auto scheduler stopped",
+            stage="runtime",
+            accepted=scheduler_result.get("accepted"),
+        )
 
     def get_state() -> CrawlerState:
         """Return the app-scoped crawler state container.

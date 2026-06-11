@@ -69,6 +69,11 @@ class PersistenceHttpClient:
         response.raise_for_status()
         return response.json()
 
+    def _patch(self, path: str, payload: dict[str, Any]) -> Any:
+        response = self.client.patch(path, json=payload, **context_header_kwargs())
+        response.raise_for_status()
+        return response.json()
+
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         response = self.client.get(path, params=params, **context_header_kwargs())
         response.raise_for_status()
@@ -170,6 +175,9 @@ class PersistenceHttpClient:
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
+        seed_source_path: str | None = None,
+        seed_source_row: int | None = None,
     ) -> tuple[int, bool]:
         payload = self._post(
             "/internal/blogs/upsert",
@@ -179,16 +187,174 @@ class PersistenceHttpClient:
                 "domain": domain,
                 "email": email,
                 "feed_url": feed_url,
+                "accepted_by": accepted_by,
+                "seed_source_path": seed_source_path,
+                "seed_source_row": seed_source_row,
             },
         )
         return int(payload["id"]), bool(payload["inserted"])
 
-    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
+    def list_seeds(self) -> list[dict[str, Any]]:
+        """Fetch durable seed rows from persistence in replay order.
+
+        Args:
+            None.
+
+        Returns:
+            Seed payloads ordered by insertion ID.
+        """
+
+        return self._get("/internal/seeds")
+
+    def create_random_recommendation_batch(
+        self,
+        *,
+        count: int = 9,
+        visitor_id: str,
+        session_id: str,
+        user_id: int | None = None,
+        source: str | None = None,
+        page_url: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create and persist one random-blog recommendation batch.
+
+        Args:
+            count: Number of random cards requested.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            user_id: Optional authenticated user ID.
+            source: Optional caller/source label.
+            page_url: Optional frontend page URL.
+            context: Optional JSON metadata.
+
+        Returns:
+            Recommendation batch payload returned by persistence.
+        """
+
         return self._post(
-            "/internal/ingestion-requests",
+            "/internal/recommendations/random-blog-batches",
+            {
+                "count": count,
+                "visitor_id": visitor_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "source": source,
+                "page_url": page_url,
+                "context": context,
+            },
+        )
+
+    def record_blog_interaction(
+        self,
+        *,
+        event_uuid: str,
+        event_type: str,
+        blog_id: int,
+        visitor_id: str,
+        session_id: str,
+        entrance_kind: str,
+        entrance_url: str,
+        request_uuid: str | None = None,
+        impression_id: int | None = None,
+        position: int | None = None,
+        interaction_order: int = 1,
+        user_id: int | None = None,
+        client_event_at: str | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist one random-blog recommendation interaction event.
+
+        Args:
+            event_uuid: Client idempotency key.
+            event_type: Interaction type.
+            blog_id: Public/business blog ID.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            entrance_kind: Stable entrance category for the UI location.
+            entrance_url: Raw URL for the entrance context.
+            request_uuid: Optional recommendation request UUID.
+            impression_id: Optional impression ID.
+            position: Optional displayed card position.
+            interaction_order: Client-side event order.
+            user_id: Optional authenticated user ID.
+            client_event_at: Optional client timestamp.
+            attributes: Optional JSON metadata.
+
+        Returns:
+            Interaction payload returned by persistence.
+        """
+
+        return self._post(
+            "/internal/recommendation-events",
+            {
+                "event_uuid": event_uuid,
+                "event_type": event_type,
+                "blog_id": blog_id,
+                "visitor_id": visitor_id,
+                "session_id": session_id,
+                "entrance_kind": entrance_kind,
+                "entrance_url": entrance_url,
+                "request_uuid": request_uuid,
+                "impression_id": impression_id,
+                "position": position,
+                "interaction_order": interaction_order,
+                "user_id": user_id,
+                "client_event_at": client_event_at,
+                "attributes": attributes,
+            },
+        )
+
+    def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any]:
+        """Load recommendation stats for one blog.
+
+        Args:
+            blog_id: Public/business blog ID.
+
+        Returns:
+            Stats payload returned by persistence.
+        """
+
+        return self._get(f"/internal/blogs/{blog_id}/recommendation-stats")
+
+    def get_recommendation_strategy_stats(self) -> dict[str, Any]:
+        """Load aggregate recommendation strategy stats.
+
+        Args:
+            None.
+
+        Returns:
+            Aggregate stats payload returned by persistence.
+        """
+
+        return self._get("/internal/recommendation-stats")
+
+    def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]:
+        """Load hourly admin dashboard statistics snapshots.
+
+        Args:
+            limit: Maximum number of hourly snapshots to fetch.
+
+        Returns:
+            Hourly admin statistics payload returned by persistence.
+        """
+
+        return self._get("/internal/admin/hourly-stats", {"limit": limit})
+
+    def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
+        """Create or refresh a user-submitted crawler seed.
+
+        Args:
+            homepage_url: Complete user-submitted blog homepage URL.
+
+        Returns:
+            Accepted seed payload returned by persistence.
+        """
+
+        return self._post(
+            "/internal/user-seeds",
             {
                 "homepage_url": homepage_url,
-                "email": email,
             },
         )
 
@@ -228,6 +394,36 @@ class PersistenceHttpClient:
 
         return self._post(f"/internal/users/logout?session_token={token}", {})
 
+    def request_email_verification(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh email verification token for one account."""
+
+        return self._post("/internal/users/email-verification/request", {"email": email})
+
+    def confirm_email_verification(self, *, token: str) -> dict[str, Any]:
+        """Confirm a user email verification token."""
+
+        return self._post("/internal/users/email-verification/confirm", {"token": token})
+
+    def request_password_reset(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh password reset token for one account."""
+
+        return self._post("/internal/users/password-reset/request", {"email": email})
+
+    def reset_user_password(self, *, token: str, password: str) -> dict[str, Any]:
+        """Confirm a password reset token and set a new password."""
+
+        return self._post("/internal/users/password-reset/confirm", {"token": token, "password": password})
+
+    def list_users(self, *, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        """Fetch a paginated admin user list."""
+
+        return self._get("/internal/users", {"page": page, "page_size": page_size})
+
+    def update_user_role(self, *, user_id: int, role: str) -> dict[str, Any]:
+        """Update one user's role."""
+
+        return self._patch(f"/internal/users/{user_id}/role", {"role": role})
+
     def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch recent random-page selections for one user."""
 
@@ -238,73 +434,18 @@ class PersistenceHttpClient:
 
         return self._get(f"/internal/users/{user_id}/label-stats")
 
-    def get_ingestion_request(
-        self,
-        *,
-        request_id: int,
-        request_token: str,
-    ) -> dict[str, Any] | None:
-        return self._get(
-            f"/internal/ingestion-requests/{request_id}",
-            {"request_token": request_token},
-        )
-
-    def list_priority_ingestion_requests(self) -> list[dict[str, Any]]:
-        return self._get("/internal/ingestion-requests")
-
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         return self._get("/internal/blogs/lookup", {"url": url})
 
-    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        return self._create_maintenance_run(
-            "/internal/blog-dedup-scans/runs",
-            crawler_was_running=crawler_was_running,
-        )
+    def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None:
+        """Fetch the persisted blog id for one normalized URL."""
 
-    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
-        return self._post_maintenance_run_action(
-            "/internal/blog-dedup-scans",
-            run_id=run_id,
-            action="execute",
-        )
+        payload = self._get("/internal/blogs/by-normalized-url", {"normalized_url": normalized_url})
+        blog_id = payload.get("id")
+        return int(blog_id) if blog_id is not None else None
 
-    def finalize_blog_dedup_scan_run(
-        self,
-        *,
-        run_id: int,
-        crawler_restart_attempted: bool,
-        crawler_restart_succeeded: bool,
-        search_reindexed: bool,
-        error_message: str | None = None,
-    ) -> dict[str, Any]:
-        return self._post(
-            f"/internal/blog-dedup-scans/{run_id}/finalize",
-            {
-                "crawler_restart_attempted": crawler_restart_attempted,
-                "crawler_restart_succeeded": crawler_restart_succeeded,
-                "search_reindexed": search_reindexed,
-                "error_message": error_message,
-            },
-        )
-
-    def latest_blog_dedup_scan_run(self) -> dict[str, Any]:
-        return self._get_latest_maintenance_run("/internal/blog-dedup-scans")
-
-    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
-        return self._list_maintenance_run_children(
-            "/internal/blog-dedup-scans",
-            run_id=run_id,
-            child_resource="items",
-        )
-
-    def get_next_priority_blog(self) -> dict[str, Any] | None:
-        return self._get("/internal/queue/priority-next")
-
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
-        return self._get("/internal/queue/next", {"include_priority": self._bool_query_value(include_priority)})
-
-    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
-        self._post(f"/internal/ingestion-requests/by-blog/{blog_id}/crawling", {})
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        return self._get("/internal/queue/next")
 
     def mark_blog_result(
         self,
@@ -316,6 +457,8 @@ class PersistenceHttpClient:
         metadata_captured: bool = False,
         title: str | None = None,
         icon_url: str | None = None,
+        crawl_error_kind: str | None = None,
+        crawl_error_message: str | None = None,
     ) -> None:
         self._post(
             f"/internal/blogs/{blog_id}/result",
@@ -326,6 +469,8 @@ class PersistenceHttpClient:
                 "metadata_captured": metadata_captured,
                 "title": title,
                 "icon_url": icon_url,
+                "crawl_error_kind": crawl_error_kind,
+                "crawl_error_message": crawl_error_message,
             },
         )
 
@@ -408,6 +553,7 @@ class PersistenceHttpClient:
         has_title: bool | None = None,
         has_icon: bool | None = None,
         min_connections: int | None = None,
+        acceptance_status: str | None = "ACCEPTED",
     ) -> dict[str, Any]:
         return self._get(
             "/internal/blogs/catalog",
@@ -423,6 +569,7 @@ class PersistenceHttpClient:
                 "has_title": has_title,
                 "has_icon": has_icon,
                 "min_connections": min_connections,
+                "acceptance_status": acceptance_status,
             },
         )
 
@@ -595,6 +742,24 @@ class PersistenceHttpClient:
 
     def search_snapshot(self) -> dict[str, list[dict[str, Any]]]:
         return self._get("/internal/search-snapshot")
+
+    def list_blogs(self) -> list[dict[str, Any]]:
+        """Fetch all blog rows for graph export compatibility.
+
+        Returns:
+            Blog payloads from the persistence service search snapshot.
+        """
+
+        return self.search_snapshot()["blogs"]
+
+    def list_edges(self) -> list[dict[str, Any]]:
+        """Fetch all edge rows for graph export compatibility.
+
+        Returns:
+            Edge payloads from the persistence service search snapshot.
+        """
+
+        return self.search_snapshot()["edges"]
 
     def reset(self) -> dict[str, Any]:
         response = self.client.post("/internal/database/reset")

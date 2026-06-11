@@ -1,9 +1,12 @@
-import { ArrowLeft, ArrowRight, ExternalLink, Sparkles, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Sparkles, X } from "lucide-react";
+import { BlogExternalLink } from "./BlogExternalLink";
 import type { BlogDetail } from "../types/graph";
 
 interface BlogDetailPanelProps {
   detail: BlogDetail;
   onClose: () => void;
+  entranceKind?: string;
+  entranceUrl?: string;
 }
 
 /**
@@ -11,9 +14,16 @@ interface BlogDetailPanelProps {
  *
  * @param detail Selected blog detail payload.
  * @param onClose Callback used to dismiss the panel.
+ * @param entranceKind Optional panel entry-point category for external-open tracking.
+ * @param entranceUrl Optional panel entry-point URL for external-open tracking.
  * @returns Floating detail panel.
  */
-export function BlogDetailPanel({ detail, onClose }: BlogDetailPanelProps) {
+export function BlogDetailPanel({
+  detail,
+  onClose,
+  entranceKind = "blog_detail_panel_external",
+  entranceUrl = window.location.href,
+}: BlogDetailPanelProps) {
   return (
     <div className="absolute right-8 top-24 z-10 max-h-[70vh] w-96 overflow-y-auto rounded-lg border-2 border-gray-200 bg-white p-6 shadow-2xl">
       <div className="mb-4 flex items-start justify-between">
@@ -29,15 +39,14 @@ export function BlogDetailPanel({ detail, onClose }: BlogDetailPanelProps) {
       <div className="space-y-4">
         <div>
           <div className="mb-1 text-sm text-gray-600">URL</div>
-          <a
-            href={detail.url}
-            target="_blank"
-            rel="noopener noreferrer"
+          <BlogExternalLink
+            blog={detail}
+            entranceKind={entranceKind}
+            entranceUrl={entranceUrl}
             className="flex items-center gap-1 break-all text-blue-600 hover:underline"
           >
             {detail.url}
-            <ExternalLink className="h-4 w-4 flex-shrink-0" />
-          </a>
+          </BlogExternalLink>
         </div>
 
         <div className="border-t border-gray-200 pt-4">

@@ -1,11 +1,14 @@
-import { ArrowUpRight, CheckCircle2, Clock3, XCircle } from "lucide-react";
+import { CheckCircle2, Clock3, XCircle } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { BlogExternalLink } from "./BlogExternalLink";
 import { resolveBlogIconUrl } from "../lib/icon";
 import type { BlogCatalogItem } from "../types/graph";
 
 interface BlogCardProps {
   blog: BlogCatalogItem;
   children?: ReactNode;
+  externalEntranceKind: string;
+  externalEntranceUrl: string;
 }
 
 function statusTone(crawlStatus: string) {
@@ -41,9 +44,11 @@ function statusTone(crawlStatus: string) {
  * Render one catalog blog card in the example-inspired home layout.
  *
  * @param blog Catalog row returned by `/api/blogs/catalog`.
+ * @param externalEntranceKind Stable entry-point category for external-open tracking.
+ * @param externalEntranceUrl Raw entry-point URL for external-open tracking.
  * @returns Blog summary card.
  */
-export function BlogCard({ blog, children }: BlogCardProps) {
+export function BlogCard({ blog, children, externalEntranceKind, externalEntranceUrl }: BlogCardProps) {
   const tone = statusTone(blog.crawlStatus);
   const ToneIcon = tone.icon;
   const iconUrl = resolveBlogIconUrl(blog);
@@ -78,17 +83,17 @@ export function BlogCard({ blog, children }: BlogCardProps) {
         </span>
       </div>
 
-      <div className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-        <div className="min-w-0 truncate">{blog.url}</div>
-        <a
-          href={blog.url}
-          target="_blank"
-          rel="noreferrer"
+      <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+        <BlogExternalLink
+          blog={blog}
+          entranceKind={externalEntranceKind}
+          entranceUrl={externalEntranceUrl}
           aria-label={`打开 ${blog.title || blog.domain}`}
-          className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition-colors duration-200 hover:border-sky-300 hover:text-sky-600"
+          showIcon
+          className="inline-flex w-full min-w-0 items-center justify-between gap-3 transition-colors duration-200 hover:text-sky-600"
         >
-          <ArrowUpRight className="h-4 w-4" />
-        </a>
+          <span className="min-w-0 truncate">{blog.url}</span>
+        </BlogExternalLink>
       </div>
 
       {children ? <div className="mt-4">{children}</div> : null}

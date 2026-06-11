@@ -14,7 +14,7 @@ DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
 DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
-DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS = 2
+DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS = 3600.0
 DEFAULT_MAX_FETCHED_PAGE_BYTES = 2_000_000
 DEFAULT_RAW_DISCOVERED_URL_LIMIT = 1_000_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -106,7 +106,7 @@ class Settings:
     max_candidate_links_per_page: int = DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
-    priority_seed_normal_queue_slots: int = DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS
+    runtime_auto_start_interval_seconds: float = DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS
     max_fetched_page_bytes: int = DEFAULT_MAX_FETCHED_PAGE_BYTES
     raw_discovered_url_limit: int = DEFAULT_RAW_DISCOVERED_URL_LIMIT
     friend_link_domain_blocklist: tuple[str, ...] = ()
@@ -115,6 +115,17 @@ class Settings:
     friend_link_prefix_blocklist: tuple[str, ...] = ()
     admin_token: str | None = None
     admin_dev_bypass: bool = False
+    public_base_url: str = "http://127.0.0.1:3000"
+    email_provider: str = "disabled"
+    email_from: str = ""
+    email_dev_expose_tokens: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_timeout_seconds: float = 10.0
     decision_model_root: Path = DEFAULT_DECISION_MODEL_ROOT
     filter_chain_config_path: Path = DEFAULT_FILTER_CHAIN_CONFIG_PATH
     rss_discovery_enabled: bool = True
@@ -202,12 +213,12 @@ class Settings:
                     )
                 ),
             ),
-            priority_seed_normal_queue_slots=max(
-                1,
-                int(
+            runtime_auto_start_interval_seconds=max(
+                0.001,
+                float(
                     os.getenv(
-                        "HEYBLOG_PRIORITY_SEED_NORMAL_QUEUE_SLOTS",
-                        str(DEFAULT_PRIORITY_SEED_NORMAL_QUEUE_SLOTS),
+                        "HEYBLOG_RUNTIME_AUTO_START_INTERVAL_SECONDS",
+                        str(DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS),
                     )
                 ),
             ),
@@ -232,6 +243,17 @@ class Settings:
             friend_link_prefix_blocklist=_parse_csv_env("HEYBLOG_FRIEND_LINK_PREFIX_BLOCKLIST"),
             admin_token=os.getenv("HEYBLOG_ADMIN_TOKEN"),
             admin_dev_bypass=_parse_bool_env("HEYBLOG_ADMIN_DEV_BYPASS"),
+            public_base_url=os.getenv("HEYBLOG_PUBLIC_BASE_URL", "http://127.0.0.1:3000").rstrip("/"),
+            email_provider=os.getenv("HEYBLOG_EMAIL_PROVIDER", "disabled").strip().lower() or "disabled",
+            email_from=os.getenv("HEYBLOG_EMAIL_FROM", "").strip(),
+            email_dev_expose_tokens=_parse_bool_env("HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS"),
+            smtp_host=os.getenv("HEYBLOG_SMTP_HOST", "").strip(),
+            smtp_port=max(1, int(os.getenv("HEYBLOG_SMTP_PORT", "587"))),
+            smtp_username=os.getenv("HEYBLOG_SMTP_USERNAME") or None,
+            smtp_password=os.getenv("HEYBLOG_SMTP_PASSWORD") or None,
+            smtp_use_tls=_parse_bool_env("HEYBLOG_SMTP_USE_TLS", default=True),
+            smtp_use_ssl=_parse_bool_env("HEYBLOG_SMTP_USE_SSL"),
+            smtp_timeout_seconds=max(0.001, float(os.getenv("HEYBLOG_SMTP_TIMEOUT_SECONDS", "10.0"))),
             decision_model_root=Path(
                 os.getenv("HEYBLOG_DECISION_MODEL_ROOT", str(DEFAULT_DECISION_MODEL_ROOT))
             ),

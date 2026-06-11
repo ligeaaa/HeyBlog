@@ -1,9 +1,51 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+const { forceGraphProps } = vi.hoisted(() => ({
+  forceGraphProps: [] as Record<string, any>[],
+}));
+
+const { forceGraph2DProps } = vi.hoisted(() => ({
+  forceGraph2DProps: [] as Record<string, any>[],
+}));
 
 vi.mock("react-force-graph-3d", () => ({
-  default: () => <div data-testid="force-graph-3d" />,
+  default: (props: Record<string, any>) => {
+    forceGraphProps.push(props);
+    return <div data-testid="force-graph-3d" />;
+  },
 }));
+
+vi.mock("react-force-graph-2d", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    default: React.forwardRef((props: Record<string, any>, ref) => {
+      React.useImperativeHandle(ref, () => ({
+        d3Force: () => ({
+          distance: vi.fn(),
+          strength: vi.fn(),
+        }),
+        d3ReheatSimulation: vi.fn(),
+        zoomToFit: vi.fn(),
+      }));
+      forceGraph2DProps.push(props);
+      return (
+        <div data-testid="force-graph-2d">
+          {props.graphData.nodes.map((node: Record<string, any>) => (
+            <button
+              key={node.id}
+              type="button"
+              aria-label={`${node.label} ${node.url}`}
+              onMouseEnter={() => props.onNodeHover?.(node, null)}
+              onMouseLeave={() => props.onNodeHover?.(null, node)}
+              onClick={() => props.onNodeClick?.(node, new MouseEvent("click"))}
+            />
+          ))}
+        </div>
+      );
+    }),
+  };
+});
 
 import App from "./App";
 
@@ -30,6 +72,123 @@ function makeCatalogItem(id: number, crawlStatus: string, title: string) {
     connection_count: 0,
     activity_at: crawlStatus === "FINISHED" ? `2026-04-${String((id % 20) + 1).padStart(2, "0")}T10:00:00Z` : null,
     identity_complete: crawlStatus === "FINISHED",
+  };
+}
+
+function makeDetailPayload(item: Record<string, unknown>) {
+  const relatedBlog = makeCatalogItem(88, "FINISHED", "Related Blog");
+  const downstreamBlog = makeCatalogItem(87, "FINISHED", "Downstream Blog");
+  const recommendedBlog = makeCatalogItem(89, "FINISHED", "Recommended Blog");
+  const viaBlog = makeCatalogItem(90, "FINISHED", "Mutual Blog");
+  return {
+    ...item,
+    icon_url: `https://${String(item.domain)}/favicon.ico`,
+    incoming_edges: [
+      {
+        id: "incoming-1",
+        from_blog_id: relatedBlog.id,
+        to_blog_id: item.id,
+        link_text: "friend",
+        link_url_raw: item.url,
+        neighbor_blog: relatedBlog,
+      },
+    ],
+    outgoing_edges: [
+      {
+        id: "outgoing-1",
+        from_blog_id: item.id,
+        to_blog_id: relatedBlog.id,
+        link_text: "blogroll",
+        link_url_raw: relatedBlog.url,
+        neighbor_blog: relatedBlog,
+      },
+      {
+        id: "outgoing-2",
+        from_blog_id: item.id,
+        to_blog_id: downstreamBlog.id,
+        link_text: "next",
+        link_url_raw: downstreamBlog.url,
+        neighbor_blog: downstreamBlog,
+      },
+    ],
+    recommended_blogs: [
+      {
+        ...recommendedBlog,
+        via_blogs: [viaBlog],
+      },
+    ],
+    discovery_path: {
+      mode: "crawled",
+      origin_source: "seed",
+      origin_label: "种子导入",
+      target_source: "rss",
+      truncated: false,
+      steps: [
+        {
+          blog: relatedBlog,
+          blog_id: relatedBlog.id,
+          url: relatedBlog.url,
+          domain: relatedBlog.domain,
+          accepted_by: "seed",
+          accepted_label: "种子导入",
+          raw_id: null,
+          raw_source_blog_id: null,
+          raw_accepted_by: null,
+          discovered_at: null,
+        },
+        {
+          blog: item,
+          blog_id: item.id,
+          url: String(item.url),
+          domain: String(item.domain),
+          accepted_by: null,
+          accepted_label: "RSS 判定",
+          raw_id: 22,
+          raw_source_blog_id: relatedBlog.id,
+          raw_accepted_by: "rss",
+          discovered_at: "2026-04-20T10:00:00Z",
+        },
+      ],
+    },
+    relation_graphs: {
+      incoming: {
+        direction: "incoming",
+        focus_blog_id: item.id,
+        depth: 2,
+        nodes: [item, relatedBlog],
+        edges: [
+          {
+            id: "incoming-1",
+            from_blog_id: relatedBlog.id,
+            to_blog_id: item.id,
+            link_text: "friend",
+            link_url_raw: item.url,
+          },
+        ],
+      },
+      outgoing: {
+        direction: "outgoing",
+        focus_blog_id: item.id,
+        depth: 2,
+        nodes: [item, relatedBlog, downstreamBlog],
+        edges: [
+          {
+            id: "outgoing-1",
+            from_blog_id: item.id,
+            to_blog_id: relatedBlog.id,
+            link_text: "blogroll",
+            link_url_raw: relatedBlog.url,
+          },
+          {
+            id: "outgoing-2",
+            from_blog_id: item.id,
+            to_blog_id: downstreamBlog.id,
+            link_text: "next",
+            link_url_raw: downstreamBlog.url,
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -66,10 +225,36 @@ let statusPayload = {
   total_edges: 10,
 };
 
+class TestResizeObserver {
+  callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe() {
+    this.callback(
+      [
+        {
+          contentRect: { width: 960, height: 720 },
+        } as ResizeObserverEntry,
+      ],
+      this,
+    );
+  }
+
+  unobserve() {}
+
+  disconnect() {}
+}
+
 beforeEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
+  forceGraphProps.length = 0;
+  forceGraph2DProps.length = 0;
   window.history.replaceState({}, "", "/");
   catalogItems = [...baseCatalogItems, makeCatalogItem(33, "PROCESSING", "Newest Processing Blog")];
   window.localStorage.clear();
@@ -83,22 +268,27 @@ beforeEach(() => {
     total_edges: 10,
   };
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     if (url.pathname === "/api/blogs/catalog") {
       const page = Number(url.searchParams.get("page") || "1");
       const pageSize = Number(url.searchParams.get("page_size") || "30");
       const status = url.searchParams.get("status");
       const query = (url.searchParams.get("q") || "").trim().toLowerCase();
+      const urlQuery = (url.searchParams.get("url") || "").trim().toLowerCase();
       const sort = url.searchParams.get("sort") || "id_asc";
       const filteredItems = sortCatalogItems(
         (status ? catalogItems.filter((item) => item.crawl_status === status) : catalogItems).filter((item) => {
-          if (!query) {
+          if (!query && !urlQuery) {
             return true;
           }
           const title = String(item.title ?? "").toLowerCase();
           const blogUrl = String(item.url ?? "").toLowerCase();
-          return title.includes(query) || blogUrl.includes(query);
+          const normalizedUrl = String(item.normalized_url ?? "").toLowerCase();
+          return (
+            (!query || title.includes(query) || blogUrl.includes(query)) &&
+            (!urlQuery || blogUrl.includes(urlQuery) || normalizedUrl.includes(urlQuery))
+          );
         }),
         sort,
       );
@@ -117,11 +307,204 @@ beforeEach(() => {
         }),
       );
     }
+    if (url.pathname === "/api/recommendations/random-blog-batches") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      const count = Number(body.count || 9);
+      const filteredItems = sortCatalogItems(
+        catalogItems.filter((item) => item.crawl_status === "FINISHED"),
+        "random",
+      ).slice(0, count);
+      return new Response(
+        JSON.stringify({
+          request_uuid: "request-random-1",
+          surface: "random_blog_page",
+          strategy: "weighted_random",
+          strategy_version: "v1",
+          visitor_id: body.visitor_id,
+          session_id: body.session_id,
+          requested_count: count,
+          served_count: filteredItems.length,
+          created_at: "2026-06-07T13:30:00Z",
+          items: filteredItems.map((item, index) => ({
+            ...item,
+            request_uuid: "request-random-1",
+            impression_id: index + 101,
+            position: index + 1,
+          })),
+        }),
+      );
+    }
+    if (url.pathname === "/api/recommendation-events") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(
+        JSON.stringify({
+          id: 1,
+          ...body,
+          duplicate: false,
+        }),
+      );
+    }
+    if (url.pathname === "/api/blogs/user-seeds") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      const submittedUrl = String(body.homepage_url || "https://missing-blog.example.com/");
+      if (submittedUrl === "https://blog.sayori.org/") {
+        return new Response(JSON.stringify({ detail: "rule:blocked_tld" }), { status: 422 });
+      }
+      const item = {
+        ...makeCatalogItem(444, "WAITING", "Missing Blog"),
+        url: submittedUrl,
+        normalized_url: submittedUrl,
+        domain: submittedUrl.replace(/^https?:\/\//, "").replace(/\/$/, ""),
+      };
+      return new Response(
+        JSON.stringify({
+          status: "QUEUED",
+          blog_id: item.id,
+          inserted: true,
+          blog: item,
+        }),
+      );
+    }
+    const blogDetailMatch = url.pathname.match(/^\/api\/blogs\/(\d+)$/);
+    if (blogDetailMatch) {
+      const detailItem = catalogItems.find((item) => Number(item.id) === Number(blogDetailMatch[1]));
+      if (!detailItem) {
+        return new Response(JSON.stringify({ detail: "not_found" }), { status: 404 });
+      }
+      return new Response(JSON.stringify(makeDetailPayload(detailItem)));
+    }
     if (url.pathname === "/api/status") {
       return new Response(JSON.stringify(statusPayload));
     }
+    if (url.pathname === "/api/auth/register") {
+      return new Response(
+        JSON.stringify({
+          sent: true,
+          verification_token: "mail-token",
+          expires_at: "2026-06-11T00:00:00Z",
+        }),
+      );
+    }
+    if (url.pathname === "/api/auth/email/verify/confirm") {
+      return new Response(
+        JSON.stringify({
+          id: 7,
+          email: "new@example.com",
+          display_name: "new",
+          role: "user",
+          is_active: true,
+          email_verified: true,
+          email_verified_at: "2026-06-10T00:10:00Z",
+          created_at: "2026-06-10T00:00:00Z",
+          updated_at: "2026-06-10T00:10:00Z",
+        }),
+      );
+    }
+    if (url.pathname === "/api/auth/me") {
+      return new Response(
+        JSON.stringify({
+          id: 7,
+          email: "new@example.com",
+          display_name: "new",
+          role: "user",
+          is_active: true,
+          email_verified: false,
+          email_verified_at: null,
+          created_at: "2026-06-10T00:00:00Z",
+          updated_at: "2026-06-10T00:00:00Z",
+        }),
+      );
+    }
+    if (url.pathname === "/api/me/label-stats") {
+      return new Response(JSON.stringify({ label_count: 3 }));
+    }
     if (url.pathname === "/api/stats") {
-      return new Response(JSON.stringify({ total_blogs: 34, total_edges: 10 }));
+      return new Response(JSON.stringify({ total_blogs: statusPayload.total_blogs, total_edges: statusPayload.total_edges }));
+    }
+    if (url.pathname === "/api/admin/runtime/status") {
+      return new Response(
+        JSON.stringify({
+          runner_status: "idle",
+          active_run_id: null,
+          worker_count: 0,
+          active_workers: 0,
+          current_blog_id: null,
+          current_url: null,
+          current_stage: null,
+          elapsed_seconds: null,
+          maintenance_in_progress: false,
+        }),
+      );
+    }
+    if (url.pathname === "/api/admin/runtime/current") {
+      return new Response(
+        JSON.stringify({
+          runner_status: "idle",
+          active_run_id: null,
+          worker_count: 0,
+          active_workers: 0,
+          current_blog_id: null,
+          current_url: null,
+          current_stage: null,
+          elapsed_seconds: null,
+        }),
+      );
+    }
+    if (url.pathname === "/api/admin/hourly-stats") {
+      const row = {
+        id: 1,
+        hour_start: "2026-06-11T10:00:00Z",
+        user_count: 12,
+        random_request_count: 3,
+        random_impression_count: 27,
+        detail_open_count: 4,
+        external_open_count: 5,
+        detail_ctr: 4 / 27,
+        external_ctr: 5 / 27,
+        total_click_ctr: 9 / 27,
+        refreshed_at: "2026-06-11T10:05:00Z",
+        created_at: "2026-06-11T10:05:00Z",
+      };
+      return new Response(JSON.stringify({ current_hour: row, latest: row, items: [row] }));
+    }
+    if (url.pathname === "/api/admin/blog-labeling/counts") {
+      return new Response(JSON.stringify({ total_labeled: 0, by_label: {} }));
+    }
+    if (url.pathname === "/api/admin/blog-labeling/parquet-status") {
+      return new Response(
+        JSON.stringify({
+          path: "/tmp/blog-label-training.parquet",
+          filename: "blog-label-training.parquet",
+          exists: false,
+          saved_count: 0,
+          total_labeled: 0,
+          missing_count: 0,
+          batch_size: 100,
+          rewritten: false,
+          message: "not ready",
+          updated_at: null,
+        }),
+      );
+    }
+    if (url.pathname === "/api/admin/blog-labeling/candidates") {
+      return new Response(
+        JSON.stringify({
+          items: [],
+          available_tags: [
+            { id: 1, name: "blog", slug: "blog", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+            { id: 2, name: "company", slug: "company", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+            { id: 3, name: "other", slug: "other", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+            { id: 4, name: "unknown", slug: "unknown", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+          ],
+          page: 1,
+          page_size: 9,
+          total_items: 0,
+          total_pages: 1,
+          has_next: false,
+          has_prev: false,
+          sort: "id_desc",
+        }),
+      );
     }
     if (url.pathname === "/api/filter-stats") {
       return new Response(
@@ -162,14 +545,115 @@ beforeEach(() => {
               domain: "graph.example.com",
               title: "Graph Example",
               icon_url: null,
+              incoming_count: 2,
+              outgoing_count: 1,
+            },
+            {
+              id: 2,
+              url: "https://two.example.com/",
+              domain: "two.example.com",
+              title: "Two Example",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+            },
+            {
+              id: 3,
+              url: "https://three.example.com/",
+              domain: "three.example.com",
+              title: "Three Example",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+            },
+            {
+              id: 4,
+              url: "https://leaf.example.com/",
+              domain: "leaf.example.com",
+              title: "Leaf Example",
+              icon_url: null,
               incoming_count: 0,
-              outgoing_count: 0,
+              outgoing_count: 1,
             },
           ],
-          edges: [],
+          edges: [
+            {
+              id: "edge-1-2",
+              from_blog_id: 1,
+              to_blog_id: 2,
+              link_text: null,
+              link_url_raw: "https://two.example.com/",
+            },
+            {
+              id: "edge-2-3",
+              from_blog_id: 2,
+              to_blog_id: 3,
+              link_text: null,
+              link_url_raw: "https://three.example.com/",
+            },
+            {
+              id: "edge-3-1",
+              from_blog_id: 3,
+              to_blog_id: 1,
+              link_text: null,
+              link_url_raw: "https://graph.example.com/",
+            },
+            {
+              id: "edge-1-4",
+              from_blog_id: 1,
+              to_blog_id: 4,
+              link_text: null,
+              link_url_raw: "https://leaf.example.com/",
+            },
+          ],
           meta: {
             strategy: "degree",
             limit: 200,
+          },
+        }),
+      );
+    }
+    if (url.pathname === "/benchmarks/blog-community-graph.json") {
+      return new Response(
+        JSON.stringify({
+          nodes: [
+            {
+              id: 1,
+              url: "https://benchmark.heyblog.local/indie-web-01/",
+              domain: "indie-web-01.benchmark.heyblog.local",
+              title: "Indie Web Notes 01",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+              degree: 2,
+              component_id: "indie-web",
+            },
+            {
+              id: 2,
+              url: "https://benchmark.heyblog.local/indie-web-02/",
+              domain: "indie-web-02.benchmark.heyblog.local",
+              title: "Indie Web Notes 02",
+              icon_url: null,
+              incoming_count: 1,
+              outgoing_count: 1,
+              degree: 2,
+              component_id: "indie-web",
+            },
+          ],
+          edges: [
+            {
+              id: "benchmark-edge-001",
+              from_blog_id: 1,
+              to_blog_id: 2,
+              link_text: "blogroll",
+              link_url_raw: "https://benchmark.heyblog.local/indie-web-02/",
+            },
+          ],
+          meta: {
+            strategy: "synthetic-community-benchmark",
+            limit: 2,
+            total_nodes: 2,
+            total_edges: 1,
           },
         }),
       );
@@ -184,144 +668,352 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("renders paginated home cards, reloads from server for filters, and refreshes statuses by polling", async () => {
+test("renders the home summary with URL search while keeping queue metrics and catalog cards hidden", async () => {
   render(<App />);
 
   await waitFor(() => {
     expect(screen.getByRole("heading", { name: "HeyBlog!" })).toBeInTheDocument();
   });
   expect(screen.getByText("基于友链爬取所有博客！")).toBeInTheDocument();
+  expect(screen.getByText("总节点数")).toBeInTheDocument();
+  expect(screen.getByText("总连接数")).toBeInTheDocument();
+  expect(screen.getByText("34")).toBeInTheDocument();
+  expect(screen.getByText("10")).toBeInTheDocument();
+  expect(screen.queryByText("待处理队列")).not.toBeInTheDocument();
+  expect(screen.queryByText("处理中 / 失败")).not.toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
 
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=PROCESSING"),
-    expect.anything(),
-  );
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=WAITING"),
-    expect.anything(),
-  );
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=FINISHED"),
-    expect.anything(),
-  );
-  expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=FAILED"),
-    expect.anything(),
-  );
-  expect(screen.getByText("Processing Blog")).toBeInTheDocument();
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.getByText("Waiting Blog")).toBeInTheDocument();
-  expect(screen.getByText("当前显示第 1 / 2 页，本页 30 个，共 34 个博客")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "PROCESSING" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "FAILED" })).toBeInTheDocument();
-  const titles = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
-  expect(titles.slice(0, 4)).toEqual(["Processing Blog", "Newest Processing Blog", "Waiting Blog", "Newest Waiting Blog"]);
-
-  fireEvent.click(screen.getByRole("button", { name: "FAILED" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_desc&status=FAILED"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Failed Blog")).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/catalog"), expect.anything());
+  expect(screen.queryByRole("button", { name: "ALL" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "PROCESSING" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "WAITING" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "FINISHED" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "FAILED" })).not.toBeInTheDocument();
   expect(screen.queryByText("Processing Blog")).not.toBeInTheDocument();
-  expect(screen.getByText("当前显示第 1 / 1 页，本页 1 个，共 1 个博客")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "WAITING" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=WAITING"),
-      expect.anything(),
-    );
-  });
-  const waitingTitles = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
-  expect(waitingTitles.slice(0, 2)).toEqual(["Waiting Blog", "Newest Waiting Blog"]);
-
-  fireEvent.click(screen.getByRole("button", { name: "ALL" }));
-
-  await waitFor(() => {
-    expect(screen.getByText("Processing Blog")).toBeInTheDocument();
-  });
-
-  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=60&sort=id_asc&status=PROCESSING"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Failed Blog")).toBeInTheDocument();
-  expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "PROCESSING" }));
-
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_desc&status=PROCESSING"),
-      expect.anything(),
-    );
-  });
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.getByText("Processing Blog")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "ALL" }));
-
-  await waitFor(() => {
-    expect(screen.getByText("Waiting Blog")).toBeInTheDocument();
-  });
-
-  catalogItems = catalogItems.map((item) =>
-    item.id === 1 ? { ...item, crawl_status: "FINISHED", status_code: 200, last_crawled_at: "2026-04-17T10:00:00Z" } : item,
-  );
-  statusPayload = {
-    ...statusPayload,
-    pending_tasks: 2,
-    processing_tasks: 1,
-    finished_tasks: 31,
-  };
+  expect(screen.queryByText("Waiting Blog")).not.toBeInTheDocument();
+  expect(screen.queryByText("Finished Blog")).not.toBeInTheDocument();
+  expect(screen.queryByText("Failed Blog")).not.toBeInTheDocument();
+  expect(screen.getByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！")).toBeInTheDocument();
 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
   });
 
   await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_asc&status=PROCESSING"),
-      expect.anything(),
-    );
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/stats"), expect.anything());
   });
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/catalog"), expect.anything());
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/status"), expect.anything());
+});
 
-  fireEvent.click(screen.getByRole("button", { name: "PROCESSING" }));
+test("shows the admin navigation item only for active verified admin sessions", async () => {
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "admin-session-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 70,
+        email: "admin@magic-knowledge.top",
+        displayName: "admin",
+        role: "admin",
+        isActive: true,
+        emailVerified: true,
+        emailVerifiedAt: "2026-06-11T00:00:00Z",
+        createdAt: "2026-06-11T00:00:00Z",
+        updatedAt: "2026-06-11T00:00:00Z",
+      },
+    }),
+  );
+
+  render(<App />);
+
+  expect(await screen.findByRole("link", { name: "管理" })).toHaveAttribute("href", "/admin");
+});
+
+test("renders hourly admin statistics for verified admin sessions", async () => {
+  window.history.replaceState({}, "", "/admin");
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "admin-session-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 70,
+        email: "admin@magic-knowledge.top",
+        displayName: "admin",
+        role: "admin",
+        isActive: true,
+        emailVerified: true,
+        emailVerifiedAt: "2026-06-11T00:00:00Z",
+        createdAt: "2026-06-11T00:00:00Z",
+        updatedAt: "2026-06-11T00:00:00Z",
+      },
+    }),
+  );
+
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "后台统计" })).toBeInTheDocument();
+  expect(screen.getByText("当前用户数")).toBeInTheDocument();
+  expect(screen.getAllByText("12").length).toBeGreaterThan(0);
+  expect(screen.getByText("随机请求 / 曝光")).toBeInTheDocument();
+  expect(screen.getByText("3 / 27")).toBeInTheDocument();
+  expect(screen.getByText("详情点击率")).toBeInTheDocument();
+  expect(screen.getByText("外链点击率")).toBeInTheDocument();
+  expect(screen.getAllByText("14.81%").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("18.52%").length).toBeGreaterThan(0);
+});
+
+test("hides admin navigation and renders 404 for non-admin direct admin URLs", async () => {
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "user-session-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 71,
+        email: "1304412077@qq.com",
+        displayName: "user",
+        role: "user",
+        isActive: true,
+        emailVerified: true,
+        emailVerifiedAt: "2026-06-11T00:00:00Z",
+        createdAt: "2026-06-11T00:00:00Z",
+        updatedAt: "2026-06-11T00:00:00Z",
+      },
+    }),
+  );
+  window.history.replaceState({}, "", "/admin");
+
+  render(<App />);
+
+  expect(await screen.findByText("404")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "页面不存在" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "管理" })).not.toBeInTheDocument();
+  expect(screen.queryByText("管理控制台")).not.toBeInTheDocument();
+});
+
+test("lets home users search normalized URLs and open the blog detail route", async () => {
+  catalogItems = catalogItems.map((item) =>
+    Number(item.id) === 3 ? { ...item, icon_url: "https://finished-blog.example.com/favicon.ico" } : item,
+  );
+  render(<App />);
+
+  const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
+  fireEvent.change(input, { target: { value: "finished-blog.example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
 
   await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&sort=id_desc&status=PROCESSING"),
-      expect.anything(),
-    );
+    const searchCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([input]) => String(input).includes("/api/blogs/catalog?"));
+    expect(searchCall).toBeDefined();
+    const requestUrl = new URL(String(searchCall![0]), "http://localhost");
+    expect(requestUrl.searchParams.get("page")).toBe("1");
+    expect(requestUrl.searchParams.get("page_size")).toBe("30");
+    expect(requestUrl.searchParams.get("url")).toBe("finished-blog.example.com");
+    expect(requestUrl.searchParams.get("sort")).toBe("id_desc");
   });
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.queryByText("Processing Blog")).not.toBeInTheDocument();
+  expect(screen.getByText("1 个匹配")).toBeInTheDocument();
+  expect(screen.getByText("Finished Blog")).toBeInTheDocument();
+  expect(screen.getByText("https://finished-blog.example.com/")).toBeInTheDocument();
+  expect(screen.getAllByAltText("finished-blog.example.com icon")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        src: "https://finished-blog.example.com/favicon.ico",
+      }),
+    ]),
+  );
 
-  fireEvent.change(screen.getByPlaceholderText(/输入 URL 或标题进行搜索/i), {
-    target: { value: "Newest" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /搜索博客/i }));
+  fireEvent.click(screen.getByRole("button", { name: /Finished Blog/i }));
 
   await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/blogs/catalog?page=1&page_size=30&q=Newest&sort=id_desc&status=PROCESSING"),
-      expect.anything(),
-    );
+    expect(window.location.pathname).toBe("/blogs/3");
   });
-  expect(screen.getByText("Newest Processing Blog")).toBeInTheDocument();
-  expect(screen.queryByText("Processing Blog")).not.toBeInTheDocument();
-  expect(screen.queryByText("Newest Waiting Blog")).not.toBeInTheDocument();
-  expect(screen.queryByText("Waiting Blog")).not.toBeInTheDocument();
-  expect(screen.getByText("搜索词: Newest")).toBeInTheDocument();
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/recommendation-events") &&
+          String(init?.body).includes('"event_type":"detail_open"') &&
+          String(init?.body).includes('"entrance_kind":"home_search_result"') &&
+          String(init?.body).includes('"entrance_url"'),
+      ),
+  ).toBe(true);
+  expect(screen.queryByRole("heading", { name: "HeyBlog!" })).not.toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "Finished Blog" })).toBeInTheDocument();
+  });
+  expect(screen.getAllByAltText("finished-blog.example.com icon")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        src: "https://finished-blog.example.com/favicon.ico",
+      }),
+    ]),
+  );
+  expect(screen.getByRole("heading", { name: "博客关联" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "发现路径" })).toBeInTheDocument();
+  expect(screen.getByText("https://related-blog.example.com/")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "入链关系" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "出链关系" })).toBeInTheDocument();
+  const relatedNode = screen.getByLabelText("Related Blog https://related-blog.example.com/");
+  expect(relatedNode).toBeInTheDocument();
+  fireEvent.mouseEnter(relatedNode);
+  const tooltip = screen.getByRole("tooltip");
+  expect(within(tooltip).getByText("Related Blog")).toBeInTheDocument();
+  expect(within(tooltip).getByText("https://related-blog.example.com/")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "出链关系" }));
+  expect(screen.getByLabelText("Downstream Blog https://downstream-blog.example.com/")).toBeInTheDocument();
+  expect(screen.queryByText("种子导入")).not.toBeInTheDocument();
+  expect(screen.queryByText("RSS 判定")).not.toBeInTheDocument();
+  expect(screen.queryByText(/源头/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "直接相关博客" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "推荐博客" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "基础信息" })).not.toBeInTheDocument();
+  expect(screen.queryByText("通过 Mutual Blog 关联")).not.toBeInTheDocument();
+});
+
+test("submits a user seed when home URL search has no matches", async () => {
+  render(<App />);
+
+  const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
+  fireEvent.change(input, { target: { value: "missing-blog.example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+  });
+  expect(screen.getByText("missing-blog.example.com")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "不是" }));
+
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" }),
+    ).not.toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+  const seedInput = screen.getByLabelText("请输入完整博客链接");
+  expect(seedInput).toHaveAttribute("placeholder", "https://blog.example.com");
+  fireEvent.change(seedInput, { target: { value: "https://missing-blog.example.com/" } });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+
+  await waitFor(() => {
+    const submitCall = vi.mocked(fetch).mock.calls.find(([input]) => String(input).includes("/api/blogs/user-seeds"));
+    expect(submitCall).toBeDefined();
+    expect(JSON.parse(String(submitCall![1]?.body))).toEqual({
+      homepage_url: "https://missing-blog.example.com/",
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+test("shows the exact rule-filter reason when user seed submission fails", async () => {
+  render(<App />);
+
+  const input = await screen.findByPlaceholderText("输入你的博客链接，看看你的博客有没有被找到吧！");
+  fireEvent.change(input, { target: { value: "blog.sayori.org" } });
+  fireEvent.click(screen.getByRole("button", { name: "搜索博客" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+  fireEvent.change(screen.getByLabelText("请输入完整博客链接"), {
+    target: { value: "https://blog.sayori.org/" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "是" }));
+
+  expect(await screen.findByText("规则过滤未通过：域名后缀被屏蔽（rule:blocked_tld）")).toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "当前未找到该博客，是否将该博客加入博客网络？" })).toBeInTheDocument();
+});
+
+test("keeps new registrations signed out until email verification", async () => {
+  window.history.replaceState({}, "", "/profile");
+
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "没有账号，注册一个" }));
+  fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "New@Example.com" } });
+  fireEvent.change(screen.getByLabelText("密码"), { target: { value: "correct horse" } });
+  fireEvent.click(screen.getByRole("button", { name: "注册并发送验证邮件" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "登录账号" })).toBeInTheDocument();
+  });
+  expect(screen.getByText("验证邮件已发送，请验证邮箱后登录。")).toBeInTheDocument();
+  expect(window.localStorage.getItem("heyblog_user_session")).toBeNull();
+  expect(screen.queryByText("当前账号")).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "数据标注" })).not.toBeInTheDocument();
+});
+
+test("confirms email automatically when opened from a verification email link", async () => {
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "new-user-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 7,
+        email: "new@example.com",
+        displayName: "new",
+        role: "user",
+        isActive: true,
+        emailVerified: false,
+        emailVerifiedAt: null,
+        createdAt: "2026-06-10T00:00:00Z",
+        updatedAt: "2026-06-10T00:00:00Z",
+      },
+    }),
+  );
+  window.history.replaceState({}, "", "/profile?verify_token=mail-token");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText(/已验证/)).toBeInTheDocument();
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/auth/email/verify/confirm") &&
+          String(init?.body).includes('"token":"mail-token"'),
+      ),
+  ).toBe(true);
+  expect(screen.getByRole("heading", { name: "数据标注" })).toBeInTheDocument();
+  expect(screen.getByText(/当前总共标注了/)).toBeInTheDocument();
+});
+
+test("confirms email links without requiring a local session", async () => {
+  window.history.replaceState({}, "", "/profile?verify_token=mail-token");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("heading", { name: "登录账号" })).toBeInTheDocument();
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/auth/email/verify/confirm") &&
+          String(init?.body).includes('"token":"mail-token"'),
+      ),
+  ).toBe(true);
+  expect(screen.queryByText(/Token/)).not.toBeInTheDocument();
 });
 
 test("adds a random blog route that loads nine finished cards and refreshes them on demand", async () => {
@@ -334,14 +1026,17 @@ test("adds a random blog route that loads nine finished cards and refreshes them
   });
 
   expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
-    expect.anything(),
+    expect.stringContaining("/api/recommendations/random-blog-batches"),
+    expect.objectContaining({
+      method: "POST",
+      body: expect.stringContaining('"count":9'),
+    }),
   );
   expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
   expect(screen.getByText("Extra Blog 32")).toBeInTheDocument();
   expect(screen.getByAltText("extra-blog-32.example.com icon")).toHaveAttribute(
     "src",
-    "https://icons.duckduckgo.com/ip3/extra-blog-32.example.com.ico",
+    "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://extra-blog-32.example.com&size=64",
   );
 
   fireEvent.click(screen.getByRole("button", { name: /刷新随机博客/i }));
@@ -350,13 +1045,95 @@ test("adds a random blog route that loads nine finished cards and refreshes them
     const randomCalls = vi
       .mocked(fetch)
       .mock.calls.filter(([input]) =>
-        String(input).includes("/api/blogs/catalog?page=1&page_size=9&sort=random&status=FINISHED"),
+        String(input).includes("/api/recommendations/random-blog-batches"),
       );
     expect(randomCalls).toHaveLength(2);
   });
 });
 
-test("lets visualization users choose a deterministic sampled graph size", async () => {
+test("lets random blog users open one blog detail route in a new tab", async () => {
+  window.history.replaceState({}, "", "/random");
+  const openMock = vi.fn();
+  vi.stubGlobal("open", openMock);
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[0]);
+
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/recommendation-events"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"event_type":"detail_open"'),
+      }),
+    );
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/recommendation-events") &&
+          String(init?.body).includes('"entrance_kind":"random_blog_page"') &&
+          String(init?.body).includes('"entrance_url"'),
+      ),
+  ).toBe(true);
+  expect(openMock).toHaveBeenCalledWith("/blogs/32", "_blank", "noopener,noreferrer");
+  expect(window.location.pathname).toBe("/random");
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/blogs/32"), expect.anything());
+});
+
+test("records random blog external URL opens as recommendation interactions", async () => {
+  window.history.replaceState({}, "", "/random");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getAllByRole("link", { name: /打开 Extra Blog 32/i })[0]);
+
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/recommendation-events"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"event_type":"external_open"'),
+      }),
+    );
+  });
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/api/recommendation-events") &&
+          String(init?.body).includes('"entrance_kind":"random_blog_page"') &&
+          String(init?.body).includes('"entrance_url"'),
+      ),
+  ).toBe(true);
+});
+
+test("renders one external URL text per random blog card", async () => {
+  window.history.replaceState({}, "", "/random");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("当前展示 9 个随机博客卡片")).toBeInTheDocument();
+  });
+
+  const firstRandomBlog = catalogItems[31];
+  expect(screen.getAllByText(String(firstRandomBlog.url))).toHaveLength(1);
+});
+
+test("lets visualization users choose a graph size with a blog-count slider", async () => {
   window.history.replaceState({}, "", "/visualization");
 
   render(<App />);
@@ -366,31 +1143,71 @@ test("lets visualization users choose a deterministic sampled graph size", async
   });
 
   expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "10000" })).toBeInTheDocument();
+  const slider = await screen.findByRole("slider", { name: "节点数量" });
+  expect(slider).toHaveAttribute("min", "0");
+  expect(slider).toHaveAttribute("max", "34");
+  expect(slider).toHaveValue("34");
   expect(screen.queryByText(/使用固定随机种子 42 选择起点/)).not.toBeInTheDocument();
   expect(screen.queryByText(/显示实际下载大小/)).not.toBeInTheDocument();
   expect(screen.queryByText("该功能仍不成熟！")).not.toBeInTheDocument();
   expect(screen.queryByText("数据统计")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "精简" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "全" })).toHaveAttribute("aria-pressed", "false");
 
-  fireEvent.click(screen.getByRole("button", { name: "500" }));
+  fireEvent.change(slider, { target: { value: "20" } });
+  expect(slider).toHaveValue("20");
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog", { name: "选择图谱规模" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "正在渲染图谱" })).toBeInTheDocument();
   });
 
   expect(fetch).toHaveBeenCalledWith(
-    expect.stringContaining(
-      "/api/graph/views/core?strategy=degree&limit=500&sample_mode=count&sample_value=500&sample_seed=42",
-    ),
+    expect.stringContaining("/api/graph/views/core?strategy=seed&limit=20"),
     expect.anything(),
   );
-  expect(screen.queryByText(/当前使用固定随机种子 42 展示 500 个节点/)).not.toBeInTheDocument();
+  expect(forceGraphProps.at(-1)!.graphData.nodes.map((node: { id: string }) => node.id)).toEqual(["1", "2", "3"]);
+  expect(forceGraphProps.at(-1)!.graphData.links).toHaveLength(3);
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
+  await waitFor(() => {
+    expect(screen.getByText("预计需要 126 ticks")).toBeInTheDocument();
+  });
+  expect(screen.getByText("预估所需渲染时间：约 3 秒")).toBeInTheDocument();
+  act(() => {
+    forceGraphProps.at(-1)!.onEngineTick();
+    forceGraphProps.at(-1)!.onEngineTick();
+  });
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
+  act(() => {
+    forceGraphProps.at(-1)!.onEngineStop();
+  });
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "正在渲染图谱" })).not.toBeInTheDocument();
+  });
+  expect(screen.queryByText(/当前使用固定随机种子 42 展示 20 个节点/)).not.toBeInTheDocument();
   expect(screen.queryByText("全图最大节点数")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /刷新全图|返回全图/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /搜索博客/i })).not.toBeInTheDocument();
 });
 
-test("uses cached visualization graph data for repeated sampled sizes", async () => {
+test("lets visualization users load the full graph without compact filtering", async () => {
+  window.history.replaceState({}, "", "/visualization");
+
+  render(<App />);
+
+  const fullButton = await screen.findByRole("button", { name: "全" });
+  fireEvent.click(fullButton);
+  expect(fullButton).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
+
+  await waitFor(() => {
+    expect(forceGraphProps.at(-1)!.graphData.nodes).toHaveLength(4);
+  });
+  expect(forceGraphProps.at(-1)!.graphData.links).toHaveLength(4);
+});
+
+test("ignores stale cached visualization graph data and reloads sampled sizes online", async () => {
   window.history.replaceState({}, "", "/visualization");
   window.localStorage.setItem(
     "heyblog:visualization:3d-v1:seed-42:limit-200",
@@ -414,10 +1231,46 @@ test("uses cached visualization graph data for repeated sampled sizes", async ()
     expect(screen.getByRole("dialog", { name: "选择图谱规模" })).toBeInTheDocument();
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "200" }));
+  fireEvent.change(screen.getByRole("slider", { name: "节点数量" }), { target: { value: "20" } });
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
 
-  expect(screen.queryByText(/当前使用固定随机种子 42 展示 200 个节点/)).not.toBeInTheDocument();
-  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/graph/views/core"), expect.anything());
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/graph/views/core?strategy=seed&limit=20"),
+      expect.anything(),
+    );
+  });
+});
+
+test("defaults visualization slider to two hundred when the blog count is larger", async () => {
+  statusPayload = {
+    ...statusPayload,
+    total_blogs: 500,
+  };
+  window.history.replaceState({}, "", "/visualization");
+
+  render(<App />);
+
+  const slider = await screen.findByRole("slider", { name: "节点数量" });
+
+  expect(slider).toHaveAttribute("max", "500");
+  expect(slider).toHaveValue("200");
+});
+
+test("loads the static clustered benchmark graph through the visualization route", async () => {
+  window.history.replaceState({}, "", "/visualization/benchmark");
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/benchmarks/blog-community-graph.json"),
+      expect.anything(),
+    );
+  });
+  expect(screen.queryByRole("dialog", { name: "选择图谱规模" })).not.toBeInTheDocument();
+  expect(forceGraphProps.at(-1)!.graphData.nodes).toHaveLength(2);
+  expect(forceGraphProps.at(-1)!.graphData.links).toHaveLength(1);
 });
 
 test("adds a public filter stats route that renders success-source split", async () => {

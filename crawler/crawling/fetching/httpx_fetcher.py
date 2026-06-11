@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -98,6 +99,35 @@ class Fetcher:
             "Fetcher.fetch_many() cannot be called from a running asyncio event loop. "
             "Use 'await fetch_many_async(...)' instead."
         )
+
+    def validate_icon_url(self, url: str, *, timeout_seconds: float | None = None) -> str | None:
+        """Return the final URL for a reachable image-like favicon candidate.
+
+        Args:
+            url: Absolute HTTP(S) icon candidate URL.
+            timeout_seconds: Optional request timeout override.
+
+        Returns:
+            Final URL after redirects when the candidate responds successfully
+            with an image-like content type; otherwise ``None``.
+        """
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        request_kwargs: dict[str, Any] = {}
+        if timeout_seconds is not None:
+            request_kwargs["timeout"] = timeout_seconds
+        headers = {"Range": "bytes=0-0"}
+        try:
+            response = self.client.head(url, **request_kwargs)
+            if response.status_code in {405, 501} or response.status_code >= 400:
+                response = self.client.get(url, headers=headers, **request_kwargs)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        if not self._is_icon_response(response):
+            return None
+        return str(response.url)
 
     async def fetch_many_async(
         self,
@@ -312,3 +342,20 @@ class Fetcher:
             raise PageTooLargeError(
                 f"page exceeded max size limit ({size} > {self.max_page_bytes} bytes): {response.url}"
             )
+
+    def _is_icon_response(self, response: httpx.Response) -> bool:
+        """Return whether an HTTP response looks like a usable icon image.
+
+        Args:
+            response: HTTPX response returned by a HEAD or lightweight GET
+                request.
+
+        Returns:
+            True for successful image-like responses; false otherwise.
+        """
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type.startswith("image/"):
+            return True
+        if content_type in {"application/octet-stream", "binary/octet-stream"}:
+            return urlsplit(str(response.url)).path.lower().endswith((".ico", ".png", ".jpg", ".jpeg", ".svg", ".webp"))
+        return False

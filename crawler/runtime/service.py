@@ -34,8 +34,6 @@ class CrawlerRuntimeService:
         pipeline: Crawl pipeline used to process individual blog rows.
         executor: Thread launcher used for background runtime execution.
         worker_count: Number of runtime workers to run in parallel.
-        priority_seed_normal_queue_slots: Number of normal queue claims allowed
-            after a priority seed claim.
     """
 
     def __init__(
@@ -44,7 +42,7 @@ class CrawlerRuntimeService:
         executor: SerialRuntimeExecutor | None = None,
         *,
         worker_count: int = 1,
-        priority_seed_normal_queue_slots: int = 2,
+        auto_start_interval_seconds: float = 3600.0,
     ) -> None:
         """Initialize runtime state, workers, and synchronization primitives.
 
@@ -52,8 +50,7 @@ class CrawlerRuntimeService:
             pipeline: Crawl pipeline reused by synchronous and background runs.
             executor: Optional executor used to start the background thread.
             worker_count: Requested number of runtime workers.
-            priority_seed_normal_queue_slots: Fairness window size after a
-                priority queue claim.
+            auto_start_interval_seconds: Seconds between idle runtime checks.
 
         Returns:
             ``None``. The runtime service stores its dependencies and prepares
@@ -62,14 +59,13 @@ class CrawlerRuntimeService:
         self.pipeline = pipeline
         self.executor = executor or SerialRuntimeExecutor()
         self.worker_count = max(1, worker_count)
-        self.priority_seed_normal_queue_slots = max(1, priority_seed_normal_queue_slots)
+        self.auto_start_interval_seconds = max(0.001, auto_start_interval_seconds)
         self.capacity_gate = getattr(pipeline, "capacity_gate", None)
         if self.capacity_gate is None:
             self.capacity_gate = CrawlerCapacityGate(
                 pipeline.repository,
                 raw_discovered_url_limit=-1,
             )
-        self._normal_slots_remaining_after_priority = 0
         self._snapshot = RuntimeSnapshot(
             worker_count=self.worker_count,
             workers=[
@@ -81,6 +77,8 @@ class CrawlerRuntimeService:
         self._claim_lock = Lock()
         self._stop_event = Event()
         self._thread: Thread | None = None
+        self._scheduler_thread: Thread | None = None
+        self._scheduler_stop_event = Event()
 
     def status(self) -> dict[str, Any]:
         """Return the current full runtime snapshot.
@@ -140,6 +138,42 @@ class CrawlerRuntimeService:
             self._thread = self.executor.start(self._run_background_loop)
             return self._snapshot.as_dict()
 
+    def start_auto_scheduler(self) -> dict[str, Any]:
+        """Start the periodic idle-runtime wakeup loop if needed.
+
+        Returns:
+            Payload describing whether the scheduler is running.
+        """
+        with self._lock:
+            if self._scheduler_thread is not None and self._scheduler_thread.is_alive():
+                return {
+                    "accepted": False,
+                    "reason": "scheduler_already_running",
+                    "interval_seconds": self.auto_start_interval_seconds,
+                }
+            self._scheduler_stop_event.clear()
+            self._scheduler_thread = Thread(
+                target=self._run_auto_scheduler,
+                daemon=True,
+                name="crawler-auto-scheduler",
+            )
+            self._scheduler_thread.start()
+            return {
+                "accepted": True,
+                "interval_seconds": self.auto_start_interval_seconds,
+            }
+
+    def stop_auto_scheduler(self) -> dict[str, Any]:
+        """Request the periodic idle-runtime wakeup loop to stop.
+
+        Returns:
+            Payload describing whether a scheduler stop was requested.
+        """
+        self._scheduler_stop_event.set()
+        with self._lock:
+            running = self._scheduler_thread is not None and self._scheduler_thread.is_alive()
+        return {"accepted": running}
+
     def stop(self) -> dict[str, Any]:
         """Request the background loop to stop at the next safe checkpoint.
 
@@ -183,7 +217,6 @@ class CrawlerRuntimeService:
                     "runtime": self._snapshot.as_dict(),
                 }
             self._stop_event.clear()
-            self._normal_slots_remaining_after_priority = 0
             self._begin_run_locked("running")
 
         try:
@@ -210,7 +243,6 @@ class CrawlerRuntimeService:
         """
         with self._lock:
             self._snapshot.runner_status = "running"
-            self._normal_slots_remaining_after_priority = 0
 
         try:
             result = self._run_worker_pool(max_nodes=None)
@@ -222,6 +254,21 @@ class CrawlerRuntimeService:
         with self._lock:
             self._finish_run_locked(result)
             self._stop_event.clear()
+
+    def _run_auto_scheduler(self) -> None:
+        """Periodically start the runtime when it is idle.
+
+        Returns:
+            ``None``. The loop exits only when ``stop_auto_scheduler`` is
+            called or the process stops.
+        """
+        while not self._scheduler_stop_event.is_set():
+            with self._lock:
+                should_start = self._snapshot.runner_status in {"idle", "error"}
+            if should_start:
+                self.start()
+            if self._scheduler_stop_event.wait(self.auto_start_interval_seconds):
+                return
 
     def _run_worker_pool(self, *, max_nodes: int | None) -> dict[str, Any]:
         """Run one worker-pool execution and aggregate the results.
@@ -384,61 +431,22 @@ class CrawlerRuntimeService:
             budget["remaining"] = remaining + 1
 
     def _claim_next_waiting_blog(self) -> dict[str, Any] | None:
-        """Claim one waiting blog while enforcing runtime fairness rules.
+        """Claim one waiting blog from the repository.
 
         Returns:
             The next claimed blog row, or ``None`` when no eligible work
             remains.
         """
         with self._claim_lock:
-            if self._normal_slots_remaining_after_priority <= 0:
-                priority_row = self._get_next_priority_blog()
-                if priority_row is not None:
-                    # One claimed priority seed opens a bounded fairness window
-                    # for normal queue items before the next priority check.
-                    self._normal_slots_remaining_after_priority = self.priority_seed_normal_queue_slots
-                    return priority_row
+            return self._get_next_waiting_blog()
 
-            row = self._get_next_waiting_blog(include_priority=self._normal_slots_remaining_after_priority <= 0)
-            if row is not None:
-                if self._normal_slots_remaining_after_priority > 0:
-                    self._normal_slots_remaining_after_priority -= 1
-                return row
-
-            if self._normal_slots_remaining_after_priority > 0:
-                priority_row = self._get_next_priority_blog()
-                if priority_row is not None:
-                    self._normal_slots_remaining_after_priority = self.priority_seed_normal_queue_slots
-                    return priority_row
-                self._normal_slots_remaining_after_priority = 0
-            return None
-
-    def _get_next_priority_blog(self) -> dict[str, Any] | None:
-        """Return the next priority blog from the repository, if supported.
-
-        Returns:
-            The next priority blog row, or ``None`` when unavailable.
-        """
-        getter = getattr(self.pipeline.repository, "get_next_priority_blog", None)
-        if getter is None:
-            return None
-        return getter()
-
-    def _get_next_waiting_blog(self, *, include_priority: bool) -> dict[str, Any] | None:
+    def _get_next_waiting_blog(self) -> dict[str, Any] | None:
         """Return the next waiting blog from the repository.
-
-        Args:
-            include_priority: Whether the repository should allow priority rows
-                in its general waiting query.
 
         Returns:
             The next waiting blog row, or ``None`` when the queue is empty.
         """
-        getter = self.pipeline.repository.get_next_waiting_blog
-        try:
-            return getter(include_priority=include_priority)
-        except TypeError:
-            return getter()
+        return self.pipeline.repository.get_next_waiting_blog()
 
     def _on_blog_start(self, worker_index: int, blog: dict[str, Any]) -> None:
         """Record that a worker has started crawling one blog.

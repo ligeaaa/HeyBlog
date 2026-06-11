@@ -30,36 +30,6 @@ class QueueRepository:
         return {"raw_discovered_urls": self.raw_discovered_urls}
 
 
-class PriorityQueueRepository:
-    """Support separate priority and normal queues for fairness tests."""
-
-    def __init__(self, *, priority_blog_ids: list[int], normal_blog_ids: list[int]) -> None:
-        self.priority_blog_ids = list(priority_blog_ids)
-        self.normal_blog_ids = list(normal_blog_ids)
-        self.lock = Lock()
-        self.claim_order: list[int] = []
-
-    def get_next_priority_blog(self) -> dict[str, object] | None:
-        with self.lock:
-            if not self.priority_blog_ids:
-                return None
-            blog_id = self.priority_blog_ids.pop(0)
-            self.claim_order.append(blog_id)
-            return {"id": blog_id, "url": f"https://priority{blog_id}.example.com/"}
-
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, object] | None:
-        with self.lock:
-            if self.normal_blog_ids:
-                blog_id = self.normal_blog_ids.pop(0)
-                self.claim_order.append(blog_id)
-                return {"id": blog_id, "url": f"https://blog{blog_id}.example.com/"}
-            if include_priority and self.priority_blog_ids:
-                blog_id = self.priority_blog_ids.pop(0)
-                self.claim_order.append(blog_id)
-                return {"id": blog_id, "url": f"https://priority{blog_id}.example.com/"}
-            return None
-
-
 class BlockingQueuePipeline:
     """Pipeline stub that blocks one claimed blog until the test releases it."""
 
@@ -160,9 +130,9 @@ class ExplodingPipeline:
 
 
 class RecordingPipeline:
-    """A fast pipeline that records claim order for fairness assertions."""
+    """A fast pipeline that records claim order for queue assertions."""
 
-    def __init__(self, repository: PriorityQueueRepository) -> None:
+    def __init__(self, repository: QueueRepository) -> None:
         self.repository = repository
         self.processed_ids: list[int] = []
 
@@ -216,6 +186,33 @@ class FailThenSucceedPipeline:
         return {"processed": 1, "discovered": 0, "failed": 0}
 
     def write_exports(self) -> dict[str, object]:
+        return {}
+
+
+class IdleSchedulerPipeline:
+    """Pipeline stub that never has queued work but records start attempts."""
+
+    def __init__(self) -> None:
+        self.repository = QueueRepository([])
+        self.capacity_gate = CrawlerCapacityGate(self.repository, raw_discovered_url_limit=-1)
+        self.export_calls = 0
+
+    def process_blog_row(
+        self,
+        row: dict[str, object],
+        *,
+        on_blog_start=None,
+        on_blog_finish=None,
+        on_blog_error=None,
+    ) -> dict[str, int]:
+        if on_blog_start is not None:
+            on_blog_start(row)
+        if on_blog_finish is not None:
+            on_blog_finish(row, {"discovered": 0})
+        return {"processed": 1, "discovered": 0, "failed": 0}
+
+    def write_exports(self) -> dict[str, object]:
+        self.export_calls += 1
         return {}
 
 
@@ -308,30 +305,15 @@ def test_runtime_records_fatal_worker_errors_and_clears_stale_current_task_field
     assert snapshot["workers"][0]["current_url"] is None
 
 
-def test_runtime_prioritizes_seed_requests_before_normal_queue() -> None:
-    """Priority seeds should be claimed ahead of ordinary waiting blogs."""
-    repository = PriorityQueueRepository(priority_blog_ids=[101], normal_blog_ids=[1, 2])
-    runtime = CrawlerRuntimeService(RecordingPipeline(repository), worker_count=1)
+def test_runtime_claims_waiting_blogs_in_queue_order() -> None:
+    """Runtime batches should keep claiming ordinary waiting blogs until the limit is reached."""
+    pipeline = RecordingPipeline(QueueRepository([1, 2, 3]))
+    runtime = CrawlerRuntimeService(pipeline, worker_count=1)
 
     result = runtime.run_batch(3)
 
     assert result["accepted"] is True
-    assert repository.claim_order[0] == 101
-
-
-def test_runtime_releases_normal_queue_slots_after_each_priority_seed() -> None:
-    """After one priority seed, the runtime should release normal queue claims before taking the next priority."""
-    repository = PriorityQueueRepository(priority_blog_ids=[101, 102], normal_blog_ids=[1, 2, 3])
-    runtime = CrawlerRuntimeService(
-        RecordingPipeline(repository),
-        worker_count=1,
-        priority_seed_normal_queue_slots=2,
-    )
-
-    result = runtime.run_batch(5)
-
-    assert result["accepted"] is True
-    assert repository.claim_order[:4] == [101, 1, 2, 102]
+    assert pipeline.processed_ids == [1, 2, 3]
 
 
 def test_runtime_continues_to_next_waiting_blog_after_one_timeout_failure() -> None:
@@ -364,6 +346,92 @@ def test_runtime_rejects_start_when_raw_discovered_url_limit_is_reached() -> Non
     assert result["capacity"]["raw_count"] == 1_000_000
     assert pipeline.run_calls == 0
     assert runtime.status()["runner_status"] == "idle"
+
+
+def test_runtime_auto_scheduler_starts_idle_runtime() -> None:
+    """Hourly scheduler checks should wake an idle runtime by calling start."""
+    pipeline = IdleSchedulerPipeline()
+    runtime = CrawlerRuntimeService(
+        pipeline,
+        worker_count=1,
+        auto_start_interval_seconds=0.01,
+    )
+
+    runtime.start_auto_scheduler()
+    try:
+        assert runtime._scheduler_thread is not None  # noqa: SLF001 - test inspects scheduler thread.
+        assert runtime._scheduler_thread.is_alive()  # noqa: SLF001 - test inspects scheduler thread.
+        assert pipeline.export_calls == 0
+
+        runtime._scheduler_stop_event.wait(0.05)  # noqa: SLF001 - give the scheduler one tick window.
+
+        assert pipeline.export_calls >= 1
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
+        if runtime._thread is not None:
+            runtime._thread.join(timeout=2)
+        assert runtime.status()["runner_status"] == "idle"
+    finally:
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
+
+
+def test_runtime_auto_scheduler_skips_busy_runtime() -> None:
+    """Scheduler checks should not restart a runtime that is already running."""
+    pipeline = BlockingQueuePipeline([1], target_active_runs=1)
+    runtime = CrawlerRuntimeService(
+        pipeline,
+        worker_count=1,
+        auto_start_interval_seconds=0.01,
+    )
+
+    runtime.start()
+    assert pipeline.started.wait(timeout=1)
+
+    scheduler_result = runtime.start_auto_scheduler()
+    assert scheduler_result["accepted"] is True
+    runtime._scheduler_stop_event.wait(0.03)  # noqa: SLF001 - let the scheduler tick once.
+
+    assert pipeline.run_calls == 1
+    assert runtime.status()["runner_status"] in {"running", "stopping"}
+
+    pipeline.release.set()
+    runtime._thread.join(timeout=2)  # noqa: SLF001 - test waits for the background loop.
+    runtime.stop_auto_scheduler()
+    if runtime._scheduler_thread is not None:
+        runtime._scheduler_thread.join(timeout=2)
+
+
+def test_runtime_auto_scheduler_retries_after_error_state() -> None:
+    """Scheduler checks should treat an errored runtime as not working."""
+    pipeline = RecordingPipeline(QueueRepository([1, 2]))
+    runtime = CrawlerRuntimeService(
+        pipeline,
+        worker_count=1,
+        auto_start_interval_seconds=0.01,
+    )
+    with runtime._lock:  # noqa: SLF001 - test seeds a prior failed runtime state.
+        runtime._snapshot.runner_status = "error"
+        runtime._snapshot.last_error = "previous export failure"
+
+    runtime.start_auto_scheduler()
+    try:
+        runtime._scheduler_stop_event.wait(0.05)  # noqa: SLF001 - let the scheduler tick once.
+
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
+        if runtime._thread is not None:
+            runtime._thread.join(timeout=2)
+
+        assert pipeline.processed_ids == [1, 2]
+        assert runtime.status()["runner_status"] == "idle"
+    finally:
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
 
 
 def test_runtime_allows_start_when_raw_discovered_url_limit_is_disabled() -> None:

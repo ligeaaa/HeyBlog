@@ -1,86 +1,66 @@
-import { Loader2, Network, GitBranch, Radar, TimerReset } from "lucide-react";
+import { GitBranch, Loader2, Network, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { BlogCard } from "../components/BlogCard";
+import { BlogDetailLink } from "../components/BlogDetailLink";
+import { MissingBlogConfirmDialog } from "../components/MissingBlogConfirmDialog";
 import { Navigation } from "../components/Navigation";
-import { SearchBar } from "../components/SearchBar";
-import { fetchBlogsCatalog, fetchStats, fetchStatus } from "../lib/api";
-import type { BlogCatalogPage, StatsData, StatusData } from "../types/graph";
+import { fetchBlogsCatalog, fetchStats, submitUserSeed } from "../lib/api";
+import { resolveBlogIconUrls } from "../lib/icon";
+import type { BlogCatalogItem, StatsData } from "../types/graph";
 
-const DEFAULT_PAGE_SIZE = 30;
 const HOME_REFRESH_INTERVAL_MS = 5000;
-const HOME_STATUS_ORDER = ["PROCESSING", "WAITING", "FINISHED", "FAILED"] as const;
-const HOME_STATUS_FILTERS = ["ALL", ...HOME_STATUS_ORDER] as const;
-
-type HomeStatusFilter = (typeof HOME_STATUS_FILTERS)[number];
+const HOME_SEARCH_PAGE_SIZE = 30;
+const HOME_SEARCH_ENTRANCE_KIND = "home_search_result";
 
 /**
- * Load one synthetic "ALL" page by concatenating status buckets in priority order.
+ * Render the icon used in one homepage search result row.
  *
- * Each bucket is read directly from the catalog API and keeps ascending blog-id
- * ordering inside the bucket.
- *
- * @param page Current homepage page number.
- * @param pageSize Maximum number of cards per page.
- * @param searchQuery Optional fuzzy-search keyword applied to the catalog query.
- * @returns One combined catalog page.
+ * @param props Blog catalog item used for icon resolution.
+ * @returns Blog icon image or text fallback.
  */
-async function fetchAllStatusCatalogPage(
-  page: number,
-  pageSize: number,
-  searchQuery: string,
-): Promise<BlogCatalogPage> {
-  const takeCount = page * pageSize;
-  const responses = await Promise.allSettled(
-    HOME_STATUS_ORDER.map((status) =>
-      fetchBlogsCatalog({
-        page: 1,
-        pageSize: takeCount,
-        q: searchQuery || undefined,
-        sort: "id_asc",
-        status,
-      }),
-    ),
+function SearchResultIcon({ blog }: { blog: BlogCatalogItem }) {
+  const iconUrls = resolveBlogIconUrls(blog);
+  const [iconIndex, setIconIndex] = useState(0);
+  const iconUrl = iconUrls[iconIndex];
+
+  useEffect(() => {
+    setIconIndex(0);
+  }, [blog.id, blog.iconUrl, blog.url, blog.domain]);
+
+  return (
+    <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100 text-base font-semibold text-slate-500 ring-1 ring-slate-200">
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt={`${blog.domain} icon`}
+          className="h-full w-full object-cover"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setIconIndex((currentIndex) => currentIndex + 1)}
+        />
+      ) : (
+        <span>{(blog.domain || "?").slice(0, 1).toUpperCase()}</span>
+      )}
+    </div>
   );
-  const fulfilledResponses = responses
-    .filter((response): response is PromiseFulfilledResult<BlogCatalogPage> => response.status === "fulfilled")
-    .map((response) => response.value);
-  if (fulfilledResponses.length === 0) {
-    throw new Error("all_catalog_buckets_failed");
-  }
-
-  const mergedItems = fulfilledResponses.flatMap((response) => response.items);
-  const offset = (page - 1) * pageSize;
-  const totalItems = fulfilledResponses.reduce((sum, response) => sum + response.totalItems, 0);
-  const totalPages = totalItems > 0 ? Math.ceil(totalItems / pageSize) : 0;
-
-  return {
-    items: mergedItems.slice(offset, offset + pageSize),
-    page,
-    pageSize,
-    totalItems,
-    totalPages,
-    hasNext: page < totalPages,
-    hasPrev: page > 1,
-    sort: "home_status_priority_asc",
-  };
 }
 
 /**
- * Render the public home page with stats, search, and card-based blog discovery.
+ * Render the public home page summary without the status-filtered blog catalog.
  *
  * @returns Home route UI.
  */
 export function HomePage() {
-  const [catalog, setCatalog] = useState<BlogCatalogPage | null>(null);
   const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
-  const [status, setStatus] = useState<StatusData | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchResults, setSearchResults] = useState<BlogCatalogItem[]>([]);
+  const [searchTotalItems, setSearchTotalItems] = useState(0);
+  const [lastSearchQuery, setLastSearchQuery] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<HomeStatusFilter>("ALL");
-  const [currentPage, setCurrentPage] = useState(1);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [missingBlogUrl, setMissingBlogUrl] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
 
@@ -90,13 +70,10 @@ export function HomePage() {
       hasLoadedOnceRef.current = true;
     }
     void loadHomePage({
-      page: currentPage,
-      searchQuery,
-      statusFilter,
       showInitialLoading: isFirstLoad,
       showRefreshState: !isFirstLoad,
     });
-  }, [currentPage, searchQuery, statusFilter]);
+  }, []);
 
   useEffect(() => {
     let isDisposed = false;
@@ -106,9 +83,6 @@ export function HomePage() {
         return;
       }
       await loadHomePage({
-        page: currentPage,
-        searchQuery,
-        statusFilter,
         showInitialLoading: false,
         showRefreshState: true,
         showErrorToast: false,
@@ -122,9 +96,6 @@ export function HomePage() {
     function handleVisibilityChange() {
       if (document.visibilityState === "visible") {
         void loadHomePage({
-          page: currentPage,
-          searchQuery,
-          statusFilter,
           showInitialLoading: false,
           showRefreshState: true,
           showErrorToast: false,
@@ -138,18 +109,15 @@ export function HomePage() {
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [currentPage, searchQuery, statusFilter]);
+  }, []);
 
   /**
-   * Load the home page summary and one catalog page.
+   * Load the home page summary metrics.
    *
    * @param options Loading behavior flags.
    * @returns Promise resolved when the homepage state finishes updating.
    */
   async function loadHomePage(options?: {
-    page?: number;
-    searchQuery?: string;
-    statusFilter?: HomeStatusFilter;
     showInitialLoading?: boolean;
     showRefreshState?: boolean;
     showErrorToast?: boolean;
@@ -161,9 +129,6 @@ export function HomePage() {
     const showInitialLoading = options?.showInitialLoading ?? false;
     const showRefreshState = options?.showRefreshState ?? false;
     const showErrorToast = options?.showErrorToast ?? true;
-    const page = options?.page ?? currentPage;
-    const currentSearchQuery = options?.searchQuery ?? searchQuery;
-    const selectedStatusFilter = options?.statusFilter ?? statusFilter;
 
     refreshInFlightRef.current = true;
     try {
@@ -173,22 +138,8 @@ export function HomePage() {
       if (showRefreshState) {
         setIsRefreshing(true);
       }
-      const [catalogResponse, statsResponse, statusResponse] = await Promise.all([
-        selectedStatusFilter === "ALL"
-          ? fetchAllStatusCatalogPage(page, DEFAULT_PAGE_SIZE, currentSearchQuery)
-          : fetchBlogsCatalog({
-              page,
-              pageSize: DEFAULT_PAGE_SIZE,
-              q: currentSearchQuery || undefined,
-              sort: selectedStatusFilter === "WAITING" ? "id_asc" : "id_desc",
-              status: selectedStatusFilter,
-            }),
-        fetchStats(),
-        fetchStatus(),
-      ]);
-      setCatalog(catalogResponse);
+      const statsResponse = await fetchStats();
       setStats(statsResponse);
-      setStatus(statusResponse);
     } catch {
       if (showErrorToast) {
         toast.error("首页数据加载失败，请刷新页面重试。");
@@ -197,32 +148,65 @@ export function HomePage() {
       refreshInFlightRef.current = false;
       setIsInitialLoading(false);
       setIsRefreshing(false);
+    }
+  }
+
+  /**
+   * Search accepted blogs by URL using the server-side normalized URL fuzzy filter.
+   *
+   * @param event Search form submit event.
+   * @returns Promise resolved after results are rendered.
+   */
+  async function handleSearchSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const query = searchInput.trim();
+    if (!query) {
+      setHasSearched(false);
+      setLastSearchQuery("");
+      setSearchResults([]);
+      setSearchTotalItems(0);
+      setMissingBlogUrl(null);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const page = await fetchBlogsCatalog({
+        page: 1,
+        pageSize: HOME_SEARCH_PAGE_SIZE,
+        url: query,
+        sort: "id_desc",
+      });
+      setSearchResults(page.items);
+      setSearchTotalItems(page.totalItems);
+      setLastSearchQuery(query);
+      setHasSearched(true);
+      setMissingBlogUrl(page.items.length === 0 ? query : null);
+    } catch {
+      toast.error("博客搜索失败，请稍后重试。");
+    } finally {
       setIsSearching(false);
     }
   }
 
   /**
-   * Update the selected homepage status filter and reset pagination to the oldest page.
+   * Submit a user-confirmed missing blog URL as an accepted crawler seed.
    *
-   * @param filter Next status filter selected by the user.
+   * @param url Complete blog URL typed by the user.
+   * @returns Promise resolved after the submission is persisted.
    */
-  function handleStatusFilterChange(filter: HomeStatusFilter) {
-    setStatusFilter(filter);
-    setCurrentPage(1);
+  async function handleSubmitMissingBlog(url: string) {
+    try {
+      await submitUserSeed({ url });
+      toast.success("已加入博客网络，等待爬虫抓取友链。");
+      setMissingBlogUrl(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "提交失败：未知错误";
+      toast.error(message);
+    }
   }
 
-  /**
-   * Apply one fuzzy-search keyword to the homepage catalog.
-   *
-   * @param query Search keyword entered by the user.
-   */
-  function handleSearch(query: string) {
-    setIsSearching(true);
-    setSearchQuery(query);
-    setCurrentPage(1);
-  }
-
-  if (isInitialLoading || !catalog) {
+  if (isInitialLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-4">
@@ -236,6 +220,13 @@ export function HomePage() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-white">
       <Navigation />
+      {missingBlogUrl ? (
+        <MissingBlogConfirmDialog
+          url={missingBlogUrl}
+          onCancel={() => setMissingBlogUrl(null)}
+          onSubmit={handleSubmitMissingBlog}
+        />
+      ) : null}
 
       <main className="mx-auto max-w-7xl px-6 pb-16 pt-24 sm:px-8">
         <section className="mb-14">
@@ -245,12 +236,71 @@ export function HomePage() {
           <p className="mt-5 max-w-3xl text-lg leading-8 text-slate-600">
             基于友链爬取所有博客！
           </p>
-          <div className="mt-8">
-            <SearchBar onSearch={handleSearch} isLoading={isSearching} />
-          </div>
         </section>
 
-        <section className="mb-14 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+        <section className="mx-auto mb-14 w-full max-w-4xl">
+          <form onSubmit={handleSearchSubmit} className="relative">
+            <label htmlFor="home-blog-url-search" className="sr-only">
+              搜索博客链接
+            </label>
+            <input
+              id="home-blog-url-search"
+              type="text"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="输入你的博客链接，看看你的博客有没有被找到吧！"
+              disabled={isSearching}
+              className="w-full rounded-lg border border-slate-300 bg-white px-5 py-4 pr-14 text-base text-slate-950 shadow-sm outline-none transition-colors placeholder:text-slate-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+            />
+            <button
+              type="submit"
+              aria-label="搜索博客"
+              disabled={isSearching || !searchInput.trim()}
+              className="absolute right-2 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-md bg-sky-500 text-white transition-colors hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {isSearching ? <Loader2 className="h-5 w-5 animate-spin" /> : <Search className="h-5 w-5" />}
+            </button>
+          </form>
+
+          {hasSearched ? (
+            <div className="mt-4 rounded-lg border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 text-sm text-slate-500">
+                <span>搜索结果</span>
+                <span>{searchTotalItems} 个匹配</span>
+              </div>
+              {searchResults.length > 0 ? (
+                <div className="max-h-80 overflow-y-auto">
+                  {searchResults.map((blog) => (
+                    <BlogDetailLink
+                      key={blog.id}
+                      blog={blog}
+                      entranceKind={HOME_SEARCH_ENTRANCE_KIND}
+                      entranceUrl={window.location.href}
+                      className="block w-full border-b border-slate-100 px-4 py-4 text-left transition-colors last:border-b-0 hover:bg-sky-50 focus:bg-sky-50 focus:outline-none"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <SearchResultIcon blog={blog} />
+                          <div className="min-w-0">
+                            <div className="truncate text-base text-slate-950">{blog.title || blog.domain}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{blog.normalizedUrl}</div>
+                          </div>
+                        </div>
+                        <span className="flex-shrink-0 rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-500">
+                          {blog.crawlStatus}
+                        </span>
+                      </div>
+                    </BlogDetailLink>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-4 py-6 text-sm text-slate-500">未找到与 {lastSearchQuery} 匹配的博客。</div>
+              )}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="mb-14 grid grid-cols-1 gap-5 md:grid-cols-2">
           <div className="rounded-[28px] border border-sky-200 bg-white/95 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
             <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-500 text-white">
               <Network className="h-6 w-6" />
@@ -265,84 +315,15 @@ export function HomePage() {
             <div className="text-sm text-slate-500">总连接数</div>
             <div className="mt-2 text-4xl text-slate-950">{stats.totalEdges}</div>
           </div>
-          <div className="rounded-[28px] border border-violet-200 bg-white/95 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-500 text-white">
-              <Radar className="h-6 w-6" />
-            </div>
-            <div className="text-sm text-slate-500">待处理队列</div>
-            <div className="mt-2 text-4xl text-slate-950">{status?.pendingTasks ?? 0}</div>
-          </div>
-          <div className="rounded-[28px] border border-amber-200 bg-white/95 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500 text-white">
-              <TimerReset className="h-6 w-6" />
-            </div>
-            <div className="text-sm text-slate-500">处理中 / 失败</div>
-            <div className="mt-2 text-4xl text-slate-950">
-              {(status?.processingTasks ?? 0) + (status?.failedTasks ?? 0)}
-            </div>
-          </div>
         </section>
 
-        <section className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex flex-wrap gap-3">
-            {HOME_STATUS_FILTERS.map((filter) => {
-              const isActive = statusFilter === filter;
-              return (
-                <button
-                  key={filter}
-                  type="button"
-                  onClick={() => handleStatusFilterChange(filter)}
-                  className={`rounded-full border px-4 py-2 text-sm transition-colors ${
-                    isActive
-                      ? "border-sky-500 bg-sky-500 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:border-sky-300 hover:text-sky-600"
-                  }`}
-                >
-                  {filter}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex items-center gap-3 text-sm text-slate-500">
-            <span>
-              当前显示第 {catalog.page} / {Math.max(catalog.totalPages, 1)} 页，本页 {catalog.items.length} 个，共 {catalog.totalItems} 个博客
+        <section className="flex items-center justify-end text-sm text-slate-500">
+          {isRefreshing ? (
+            <span className="inline-flex items-center gap-2 text-sky-600">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              正在刷新
             </span>
-            {searchQuery ? <span>搜索词: {searchQuery}</span> : null}
-            {isRefreshing ? (
-              <span className="inline-flex items-center gap-2 text-sky-600">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                正在刷新
-              </span>
-            ) : null}
-          </div>
-        </section>
-
-        <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-          {catalog.items.map((blog) => (
-            <BlogCard key={blog.id} blog={blog} />
-          ))}
-        </section>
-
-        <section className="mt-10 flex items-center justify-between gap-4">
-          <button
-            type="button"
-            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-            disabled={!catalog.hasPrev}
-            className="rounded-full border border-slate-200 px-5 py-2 text-sm text-slate-600 transition-colors hover:border-sky-300 hover:text-sky-600 disabled:cursor-not-allowed disabled:border-slate-100 disabled:text-slate-300"
-          >
-            上一页
-          </button>
-          <div className="text-sm text-slate-500">
-            每页最多 {DEFAULT_PAGE_SIZE} 个
-          </div>
-          <button
-            type="button"
-            onClick={() => setCurrentPage((page) => page + 1)}
-            disabled={!catalog.hasNext}
-            className="rounded-full border border-slate-200 px-5 py-2 text-sm text-slate-600 transition-colors hover:border-sky-300 hover:text-sky-600 disabled:cursor-not-allowed disabled:border-slate-100 disabled:text-slate-300"
-          >
-            下一页
-          </button>
+          ) : null}
         </section>
       </main>
     </div>

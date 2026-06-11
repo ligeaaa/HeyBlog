@@ -2,13 +2,29 @@ import { RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
-import { resolveBlogIconUrl } from "../lib/icon";
+import { resolveIconProxyUrl } from "../lib/icon";
 import type { GraphData, GraphEdge, GraphNode } from "../types/graph";
+
+export const GRAPH_RENDER_COOLDOWN_TICKS = 120;
+const GRAPH_RENDER_MIN_STABILITY_TICKS = 80;
+const GRAPH_RENDER_STABLE_SAMPLE_TICKS = 20;
+const GRAPH_RENDER_AVERAGE_MOVEMENT_THRESHOLD = 0.15;
+const GRAPH_RENDER_MAX_MOVEMENT_THRESHOLD = 1;
+const GRAPH_LINK_DISTANCE = 96;
+const GRAPH_LINK_STRENGTH = 0.24;
+const GRAPH_CHARGE_STRENGTH = -280;
+const GRAPH_CHARGE_DISTANCE_MAX = 1400;
+const GRAPH_SEEDED_GROUP_SIZE = 18;
+const GRAPH_SEEDED_LAYOUT_SPACING = 360;
 
 interface GraphVisualizationProps {
   data: GraphData;
   onNodeClick?: (node: GraphNode) => void;
   highlightNodeId?: number;
+  onRenderProgress?: (progress: number) => void;
+  onRenderComplete?: () => void;
+  onRenderTickEstimate?: (ticks: number) => void;
+  useNodeIcons?: boolean;
 }
 
 interface RenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
@@ -18,6 +34,7 @@ interface RenderNode extends Omit<GraphNode, "id" | "iconUrl"> {
   label: string;
   val: number;
   iconUrl?: string;
+  iconUrls: string[];
 }
 
 interface RenderLink extends Omit<GraphEdge, "source" | "target"> {
@@ -30,8 +47,101 @@ interface RenderGraphData {
   links: RenderLink[];
 }
 
+interface NodePosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface MovementSample {
+  averageMovement: number;
+  maxMovement: number;
+  measuredNodes: number;
+}
+
 function nodeTitle(node: GraphNode): string {
   return node.title?.trim() || node.domain || node.url || `Blog ${node.id}`;
+}
+
+/**
+ * Keep one numeric value above an inclusive minimum.
+ *
+ * @param value Candidate value.
+ * @param min Inclusive minimum.
+ * @returns Value constrained to at least min.
+ */
+function clampMin(value: number, min: number): number {
+  return Math.max(min, value);
+}
+
+/**
+ * Estimate the maximum force-layout duration from graph size.
+ *
+ * @param nodeCount Number of renderable graph nodes.
+ * @param edgeCount Number of renderable graph links.
+ * @returns Cooldown tick upper bound used by the force graph engine.
+ */
+export function estimateGraphRenderCooldownTicks(nodeCount: number, edgeCount: number): number {
+  const safeNodeCount = Math.max(0, nodeCount);
+  const safeEdgeCount = Math.max(0, edgeCount);
+  const edgeDensity = safeEdgeCount / Math.max(1, safeNodeCount);
+  const estimatedTicks = Math.round(
+    80 + 12 * Math.sqrt(safeNodeCount) + 4 * Math.sqrt(safeEdgeCount) + Math.min(180, edgeDensity * 18),
+  );
+
+  return clampMin(estimatedTicks, GRAPH_RENDER_COOLDOWN_TICKS);
+}
+
+/**
+ * Capture the current 3D positions for nodes that have been placed by d3.
+ *
+ * @param nodes Render nodes from the active graph payload.
+ * @returns Map keyed by render node id with current coordinates.
+ */
+function snapshotNodePositions(nodes: RenderNode[]): Map<string, NodePosition> {
+  const positions = new Map<string, NodePosition>();
+  for (const node of nodes) {
+    if (node.x === undefined || node.y === undefined || node.z === undefined) {
+      continue;
+    }
+    positions.set(node.id, { x: node.x, y: node.y, z: node.z });
+  }
+  return positions;
+}
+
+/**
+ * Measure node displacement since the previous force tick.
+ *
+ * @param nodes Render nodes from the active graph payload.
+ * @param previousPositions Position snapshot from the previous tick.
+ * @returns Average and maximum displacement, or undefined when no positions are available.
+ */
+function measureNodeMovement(nodes: RenderNode[], previousPositions: Map<string, NodePosition>): MovementSample | undefined {
+  let totalMovement = 0;
+  let maxMovement = 0;
+  let measuredNodes = 0;
+
+  for (const node of nodes) {
+    const previous = previousPositions.get(node.id);
+    if (!previous || node.x === undefined || node.y === undefined || node.z === undefined) {
+      continue;
+    }
+
+    const movement = Math.hypot(node.x - previous.x, node.y - previous.y, node.z - previous.z);
+    totalMovement += movement;
+    maxMovement = Math.max(maxMovement, movement);
+    measuredNodes += 1;
+  }
+
+  if (measuredNodes === 0) {
+    return undefined;
+  }
+
+  return {
+    averageMovement: totalMovement / measuredNodes,
+    maxMovement,
+    measuredNodes,
+  };
 }
 
 function sourceIdOf(link: RenderLink): string {
@@ -42,7 +152,178 @@ function targetIdOf(link: RenderLink): string {
   return typeof link.target === "object" ? link.target.id : String(link.target);
 }
 
-function buildGraphData(data: GraphData): RenderGraphData {
+/**
+ * Build an undirected adjacency map from renderable links.
+ *
+ * @param nodes Nodes that can be displayed in the graph.
+ * @param links Links whose endpoints both exist in the graph.
+ * @returns Map keyed by node id with neighboring node ids.
+ */
+function buildAdjacency(nodes: RenderNode[], links: RenderLink[]): Map<string, Set<string>> {
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    adjacency.set(node.id, new Set());
+  }
+
+  for (const link of links) {
+    const source = sourceIdOf(link);
+    const target = targetIdOf(link);
+    if (source === target || !adjacency.has(source) || !adjacency.has(target)) {
+      continue;
+    }
+    adjacency.get(source)?.add(target);
+    adjacency.get(target)?.add(source);
+  }
+
+  return adjacency;
+}
+
+/**
+ * Find deterministic weakly connected components for initial graph placement.
+ *
+ * @param nodes Nodes that can be displayed in the graph.
+ * @param adjacency Undirected adjacency map.
+ * @returns Components sorted by size and id for stable layout.
+ */
+function findConnectedComponents(nodes: RenderNode[], adjacency: Map<string, Set<string>>): string[][] {
+  const visited = new Set<string>();
+  const nodeIds = nodes.map((node) => node.id).sort((left, right) => Number(left) - Number(right));
+  const components: string[][] = [];
+
+  for (const nodeId of nodeIds) {
+    if (visited.has(nodeId)) {
+      continue;
+    }
+
+    const component: string[] = [];
+    const queue = [nodeId];
+    visited.add(nodeId);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      component.push(current);
+      const neighbors = Array.from(adjacency.get(current) ?? []).sort((left, right) => Number(left) - Number(right));
+      for (const neighbor of neighbors) {
+        if (visited.has(neighbor)) {
+          continue;
+        }
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+
+    components.push(component);
+  }
+
+  return components.sort((left, right) => right.length - left.length || Number(left[0]) - Number(right[0]));
+}
+
+/**
+ * Split a large connected component into deterministic layout groups.
+ *
+ * @param component Node ids in one connected component.
+ * @param adjacency Undirected adjacency map.
+ * @returns Layout groups used only for initial spatial seeding.
+ */
+function splitComponentIntoLayoutGroups(component: string[], adjacency: Map<string, Set<string>>): string[][] {
+  if (component.length <= GRAPH_SEEDED_GROUP_SIZE) {
+    return [component];
+  }
+
+  const seedCount = Math.max(2, Math.ceil(component.length / GRAPH_SEEDED_GROUP_SIZE));
+  const componentIds = new Set(component);
+  const seeds = component
+    .slice()
+    .sort((left, right) => {
+      const degreeDelta = (adjacency.get(right)?.size ?? 0) - (adjacency.get(left)?.size ?? 0);
+      return degreeDelta || Number(left) - Number(right);
+    })
+    .slice(0, seedCount);
+
+  const groupByNodeId = new Map<string, number>();
+  const queues = seeds.map((seed, index) => {
+    groupByNodeId.set(seed, index);
+    return [seed];
+  });
+
+  for (let queueIndex = 0; queues.some((queue) => queue.length > 0); queueIndex = (queueIndex + 1) % queues.length) {
+    const current = queues[queueIndex].shift();
+    if (!current) {
+      continue;
+    }
+
+    const neighbors = Array.from(adjacency.get(current) ?? []).sort((left, right) => Number(left) - Number(right));
+    for (const neighbor of neighbors) {
+      if (!componentIds.has(neighbor) || groupByNodeId.has(neighbor)) {
+        continue;
+      }
+      groupByNodeId.set(neighbor, queueIndex);
+      queues[queueIndex].push(neighbor);
+    }
+  }
+
+  const groups = seeds.map((): string[] => []);
+  for (const nodeId of component) {
+    const groupIndex = groupByNodeId.get(nodeId) ?? 0;
+    groups[groupIndex].push(nodeId);
+  }
+
+  return groups.filter((group) => group.length > 0);
+}
+
+/**
+ * Seed deterministic 3D positions so force layout starts from separated regions.
+ *
+ * @param nodes Nodes to position.
+ * @param links Links used to infer components and layout groups.
+ * @returns Nodes with initial x/y/z coordinates.
+ */
+export function seedGraphInitialPositions(nodes: RenderNode[], links: RenderLink[]): RenderNode[] {
+  const adjacency = buildAdjacency(nodes, links);
+  const layoutGroups = findConnectedComponents(nodes, adjacency).flatMap((component) =>
+    splitComponentIntoLayoutGroups(component, adjacency),
+  );
+  const groupIndexByNodeId = new Map<string, number>();
+  for (const [groupIndex, group] of layoutGroups.entries()) {
+    for (const nodeId of group) {
+      groupIndexByNodeId.set(nodeId, groupIndex);
+    }
+  }
+
+  const nodeIndexInGroup = new Map<string, number>();
+  for (const group of layoutGroups) {
+    const sortedGroup = group.slice().sort((left, right) => Number(left) - Number(right));
+    sortedGroup.forEach((nodeId, index) => nodeIndexInGroup.set(nodeId, index));
+  }
+
+  const groupCount = Math.max(1, layoutGroups.length);
+  return nodes.map((node) => {
+    const groupIndex = groupIndexByNodeId.get(node.id) ?? 0;
+    const indexInGroup = nodeIndexInGroup.get(node.id) ?? 0;
+    const groupSize = Math.max(1, layoutGroups[groupIndex]?.length ?? 1);
+    const groupAngle = (Math.PI * 2 * groupIndex) / groupCount;
+    const groupRing = GRAPH_SEEDED_LAYOUT_SPACING * (1 + Math.floor(groupIndex / Math.max(1, Math.ceil(Math.sqrt(groupCount)))));
+    const localAngle = (Math.PI * 2 * indexInGroup) / groupSize;
+    const localRadius = 34 + 8 * Math.sqrt(groupSize) + 5 * (indexInGroup % 5);
+
+    return {
+      ...node,
+      x: Math.cos(groupAngle) * groupRing + Math.cos(localAngle) * localRadius,
+      y: Math.sin(groupAngle) * groupRing + Math.sin(localAngle) * localRadius,
+      z: ((indexInGroup % 7) - 3) * 24 + (groupIndex % 3) * 60,
+    };
+  });
+}
+
+function buildExplicitIconUrls(node: GraphNode, useNodeIcons: boolean): string[] {
+  const iconUrl = node.iconUrl?.trim();
+  if (!useNodeIcons || !iconUrl) {
+    return [];
+  }
+  return [resolveIconProxyUrl(iconUrl)];
+}
+
+function buildGraphData(data: GraphData, useNodeIcons: boolean): RenderGraphData {
   const nodesById = new Map<string, RenderNode>();
 
   for (const node of data.nodes) {
@@ -50,6 +331,7 @@ function buildGraphData(data: GraphData): RenderGraphData {
     if (!id) {
       continue;
     }
+    const iconUrls = buildExplicitIconUrls(node, useNodeIcons);
     nodesById.set(id, {
       ...node,
       id,
@@ -57,7 +339,8 @@ function buildGraphData(data: GraphData): RenderGraphData {
       original: node,
       label: nodeTitle(node),
       val: 1,
-      iconUrl: resolveBlogIconUrl(node),
+      iconUrls,
+      iconUrl: iconUrls[0],
     });
   }
 
@@ -85,7 +368,7 @@ function buildGraphData(data: GraphData): RenderGraphData {
     val: Math.max(1, degreeById.get(node.id) ?? node.degree ?? 1),
   }));
 
-  return { nodes, links };
+  return { nodes: seedGraphInitialPositions(nodes, links), links };
 }
 
 function buildNeighborIds(graphData: RenderGraphData, highlightNodeId?: number): Set<string> {
@@ -120,12 +403,6 @@ function colorForNode(node: RenderNode, highlightNodeId?: number, neighborIds?: 
   if (highlightNodeId !== undefined) {
     return "#334155";
   }
-  if ((node.incomingCount ?? 0) > (node.outgoingCount ?? 0)) {
-    return "#fbbf24";
-  }
-  if ((node.outgoingCount ?? 0) > 0) {
-    return "#818cf8";
-  }
   return "#94a3b8";
 }
 
@@ -157,20 +434,13 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
 
   group.add(glow);
   group.add(core);
+  group.userData = { blogId: node.blogId, iconUrl: node.iconUrl };
 
-  if (node.iconUrl) {
+  const iconUrls = node.iconUrls.length > 0 ? node.iconUrls : node.iconUrl ? [node.iconUrl] : [];
+  if (iconUrls.length > 0) {
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
-    const texture = loader.load(
-      node.iconUrl,
-      () => {
-        core.visible = false;
-      },
-      undefined,
-      () => {
-        core.visible = true;
-      },
-    );
+    const texture = new THREE.Texture();
     texture.colorSpace = THREE.SRGBColorSpace;
     const icon = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -182,10 +452,60 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
     icon.scale.set(size * 2.1, size * 2.1, 1);
     icon.position.set(0, 0, size * 0.08);
     group.add(icon);
+
+    const loadIcon = (index: number) => {
+      const candidate = iconUrls[index];
+      if (!candidate) {
+        core.visible = true;
+        icon.visible = false;
+        return;
+      }
+      loader.load(
+        candidate,
+        (loadedTexture) => {
+          loadedTexture.colorSpace = THREE.SRGBColorSpace;
+          icon.material.map = loadedTexture;
+          icon.material.needsUpdate = true;
+          core.visible = false;
+          icon.visible = true;
+          group.userData.iconUrl = candidate;
+        },
+        undefined,
+        () => loadIcon(index + 1),
+      );
+    };
+    loadIcon(0);
   }
 
-  group.userData = { blogId: node.blogId, iconUrl: node.iconUrl };
   return group;
+}
+
+/**
+ * Tune the d3 force engine so related blogs cluster without collapsing into a global sphere.
+ *
+ * @param graph Force graph instance exposed by react-force-graph-3d.
+ */
+export function tuneNaturalClusterForces(graph: ForceGraphMethods<RenderNode, RenderLink>): void {
+  graph.d3Force("center", null);
+
+  const chargeForce = graph.d3Force("charge") as
+    | {
+        strength?: (value: number) => unknown;
+        distanceMax?: (value: number) => unknown;
+      }
+    | undefined;
+  chargeForce?.strength?.(GRAPH_CHARGE_STRENGTH);
+  chargeForce?.distanceMax?.(GRAPH_CHARGE_DISTANCE_MAX);
+
+  const linkForce = graph.d3Force("link") as
+    | {
+        distance?: (value: number) => unknown;
+        strength?: (value: number) => unknown;
+      }
+    | undefined;
+  linkForce?.distance?.(GRAPH_LINK_DISTANCE);
+  linkForce?.strength?.(GRAPH_LINK_STRENGTH);
+  graph.d3ReheatSimulation();
 }
 
 /**
@@ -196,12 +516,29 @@ function createNodeObject(node: RenderNode, color: string, size: number): THREE.
  * @param highlightNodeId Selected node id to emphasize.
  * @returns Graph container with 3D canvas and controls.
  */
-export function GraphVisualization({ data, onNodeClick, highlightNodeId }: GraphVisualizationProps) {
+export function GraphVisualization({
+  data,
+  onNodeClick,
+  highlightNodeId,
+  onRenderProgress,
+  onRenderComplete,
+  onRenderTickEstimate,
+  useNodeIcons = true,
+}: GraphVisualizationProps) {
   const graphRef = useRef<ForceGraphMethods<RenderNode, RenderLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const renderTickRef = useRef(0);
+  const stableTickRef = useRef(0);
+  const earlyStopRequestedRef = useRef(false);
+  const previousPositionsRef = useRef<Map<string, NodePosition>>(new Map());
   const [size, setSize] = useState({ width: 960, height: 720 });
   const [isMeasured, setIsMeasured] = useState(false);
-  const graphData = useMemo(() => buildGraphData(data), [data]);
+  const graphData = useMemo(() => buildGraphData(data, useNodeIcons), [data, useNodeIcons]);
+  const estimatedCooldownTicks = useMemo(
+    () => estimateGraphRenderCooldownTicks(graphData.nodes.length, graphData.links.length),
+    [graphData.links.length, graphData.nodes.length],
+  );
+  const [cooldownTicks, setCooldownTicks] = useState(estimatedCooldownTicks);
   const neighborIds = useMemo(() => buildNeighborIds(graphData, highlightNodeId), [graphData, highlightNodeId]);
   const selectedGraphId = highlightNodeId === undefined ? undefined : String(highlightNodeId);
 
@@ -220,6 +557,23 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    renderTickRef.current = 0;
+    stableTickRef.current = 0;
+    earlyStopRequestedRef.current = false;
+    previousPositionsRef.current = snapshotNodePositions(graphData.nodes);
+    setCooldownTicks(estimatedCooldownTicks);
+    onRenderTickEstimate?.(estimatedCooldownTicks);
+  }, [estimatedCooldownTicks, graphData, onRenderTickEstimate]);
+
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph || graphData.nodes.length === 0) {
+      return;
+    }
+    tuneNaturalClusterForces(graph);
+  }, [graphData]);
 
   useEffect(() => {
     const graph = graphRef.current;
@@ -259,6 +613,35 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
     graphRef.current?.zoomToFit(650, 80);
   }, []);
 
+  const handleEngineTick = useCallback(() => {
+    renderTickRef.current += 1;
+    const movement = measureNodeMovement(graphData.nodes, previousPositionsRef.current);
+    previousPositionsRef.current = snapshotNodePositions(graphData.nodes);
+
+    if (
+      movement &&
+      renderTickRef.current >= GRAPH_RENDER_MIN_STABILITY_TICKS &&
+      movement.averageMovement < GRAPH_RENDER_AVERAGE_MOVEMENT_THRESHOLD &&
+      movement.maxMovement < GRAPH_RENDER_MAX_MOVEMENT_THRESHOLD
+    ) {
+      stableTickRef.current += 1;
+    } else {
+      stableTickRef.current = 0;
+    }
+
+    if (!earlyStopRequestedRef.current && stableTickRef.current >= GRAPH_RENDER_STABLE_SAMPLE_TICKS) {
+      earlyStopRequestedRef.current = true;
+      setCooldownTicks((current) => Math.min(current, renderTickRef.current));
+    }
+
+    onRenderProgress?.(Math.min(renderTickRef.current / cooldownTicks, 0.98));
+  }, [cooldownTicks, graphData.nodes, onRenderProgress]);
+
+  const handleEngineStop = useCallback(() => {
+    onRenderProgress?.(1);
+    onRenderComplete?.();
+  }, [onRenderComplete, onRenderProgress]);
+
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-slate-950">
       <div className="absolute inset-x-0 top-0 z-10 h-24 bg-gradient-to-b from-slate-950 via-slate-950/70 to-transparent" />
@@ -281,17 +664,17 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
           linkTarget="target"
           linkColor={(link: RenderLink) => {
             if (!selectedGraphId) {
-              return "rgba(148, 163, 184, 0.28)";
+              return "rgba(224, 242, 254, 0.78)";
             }
             return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId
-              ? "rgba(125, 211, 252, 0.78)"
-              : "rgba(71, 85, 105, 0.16)";
+              ? "rgba(240, 249, 255, 1)"
+              : "rgba(186, 230, 253, 0.55)";
           }}
           linkWidth={(link: RenderLink) => {
             if (!selectedGraphId) {
-              return 0.8;
+              return 1.6;
             }
-            return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId ? 2 : 0.35;
+            return sourceIdOf(link) === selectedGraphId || targetIdOf(link) === selectedGraphId ? 3.2 : 0.9;
           }}
           linkDirectionalArrowLength={3.5}
           linkDirectionalArrowRelPos={1}
@@ -305,9 +688,11 @@ export function GraphVisualization({ data, onNodeClick, highlightNodeId }: Graph
             node.fy = node.y;
             node.fz = node.z;
           }}
-          d3VelocityDecay={0.38}
+          d3VelocityDecay={0.44}
           d3AlphaDecay={0.025}
-          cooldownTicks={120}
+          cooldownTicks={cooldownTicks}
+          onEngineTick={handleEngineTick}
+          onEngineStop={handleEngineStop}
           controlType="orbit"
         />
       ) : null}

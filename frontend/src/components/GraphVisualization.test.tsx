@@ -1,55 +1,85 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { GraphVisualization } from "./GraphVisualization";
+import { estimateGraphRenderCooldownTicks, GraphVisualization } from "./GraphVisualization";
+import { tuneNaturalClusterForces } from "./GraphVisualization";
+import type { ForwardedRef } from "react";
 import type { GraphData } from "../types/graph";
 
-const { forceGraphRenders, ForceGraph3DMock } = vi.hoisted(() => {
-  const forceGraphRenders: Record<string, any>[] = [];
+const { chargeForce, d3ReheatSimulation, forceCalls, forceGraphRenders, ForceGraph3DMock, linkForce } = vi.hoisted(
+  () => {
+    const forceGraphRenders: Record<string, any>[] = [];
+    const forceCalls: Array<[string, unknown?]> = [];
+    const chargeForce = {
+      strength: vi.fn(),
+      distanceMax: vi.fn(),
+    };
+    const linkForce = {
+      strength: vi.fn(),
+      distance: vi.fn(),
+    };
+    const d3ReheatSimulation = vi.fn();
 
-  function ForceGraph3DMock(props: Record<string, any>) {
-    forceGraphRenders.push(props);
-    const { ref, onNodeClick, graphData } = props;
-    if (ref) {
-      ref.current = {
-        d3Force: vi.fn(() => ({
-          strength: vi.fn(),
-          distance: vi.fn(),
-        })),
-        d3ReheatSimulation: vi.fn(),
-        zoomToFit: vi.fn(),
-        camera: vi.fn(() => ({
-          position: {
-            clone: () => ({
-              normalize: () => ({
-                multiplyScalar: () => ({ x: 0, y: 0, z: 360 }),
+    function ForceGraph3DMock(props: Record<string, any>, ref: ForwardedRef<Record<string, unknown>>) {
+      forceGraphRenders.push(props);
+      const { onNodeClick, graphData } = props;
+      const resolvedRef = ref ?? props.ref;
+      if (resolvedRef) {
+        const graphInstance = {
+          d3Force: vi.fn((name: string, force?: unknown) => {
+            forceCalls.push([name, force]);
+            if (name === "charge") {
+              return chargeForce;
+            }
+            if (name === "link") {
+              return linkForce;
+            }
+            return undefined;
+          }),
+          d3ReheatSimulation,
+          zoomToFit: vi.fn(),
+          camera: vi.fn(() => ({
+            position: {
+              clone: () => ({
+                normalize: () => ({
+                  multiplyScalar: () => ({ x: 0, y: 0, z: 360 }),
+                }),
               }),
-            }),
-            length: () => 360,
-            copy: vi.fn(),
-          },
-        })),
-        controls: vi.fn(() => ({ update: vi.fn() })),
-        cameraPosition: vi.fn(),
-      };
+              length: () => 360,
+              copy: vi.fn(),
+            },
+          })),
+          controls: vi.fn(() => ({ update: vi.fn() })),
+          cameraPosition: vi.fn(),
+          refresh: vi.fn(),
+        };
+        if (typeof resolvedRef === "function") {
+          resolvedRef(graphInstance);
+        } else {
+          resolvedRef.current = graphInstance;
+        }
+      }
+
+      return (
+        <button
+          type="button"
+          data-testid="force-graph-3d"
+          onClick={() => onNodeClick?.(graphData.nodes[1], new MouseEvent("click"))}
+        >
+          3D graph
+        </button>
+      );
     }
 
-    return (
-      <button
-        type="button"
-        data-testid="force-graph-3d"
-        onClick={() => onNodeClick?.(graphData.nodes[1], new MouseEvent("click"))}
-      >
-        3D graph
-      </button>
-    );
-  }
+    return { chargeForce, d3ReheatSimulation, forceCalls, forceGraphRenders, ForceGraph3DMock, linkForce };
+  },
+);
 
-  return { forceGraphRenders, ForceGraph3DMock };
+vi.mock("react-force-graph-3d", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    default: React.forwardRef(ForceGraph3DMock),
+  };
 });
-
-vi.mock("react-force-graph-3d", () => ({
-  default: ForceGraph3DMock,
-}));
 
 vi.mock("three", async () => {
   const actual = await vi.importActual<typeof import("three")>("three");
@@ -58,10 +88,10 @@ vi.mock("three", async () => {
     TextureLoader: class {
       setCrossOrigin = vi.fn();
 
-      load = vi.fn((url: string, onLoad?: () => void) => {
+      load = vi.fn((url: string, onLoad?: (texture: any) => void) => {
         const texture = new actual.Texture();
         texture.userData = { url };
-        onLoad?.();
+        onLoad?.(texture);
         return texture;
       });
     },
@@ -137,6 +167,12 @@ class TestResizeObserver {
 
 beforeEach(() => {
   forceGraphRenders.length = 0;
+  forceCalls.length = 0;
+  chargeForce.strength.mockClear();
+  chargeForce.distanceMax.mockClear();
+  linkForce.strength.mockClear();
+  linkForce.distance.mockClear();
+  d3ReheatSimulation.mockClear();
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
 });
 
@@ -146,6 +182,12 @@ afterEach(() => {
 });
 
 describe("GraphVisualization", () => {
+  test("estimates larger render cooldowns for bigger or denser graphs", () => {
+    expect(estimateGraphRenderCooldownTicks(2, 1)).toBe(120);
+    expect(estimateGraphRenderCooldownTicks(100, 500)).toBeGreaterThan(120);
+    expect(estimateGraphRenderCooldownTicks(10000, 100000)).toBeGreaterThan(720);
+  });
+
   test("passes cleaned node-link data into the 3D force graph", () => {
     render(<GraphVisualization data={forceGraphData} />);
 
@@ -162,15 +204,21 @@ describe("GraphVisualization", () => {
               id: "1",
               blogId: 1,
               label: "Alpha Blog",
-              iconUrl: "https://icons.duckduckgo.com/ip3/alpha.example.com.ico",
+              iconUrl: "/api/icons/proxy?url=https%3A%2F%2Falpha.example.com%2Ffavicon.ico",
               val: 1,
+              x: expect.any(Number),
+              y: expect.any(Number),
+              z: expect.any(Number),
             }),
             expect.objectContaining({
               id: "2",
               blogId: 2,
               label: "Beta Blog",
-              iconUrl: "https://icons.duckduckgo.com/ip3/beta.example.com.ico",
+              iconUrl: undefined,
               val: 1,
+              x: expect.any(Number),
+              y: expect.any(Number),
+              z: expect.any(Number),
             }),
           ]),
           links: [
@@ -183,6 +231,66 @@ describe("GraphVisualization", () => {
         }),
       }),
     );
+  });
+
+  test("seeds disconnected graph regions into separated initial positions", () => {
+    const twoRegionGraph: GraphData = {
+      nodes: [
+        {
+          id: 1,
+          url: "https://alpha.example.com/",
+          domain: "alpha.example.com",
+          title: "Alpha Blog",
+          iconUrl: null,
+        },
+        {
+          id: 2,
+          url: "https://beta.example.com/",
+          domain: "beta.example.com",
+          title: "Beta Blog",
+          iconUrl: null,
+        },
+        {
+          id: 3,
+          url: "https://gamma.example.com/",
+          domain: "gamma.example.com",
+          title: "Gamma Blog",
+          iconUrl: null,
+        },
+        {
+          id: 4,
+          url: "https://delta.example.com/",
+          domain: "delta.example.com",
+          title: "Delta Blog",
+          iconUrl: null,
+        },
+      ],
+      edges: [
+        {
+          id: "1-2",
+          source: 1,
+          target: 2,
+          linkText: null,
+          linkUrlRaw: "https://alpha.example.com/link",
+        },
+        {
+          id: "3-4",
+          source: 3,
+          target: 4,
+          linkText: null,
+          linkUrlRaw: "https://gamma.example.com/link",
+        },
+      ],
+    };
+
+    render(<GraphVisualization data={twoRegionGraph} />);
+
+    const graphProps = forceGraphRenders.at(-1)!;
+    const [firstRegionNode] = graphProps.graphData.nodes;
+    const thirdNode = graphProps.graphData.nodes[2];
+    const distance = Math.hypot(firstRegionNode.x - thirdNode.x, firstRegionNode.y - thirdNode.y, firstRegionNode.z - thirdNode.z);
+
+    expect(distance).toBeGreaterThan(500);
   });
 
   test("uses the original graph node for click callbacks", () => {
@@ -230,10 +338,54 @@ describe("GraphVisualization", () => {
     const graphProps = forceGraphRenders.at(-1);
     const [selectedLink, unrelatedLink] = graphProps!.graphData.links;
 
-    expect(graphProps!.linkWidth(selectedLink)).toBe(2);
-    expect(graphProps!.linkColor(selectedLink)).toBe("rgba(125, 211, 252, 0.78)");
-    expect(graphProps!.linkWidth(unrelatedLink)).toBe(0.35);
-    expect(graphProps!.linkColor(unrelatedLink)).toBe("rgba(71, 85, 105, 0.16)");
+    expect(graphProps!.linkWidth(selectedLink)).toBe(3.2);
+    expect(graphProps!.linkColor(selectedLink)).toBe("rgba(240, 249, 255, 1)");
+    expect(graphProps!.linkWidth(unrelatedLink)).toBe(0.9);
+    expect(graphProps!.linkColor(unrelatedLink)).toBe("rgba(186, 230, 253, 0.55)");
+  });
+
+  test("uses brighter default link color on the dark graph background", () => {
+    render(<GraphVisualization data={forceGraphData} />);
+
+    const graphProps = forceGraphRenders.at(-1);
+    const [defaultLink] = graphProps!.graphData.links;
+
+    expect(graphProps!.linkWidth(defaultLink)).toBe(1.6);
+    expect(graphProps!.linkColor(defaultLink)).toBe("rgba(224, 242, 254, 0.78)");
+  });
+
+  test("uses dynamic cooldown ticks and completes early after stable movement", () => {
+    const handleProgress = vi.fn();
+    const handleComplete = vi.fn();
+    const graphWithPositions: GraphData = {
+      nodes: forceGraphData.nodes.map((node, index) => ({
+        ...node,
+        x: index * 10,
+        y: 0,
+        z: 0,
+      })),
+      edges: forceGraphData.edges,
+    };
+
+    render(
+      <GraphVisualization data={graphWithPositions} onRenderProgress={handleProgress} onRenderComplete={handleComplete} />,
+    );
+
+    const initialProps = forceGraphRenders.at(-1)!;
+    expect(initialProps.cooldownTicks).toBe(estimateGraphRenderCooldownTicks(2, 1));
+
+    act(() => {
+      for (let index = 0; index < 100; index += 1) {
+        initialProps.onEngineTick();
+      }
+    });
+
+    const stableProps = forceGraphRenders.at(-1)!;
+    expect(stableProps.cooldownTicks).toBe(100);
+    stableProps.onEngineStop();
+
+    expect(handleProgress).toHaveBeenLastCalledWith(1);
+    expect(handleComplete).toHaveBeenCalled();
   });
 
   test("exposes icon-only zoom and reset controls", () => {
@@ -252,6 +404,45 @@ describe("GraphVisualization", () => {
     const nodeObject = graphProps!.nodeThreeObject(iconNode);
 
     expect(nodeObject.children).toHaveLength(3);
-    expect(nodeObject.userData.iconUrl).toBe("https://icons.duckduckgo.com/ip3/alpha.example.com.ico");
+    expect(nodeObject.userData.iconUrl).toBe("/api/icons/proxy?url=https%3A%2F%2Falpha.example.com%2Ffavicon.ico");
+  });
+
+  test("renders iconless nodes as neutral gray spheres", () => {
+    render(<GraphVisualization data={forceGraphData} />);
+
+    const graphProps = forceGraphRenders.at(-1);
+    const iconlessNode = graphProps!.graphData.nodes[1];
+    const nodeObject = graphProps!.nodeThreeObject(iconlessNode);
+    const core = nodeObject.children[1] as any;
+
+    expect(iconlessNode.iconUrl).toBeUndefined();
+    expect(nodeObject.children).toHaveLength(2);
+    expect(nodeObject.userData.iconUrl).toBeUndefined();
+    expect(core.material.color.getHexString()).toBe("94a3b8");
+  });
+
+  test("tunes forces for natural clusters instead of a centered sphere", () => {
+    const graph = {
+      d3Force: vi.fn((name: string, force?: unknown) => {
+        forceCalls.push([name, force]);
+        if (name === "charge") {
+          return chargeForce;
+        }
+        if (name === "link") {
+          return linkForce;
+        }
+        return undefined;
+      }),
+      d3ReheatSimulation,
+    };
+
+    tuneNaturalClusterForces(graph as never);
+
+    expect(forceCalls).toContainEqual(["center", null]);
+    expect(chargeForce.strength).toHaveBeenCalledWith(-280);
+    expect(chargeForce.distanceMax).toHaveBeenCalledWith(1400);
+    expect(linkForce.distance).toHaveBeenCalledWith(96);
+    expect(linkForce.strength).toHaveBeenCalledWith(0.24);
+    expect(d3ReheatSimulation).toHaveBeenCalled();
   });
 });

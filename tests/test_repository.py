@@ -16,11 +16,80 @@ import persistence_api.repository as repository_module
 from persistence_api.db import session_scope
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
+from persistence_api.models import BlogInteractionModel
 from persistence_api.models import BlogModel
-from persistence_api.models import IngestionRequestModel
+from persistence_api.models import PendingUserRegistrationModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import RecommendationImpressionModel
+from persistence_api.models import RecommendationRequestModel
+from persistence_api.models import AdminHourlyStatsModel
+from persistence_api.models import SeedModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
+
+
+class CapturingEmailDelivery:
+    """Test email sender that records lifecycle messages.
+
+    Attributes:
+        verification_urls: Verification messages captured as `(email, url)`.
+        reset_urls: Password reset messages captured as `(email, url)`.
+    """
+
+    def __init__(self) -> None:
+        self.verification_urls: list[tuple[str, str]] = []
+        self.reset_urls: list[tuple[str, str]] = []
+
+    def send_verification_email(self, *, to_email: str, verification_url: str) -> None:
+        """Capture one verification email.
+
+        Args:
+            to_email: Recipient email address.
+            verification_url: One-time verification URL.
+
+        Returns:
+            None.
+        """
+
+        self.verification_urls.append((to_email, verification_url))
+
+    def send_password_reset_email(self, *, to_email: str, reset_url: str) -> None:
+        """Capture one password reset email.
+
+        Args:
+            to_email: Recipient email address.
+            reset_url: One-time password reset URL.
+
+        Returns:
+            None.
+        """
+
+        self.reset_urls.append((to_email, reset_url))
+
+
+def build_dev_token_repository(tmp_path: Path) -> repository_module.SQLAlchemyRepository:
+    """Build a repository that exposes lifecycle tokens for local flow tests."""
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        email_dev_expose_tokens=True,
+    )
+    return repository_module.build_repository(db_path=settings.db_path, settings=settings)
+
+
+def register_and_verify_user(
+    repository: repository_module.SQLAlchemyRepository,
+    *,
+    email: str,
+    password: str,
+) -> dict[str, object]:
+    """Create a user through the verify-before-persist registration flow."""
+
+    pending = repository.register_user(email=email, password=password)
+    token = pending.get("verification_token")
+    assert isinstance(token, str)
+    return repository.confirm_email_verification(token=token)
 
 
 def test_build_repository_roundtrip_works_with_path_backed_repository(tmp_path: Path) -> None:
@@ -74,13 +143,16 @@ def test_build_repository_enables_schema_sync_for_dsn(monkeypatch: pytest.Monkey
     }
 
 
-def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
-    """Reset should wipe graph data and restart primary keys."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+def test_repository_reset_preserves_seed_rows_and_restarts_ids(tmp_path: Path) -> None:
+    """Reset should wipe only graph queue tables while retaining other records."""
+    repository = build_dev_token_repository(tmp_path)
     first_blog_id, inserted = repository.upsert_blog(
         url="https://blog.example.com/",
         normalized_url="https://blog.example.com/",
         domain="blog.example.com",
+        accepted_by="seed",
+        seed_source_path="seed.csv",
+        seed_source_row=2,
     )
     assert inserted is True
     second_blog_id, inserted = repository.upsert_blog(
@@ -89,11 +161,24 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
         domain="friend.example.com",
     )
     assert inserted is True
+    repository.mark_blog_result(
+        blog_id=first_blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=1,
+        metadata_captured=True,
+        title="Blog Example",
+    )
     repository.add_edge(
         from_blog_id=first_blog_id,
         to_blog_id=second_blog_id,
         link_url_raw="https://friend.example.com/",
         link_text="Friend Blog",
+    )
+    repository.create_raw_discovered_url(
+        source_blog_id=first_blog_id,
+        normalized_url="https://raw.example.com/",
+        status="success",
     )
     repository.add_log(
         blog_id=first_blog_id,
@@ -101,23 +186,57 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
         result="ok",
         message="This should not be persisted",
     )
+    verified_user = register_and_verify_user(repository, email="reset-user@example.com", password="long enough")
+    user = repository.login_user(email=str(verified_user["email"]), password="long enough")
+    batch = repository.create_random_recommendation_batch(
+        count=1,
+        visitor_id="visitor-reset",
+        session_id="session-reset",
+        source="reset-test",
+        page_url="http://localhost/reset-test",
+    )
+    recommendation_item = batch["items"][0]
+    repository.record_blog_interaction(
+        event_uuid="reset-event",
+        event_type="detail_open",
+        blog_id=recommendation_item["id"],
+        visitor_id="visitor-reset",
+        session_id="session-reset",
+        entrance_kind="reset_test",
+        entrance_url="http://localhost/reset-test",
+        request_uuid=recommendation_item["request_uuid"],
+        impression_id=recommendation_item["impression_id"],
+        interaction_order=1,
+    )
 
     result = repository.reset()
 
     assert result["ok"] is True
     assert result["blogs_deleted"] == 2
     assert result["edges_deleted"] == 1
+    assert result["raw_discovered_urls_deleted"] == 1
     assert result["logs_deleted"] == 0
-    assert result["ingestion_requests_deleted"] == 0
-    assert result["blog_link_labels_deleted"] == 0
-    assert result["blog_label_tags_deleted"] == 0
-    assert result["blog_dedup_scan_items_deleted"] == 0
-    assert result["blog_dedup_scan_runs_deleted"] == 0
+    assert set(result) == {
+        "ok",
+        "blogs_deleted",
+        "edges_deleted",
+        "raw_discovered_urls_deleted",
+        "logs_deleted",
+    }
     assert repository.list_blogs() == []
     assert repository.list_edges() == []
     assert repository.list_logs() == []
     assert repository.stats()["total_blogs"] == 0
     assert repository.stats()["total_edges"] == 0
+    with session_scope(repository.session_factory) as session:
+        seed = session.scalar(select(SeedModel))
+        assert seed is not None
+        assert seed.normalized_url == "https://blog.example.com/"
+        assert seed.blog_id is None
+        assert repository.get_user_by_session_token(token=user["token"]) is not None
+        assert session.scalar(select(RecommendationRequestModel).limit(1)) is not None
+        assert session.scalar(select(RecommendationImpressionModel).limit(1)) is not None
+        assert session.scalar(select(BlogInteractionModel).limit(1)) is not None
 
     new_blog_id, inserted = repository.upsert_blog(
         url="https://reset.example.com/",
@@ -126,35 +245,137 @@ def test_repository_reset_clears_data_and_restarts_ids(tmp_path: Path) -> None:
     )
     assert inserted is True
     assert new_blog_id == 1
+    restored_blog_id, inserted = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+    )
+    assert inserted is True
+    restored_stats = repository.get_blog_recommendation_stats(restored_blog_id)
+    assert restored_stats is not None
+    assert restored_stats["impressions"] == 1
+    assert restored_stats["detail_opens"] == 1
 
 
 def test_repository_register_login_and_session_profile(tmp_path: Path) -> None:
-    """Users can register, log in, and resolve their bearer session profile."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    """Users persist only after email verification, then can log in."""
+    repository = build_dev_token_repository(tmp_path)
 
-    created = repository.register_user(email="User@Example.com", password="correct horse")
-    assert created["user"]["email"] == "user@example.com"
-    assert created["token"]
-    resolved_user = repository.get_user_by_session_token(token=created["token"])
-    assert resolved_user is not None
-    assert resolved_user["id"] == created["user"]["id"]
-    assert resolved_user["email"] == created["user"]["email"]
+    pending = repository.register_user(email="User@Example.com", password="correct horse")
+    assert pending["sent"] is True
+    assert pending["verification_token"]
+    with session_scope(repository.session_factory) as session:
+        assert session.scalar(select(PendingUserRegistrationModel).where(PendingUserRegistrationModel.email == "user@example.com")) is not None
+        assert session.scalar(select(repository_module.UserModel).where(repository_module.UserModel.email == "user@example.com")) is None
+    with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
+        repository.login_user(email="user@example.com", password="correct horse")
+
+    created = repository.confirm_email_verification(token=str(pending["verification_token"]))
+    assert created["email"] == "user@example.com"
+    assert created["role"] == "user"
+    assert created["email_verified"] is True
 
     logged_in = repository.login_user(email="user@example.com", password="correct horse")
-    assert logged_in["user"]["id"] == created["user"]["id"]
-    assert logged_in["token"] != created["token"]
+    assert logged_in["user"]["id"] == created["id"]
+    assert logged_in["token"]
 
-    assert repository.revoke_user_session(token=created["token"]) is True
-    assert repository.get_user_by_session_token(token=created["token"]) is None
+    assert repository.revoke_user_session(token=logged_in["token"]) is True
+    assert repository.get_user_by_session_token(token=logged_in["token"]) is None
+
+
+def test_repository_email_verification_and_password_reset_flow(tmp_path: Path) -> None:
+    """Email verification and password reset tokens should be single-use."""
+    repository = build_dev_token_repository(tmp_path)
+
+    created = repository.register_user(email="verify@example.com", password="correct horse")
+    verification_token = created["verification_token"]
+    verified = repository.confirm_email_verification(token=verification_token)
+    assert verified["email_verified"] is True
+
+    with pytest.raises(repository_module.UserAuthError, match="invalid_token"):
+        repository.confirm_email_verification(token=verification_token)
+
+    login = repository.login_user(email="verify@example.com", password="correct horse")
+    reset_request = repository.request_password_reset(email="verify@example.com")
+    reset_token = reset_request["reset_token"]
+    reset_user = repository.reset_user_password(token=reset_token, password="new correct horse")
+    assert reset_user["email"] == "verify@example.com"
+    assert repository.get_user_by_session_token(token=login["token"]) is None
+
+    with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
+        repository.login_user(email="verify@example.com", password="correct horse")
+    assert repository.login_user(email="verify@example.com", password="new correct horse")["token"]
+
+
+def test_repository_sends_lifecycle_email_and_hides_tokens_when_configured(tmp_path: Path) -> None:
+    """Production email mode should send links without exposing raw tokens."""
+    email_delivery = CapturingEmailDelivery()
+    settings = Settings(
+        db_path=tmp_path / "db.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        public_base_url="https://heyblog.example.com",
+        email_dev_expose_tokens=False,
+    )
+    repository = repository_module.build_repository(
+        db_path=tmp_path / "db.sqlite",
+        settings=settings,
+        email_delivery=email_delivery,
+    )
+
+    verification_payload = repository.register_user(email="Mail@Example.com", password="correct horse")
+    assert verification_payload == {
+        "sent": True,
+        "expires_at": verification_payload["expires_at"],
+    }
+    assert len(email_delivery.verification_urls) == 1
+    sent_email, verification_url = email_delivery.verification_urls[0]
+    assert sent_email == "mail@example.com"
+    assert verification_url.startswith("https://heyblog.example.com/profile?verify_token=")
+    verification_token = verification_url.rsplit("=", 1)[1]
+    assert repository.confirm_email_verification(token=verification_token)["email_verified"] is True
+
+    reset_payload = repository.request_password_reset(email="mail@example.com")
+    assert reset_payload == {
+        "sent": True,
+        "expires_at": reset_payload["expires_at"],
+    }
+    assert len(email_delivery.reset_urls) == 1
+    reset_email, reset_url = email_delivery.reset_urls[0]
+    assert reset_email == "mail@example.com"
+    assert reset_url.startswith("https://heyblog.example.com/profile?reset_token=")
+    reset_token = reset_url.rsplit("=", 1)[1]
+    assert repository.reset_user_password(token=reset_token, password="new correct horse")["email"] == "mail@example.com"
+
+
+def test_repository_admin_role_updates_user_identity(tmp_path: Path) -> None:
+    """Users should be promotable between regular user and admin roles."""
+    repository = build_dev_token_repository(tmp_path)
+
+    created = register_and_verify_user(repository, email="admin@example.com", password="correct horse")
+    user_id = int(created["id"])
+    promoted = repository.update_user_role(user_id=user_id, role="admin")
+    assert promoted["role"] == "admin"
+    listed = repository.list_users()
+    assert listed["items"][0]["role"] == "admin"
+
+    demoted = repository.update_user_role(user_id=user_id, role="user")
+    assert demoted["role"] == "user"
+    with pytest.raises(ValueError, match="invalid_user_role"):
+        repository.update_user_role(user_id=user_id, role="label_admin")
 
 
 def test_repository_rejects_duplicate_user_and_bad_credentials(tmp_path: Path) -> None:
     """Email uniqueness and password validation should produce stable errors."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    repository.register_user(email="dupe@example.com", password="long enough")
+    repository = build_dev_token_repository(tmp_path)
+    register_and_verify_user(repository, email="dupe@example.com", password="long enough")
 
     with pytest.raises(repository_module.UserAuthError, match="email_already_registered"):
         repository.register_user(email="DUPE@example.com", password="long enough")
+
+    repository.register_user(email="pending@example.com", password="long enough")
+    with pytest.raises(repository_module.UserAuthError, match="email_registration_pending"):
+        repository.register_user(email="PENDING@example.com", password="long enough")
     with pytest.raises(repository_module.UserAuthError, match="invalid_credentials"):
         repository.login_user(email="dupe@example.com", password="wrong password")
     with pytest.raises(ValueError, match="password_too_short"):
@@ -187,6 +408,87 @@ def test_repository_mark_blog_result_persists_site_metadata(tmp_path: Path) -> N
     assert blog["icon_url"] == "https://blog.example.com/favicon.ico"
 
 
+def test_repository_keeps_accepted_blog_visible_after_crawl_failure(tmp_path: Path) -> None:
+    """Crawl failures must not undo durable blog acceptance.
+
+    Args:
+        tmp_path: Temporary directory used for the SQLite test database.
+
+    Returns:
+        None. Assertions verify acceptance fields and catalog eligibility.
+    """
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://friend.example.com/",
+        normalized_url="https://friend.example.com/",
+        domain="friend.example.com",
+        accepted_by="rss",
+    )
+    assert inserted is True
+
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FAILED",
+        status_code=413,
+        friend_links_count=0,
+        crawl_error_kind="page_too_large",
+        crawl_error_message="homepage exceeded max page bytes",
+    )
+
+    blog = repository.get_blog(blog_id)
+    assert blog is not None
+    assert blog["acceptance_status"] == "ACCEPTED"
+    assert blog["accepted_by"] == "rss"
+    assert blog["crawl_status"] == "FAILED"
+    assert blog["crawl_error_kind"] == "page_too_large"
+    assert blog["successful_crawl_at"] is None
+
+    catalog = repository.list_blogs_catalog()
+    assert [item["id"] for item in catalog["items"]] == [blog_id]
+    assert catalog["filters"]["acceptance_status"] == "ACCEPTED"
+
+
+def test_repository_successful_crawl_clears_previous_error(tmp_path: Path) -> None:
+    """A later successful crawl should clear stale failure details.
+
+    Args:
+        tmp_path: Temporary directory used for the SQLite test database.
+
+    Returns:
+        None. Assertions verify failure details do not survive a success.
+    """
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, _ = repository.upsert_blog(
+        url="https://blog.example.com/",
+        normalized_url="https://blog.example.com/",
+        domain="blog.example.com",
+        accepted_by="model",
+    )
+
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FAILED",
+        status_code=None,
+        friend_links_count=0,
+        crawl_error_kind="timeout",
+        crawl_error_message="timed out",
+    )
+    repository.mark_blog_result(
+        blog_id=blog_id,
+        crawl_status="FINISHED",
+        status_code=200,
+        friend_links_count=3,
+    )
+
+    blog = repository.get_blog(blog_id)
+    assert blog is not None
+    assert blog["acceptance_status"] == "ACCEPTED"
+    assert blog["accepted_by"] == "model"
+    assert blog["crawl_error_kind"] is None
+    assert blog["crawl_error_message"] is None
+    assert blog["successful_crawl_at"] is not None
+
+
 def test_repository_defaults_blog_email_to_none(tmp_path: Path) -> None:
     """New blogs should keep a nullable email field until claimed by a user."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -200,73 +502,6 @@ def test_repository_defaults_blog_email_to_none(tmp_path: Path) -> None:
     blog = repository.get_blog(blog_id)
     assert blog is not None
     assert blog["email"] is None
-
-
-def test_repository_creates_ingestion_request_and_persists_blog_email(tmp_path: Path) -> None:
-    """Self-serve ingestion should capture the requester email onto the seed blog."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-
-    created = repository.create_ingestion_request(
-        homepage_url="https://blog.example.com/",
-        email="owner@example.com",
-    )
-
-    assert created["status"] == "QUEUED"
-    assert created["request_id"] == created["id"]
-    assert created["email"] == "owner@example.com"
-    assert created["blog"]["email"] == "owner@example.com"
-
-    fetched = repository.get_ingestion_request(
-        request_id=created["request_id"],
-        request_token=created["request_token"],
-    )
-    assert fetched is not None
-    assert fetched["normalized_url"] == "https://blog.example.com/"
-    assert fetched["seed_blog_id"] == created["seed_blog_id"]
-    assert fetched["seed_blog"]["blog_id"] == created["seed_blog_id"]
-
-
-def test_repository_dedupes_ingestion_request_by_normalized_url(tmp_path: Path) -> None:
-    """Repeated requests for the same blog should reuse one active ingestion request."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-
-    first = repository.create_ingestion_request(
-        homepage_url="https://blog.example.com/?utm_source=test",
-        email="owner@example.com",
-    )
-    second = repository.create_ingestion_request(
-        homepage_url="https://blog.example.com/",
-        email="owner@example.com",
-    )
-
-    assert first["request_id"] == second["request_id"]
-    assert len(repository.list_blogs()) == 1
-
-
-def test_repository_dedupes_existing_finished_blog_before_creating_request(tmp_path: Path) -> None:
-    """Already-finished blogs should short-circuit to a DEDUPED_EXISTING response."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    blog_id, inserted = repository.upsert_blog(
-        url="https://blog.example.com/",
-        normalized_url="https://blog.example.com/",
-        domain="blog.example.com",
-    )
-    assert inserted is True
-    repository.mark_blog_result(
-        blog_id=blog_id,
-        crawl_status="FINISHED",
-        status_code=200,
-        friend_links_count=0,
-    )
-
-    response = repository.create_ingestion_request(
-        homepage_url="https://blog.example.com/",
-        email="owner@example.com",
-    )
-
-    assert response["status"] == "DEDUPED_EXISTING"
-    assert response["blog_id"] == blog_id
-    assert response["request_id"] is None
 
 
 def test_repository_filter_stats_follow_configured_chain_order(tmp_path: Path) -> None:
@@ -432,6 +667,31 @@ def test_repository_marks_duplicate_raw_urls_before_filter_chain(tmp_path: Path)
     assert first["id"] < duplicate["id"]
 
 
+def test_repository_finds_blog_id_by_normalized_url(tmp_path: Path) -> None:
+    """Duplicate discovery repair should resolve accepted target blogs by URL."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, _ = repository.upsert_blog(
+        url="https://friend.example/",
+        normalized_url="https://friend.example/",
+        domain="friend.example",
+    )
+
+    assert repository.find_blog_id_by_normalized_url(normalized_url="https://friend.example/") == blog_id
+    assert repository.find_blog_id_by_normalized_url(normalized_url="https://missing.example/") is None
+
+
+def test_repository_finds_blog_id_by_normalized_url_identity_fallback(tmp_path: Path) -> None:
+    """Duplicate edge repair should survive blog identity canonicalization."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_id, _ = repository.upsert_blog(
+        url="https://zhuruilei.66law.cn/",
+        normalized_url="https://zhuruilei.66law.cn/",
+        domain="zhuruilei.66law.cn",
+    )
+
+    assert repository.find_blog_id_by_normalized_url(normalized_url="https://zhuruilei.66law.cn/") == blog_id
+
+
 def test_retired_label_assignment_migration_reports_single_table_rows(tmp_path: Path) -> None:
     """Retired label-assignment migration should leave the single label table intact."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
@@ -455,165 +715,6 @@ def test_retired_label_assignment_migration_reports_single_table_rows(tmp_path: 
     labeled = repository.list_blog_labeling_candidates(label="1", labeled=True)
     assert [row["id"] for row in labeled["items"]] == [raw_id]
 
-
-
-def test_repository_dedupes_ingestion_request_by_identity_key_but_keeps_history(tmp_path: Path) -> None:
-    """Alias URLs should reuse one active request, but completed history must not block a new request."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-
-    first = repository.create_ingestion_request(
-        homepage_url="https://langhai.cc/",
-        email="owner@example.com",
-    )
-    second = repository.create_ingestion_request(
-        homepage_url="http://blog.langhai.cc/index.html",
-        email="owner@example.com",
-    )
-
-    assert first["request_id"] == second["request_id"]
-    assert first["identity_key"] == "site:langhai.cc/"
-
-    repository.mark_blog_result(
-        blog_id=first["seed_blog_id"],
-        crawl_status="FINISHED",
-        status_code=200,
-        friend_links_count=0,
-    )
-
-    third = repository.create_ingestion_request(
-        homepage_url="http://www.langhai.cc/",
-        email="owner@example.com",
-    )
-
-    assert third["request_id"] is None
-    assert third["status"] == "DEDUPED_EXISTING"
-    assert len(repository.list_blogs()) == 1
-
-
-def test_repository_run_blog_dedup_scan_removes_rejected_links_and_orphaned_targets(
-    tmp_path: Path,
-) -> None:
-    """Admin rescan should drop persisted blog URLs rejected by the current decision chain."""
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        friend_link_exact_url_blocklist=("https://rejected.example/",),
-        decision_model_consensus_enabled=False,
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, inserted = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    assert inserted is True
-    target_id, inserted = repository.upsert_blog(
-        url="https://rejected.example/",
-        normalized_url="https://rejected.example/",
-        domain="rejected.example",
-    )
-    assert inserted is True
-
-    with session_scope(repository.session_factory) as session:
-        session.add(
-            BlogLabelModel(
-                normalized_url="https://rejected.example/",
-                label_id={"1": 1},
-                created_time=repository_module.now_utc(),
-                updated_time=repository_module.now_utc(),
-            )
-        )
-
-    repository.add_edge(
-        from_blog_id=source_id,
-        to_blog_id=target_id,
-        link_url_raw="https://rejected.example/",
-        link_text="Rejected",
-    )
-
-    run = repository.create_blog_dedup_scan_run(crawler_was_running=True)
-    summary = repository.execute_blog_dedup_scan_run(run_id=int(run["id"]))
-    items = repository.list_blog_dedup_scan_run_items(summary["id"])
-    blogs = repository.list_blogs()
-
-    assert summary["status"] == "SUCCEEDED"
-    assert summary["crawler_was_running"] is True
-    assert summary["total_count"] == 2
-    assert summary["scanned_count"] == 2
-    assert summary["removed_count"] == 1
-    assert summary["kept_count"] == 1
-    assert repository.list_edges() == []
-    assert [blog["id"] for blog in blogs] == [source_id]
-    assert len(items) == 1
-    assert items[0]["survivor_blog_id"] is None
-    assert items[0]["removed_blog_id"] == target_id
-    assert items[0]["removed_url"] == "https://rejected.example/"
-    assert items[0]["reason_code"] == "exact_url_blocked"
-
-
-def test_repository_dedup_scan_keeps_valid_blog_urls(tmp_path: Path) -> None:
-    """Rescan should preserve persisted blogs whose own URLs still pass the chain."""
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        friend_link_exact_url_blocklist=("https://blocked.example/",),
-        decision_model_consensus_enabled=False,
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    first_source_id, inserted = repository.upsert_blog(
-        url="https://source-a.example/",
-        normalized_url="https://source-a.example/",
-        domain="source-a.example",
-    )
-    assert inserted is True
-    second_source_id, inserted = repository.upsert_blog(
-        url="https://source-b.example/",
-        normalized_url="https://source-b.example/",
-        domain="source-b.example",
-    )
-    assert inserted is True
-    target_id, inserted = repository.upsert_blog(
-        url="https://blocked.example/",
-        normalized_url="https://blocked.example/",
-        domain="blocked.example",
-    )
-    assert inserted is True
-    survivor_id, inserted = repository.upsert_blog(
-        url="https://friend.example/",
-        normalized_url="https://friend.example/",
-        domain="friend.example",
-    )
-    assert inserted is True
-
-    repository.add_edge(
-        from_blog_id=first_source_id,
-        to_blog_id=survivor_id,
-        link_url_raw="https://friend.example/",
-        link_text="Canonical",
-    )
-    repository.add_edge(
-        from_blog_id=second_source_id,
-        to_blog_id=target_id,
-        link_url_raw="https://blocked.example/",
-        link_text="Blocked",
-    )
-
-    run = repository.create_blog_dedup_scan_run(crawler_was_running=False)
-    summary = repository.execute_blog_dedup_scan_run(run_id=int(run["id"]))
-    items = repository.list_blog_dedup_scan_run_items(summary["id"])
-    blogs = repository.list_blogs()
-    edges = repository.list_edges()
-
-    assert summary["total_count"] == 4
-    assert summary["scanned_count"] == 4
-    assert summary["removed_count"] == 1
-    assert summary["kept_count"] == 3
-    assert len(items) == 1
-    assert items[0]["removed_url"] == "https://blocked.example/"
-    assert [edge["link_url_raw"] for edge in edges] == ["https://friend.example/"]
-    assert {blog["id"] for blog in blogs} == {first_source_id, second_source_id, survivor_id}
 
 
 def test_repository_upsert_blog_collapses_tenant_like_subdomains_to_root_url(tmp_path: Path) -> None:
@@ -642,145 +743,6 @@ def test_repository_upsert_blog_collapses_tenant_like_subdomains_to_root_url(tmp
     assert blog["domain"] == "66law.cn"
     assert blog["identity_key"] == "site:66law.cn/"
     assert "tenant_subdomain_collapsed" in blog["identity_reason_codes"]
-
-
-def test_repository_ingestion_request_reuses_tenant_like_root_identity(tmp_path: Path) -> None:
-    """Tenant-like subdomains should share one queued seed blog/request identity."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-
-    first = repository.create_ingestion_request(
-        homepage_url="https://zhuruilei.66law.cn/",
-        email="first@example.com",
-    )
-    second = repository.create_ingestion_request(
-        homepage_url="https://lichenlvs.66law.cn/",
-        email="second@example.com",
-    )
-
-    assert first["status"] == "QUEUED"
-    assert second["status"] == "QUEUED"
-    assert second["request_id"] == first["request_id"]
-    assert second["seed_blog_id"] == first["seed_blog_id"]
-    assert second["identity_key"] == "site:66law.cn/"
-
-    blog = repository.get_blog(int(first["seed_blog_id"]))
-    assert blog is not None
-    assert blog["blog_id"] == first["seed_blog_id"]
-    assert blog["url"] == "https://66law.cn/"
-    assert blog["normalized_url"] == "https://66law.cn/"
-    assert blog["domain"] == "66law.cn"
-
-
-def test_repository_reused_tenant_like_ingestion_request_is_canonicalized_to_root_url(tmp_path: Path) -> None:
-    """Reused active requests should rewrite legacy tenant normalized_url to the registrable root URL."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-
-    with session_scope(repository.session_factory) as session:
-        seed = BlogModel(
-            url="https://66law.cn/",
-            normalized_url="https://66law.cn/",
-            identity_key="site:66law.cn/",
-            identity_reason_codes='["scheme_ignored"]',
-            identity_ruleset_version=repository_module.IDENTITY_RULESET_VERSION,
-            domain="66law.cn",
-            email=None,
-            title=None,
-            icon_url=None,
-            status_code=None,
-            crawl_status=CrawlStatus.WAITING,
-            friend_links_count=0,
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        session.add(seed)
-        session.flush()
-        request = IngestionRequestModel(
-            requested_url="https://zhuruilei.66law.cn/",
-            normalized_url="https://zhuruilei.66law.cn/",
-            identity_key="site:66law.cn/",
-            identity_reason_codes='["scheme_ignored"]',
-            identity_ruleset_version=repository_module.IDENTITY_RULESET_VERSION,
-            requester_email="existing@example.com",
-            status="QUEUED",
-            priority=100,
-            seed_blog_id=int(seed.id),
-            matched_blog_id=None,
-            request_token="legacy-token",
-            expires_at=None,
-            error_message=None,
-            created_at=repository_module.now_utc(),
-            updated_at=repository_module.now_utc(),
-        )
-        session.add(request)
-        session.flush()
-        request_id = int(request.id)
-
-    reused = repository.create_ingestion_request(
-        homepage_url="https://lichenlvs.66law.cn/",
-        email="next@example.com",
-    )
-
-    assert reused["request_id"] == request_id
-    assert reused["normalized_url"] == "https://66law.cn/"
-    assert reused["identity_key"] == "site:66law.cn/"
-
-
-def test_repository_dedup_scan_uses_model_consensus_when_enabled(tmp_path: Path, monkeypatch) -> None:
-    """Rescan should share the same model-consensus decision layer as live crawler filtering."""
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        seed_path=tmp_path / "seed.csv",
-        export_dir=tmp_path / "exports",
-        decision_model_root=tmp_path / "models",
-        decision_model_consensus_enabled=True,
-    )
-    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
-    source_id, inserted = repository.upsert_blog(
-        url="https://source.example/",
-        normalized_url="https://source.example/",
-        domain="source.example",
-    )
-    assert inserted is True
-    target_id, inserted = repository.upsert_blog(
-        url="https://maybe-blog.example/",
-        normalized_url="https://maybe-blog.example/",
-        domain="maybe-blog.example",
-    )
-    assert inserted is True
-
-    run_dir = settings.decision_model_root / "structured" / "2604120847"
-    run_dir.mkdir(parents=True)
-    (run_dir / "model.joblib").write_bytes(b"stub")
-    (run_dir / "config.json").write_text('{"model_config":{"threshold":0.5}}', encoding="utf-8")
-
-    class StubPredictor:
-        threshold = 0.5
-
-        def predict_proba(self, samples: list[object]) -> list[float]:
-            probabilities: list[float] = []
-            for sample in samples:
-                url = str(getattr(sample, "url", ""))
-                probabilities.append(0.9 if "source.example" in url else 0.1)
-            return probabilities
-
-    monkeypatch.setattr("crawler.crawling.decisions.consensus.load_model", lambda path: StubPredictor())
-
-    repository.add_edge(
-        from_blog_id=source_id,
-        to_blog_id=target_id,
-        link_url_raw="https://maybe-blog.example/",
-        link_text="Maybe Blog",
-    )
-
-    run = repository.create_blog_dedup_scan_run(crawler_was_running=False)
-    summary = repository.execute_blog_dedup_scan_run(run_id=int(run["id"]))
-    items = repository.list_blog_dedup_scan_run_items(summary["id"])
-
-    assert summary["removed_count"] == 1
-    assert summary["kept_count"] == 1
-    assert repository.list_edges() == []
-    assert [blog["id"] for blog in repository.list_blogs()] == [source_id]
-    assert items[0]["reason_code"] == "model_consensus_all_non_blog"
 
 
 def test_repository_ensure_edge_in_session_dedupes_pending_edges(tmp_path: Path) -> None:
@@ -887,27 +849,10 @@ def test_repository_startup_migrates_legacy_tenant_like_rows_and_merges_to_root_
 
     migrated = repository_module.build_repository(db_path=db_path)
     blogs = migrated.list_blogs()
-    latest_run = migrated.get_latest_blog_dedup_scan_run()
 
     assert len(blogs) == 2
     assert {blog["identity_key"] for blog in blogs} == {"site:66law.cn/"}
     assert all(blog["identity_ruleset_version"] == repository_module.IDENTITY_RULESET_VERSION for blog in blogs)
-    assert latest_run is None
-
-
-def test_repository_startup_marks_orphaned_dedup_scan_run_failed(tmp_path: Path) -> None:
-    """Startup should not leave stale RUNNING dedup scan summaries hanging forever."""
-    db_path = tmp_path / "db.sqlite"
-    repository = repository_module.build_repository(db_path=db_path)
-    run = repository.create_blog_dedup_scan_run(crawler_was_running=False)
-
-    restarted = repository_module.build_repository(db_path=db_path)
-    latest_run = restarted.get_latest_blog_dedup_scan_run()
-
-    assert latest_run is not None
-    assert latest_run["id"] == run["id"]
-    assert latest_run["status"] == "FAILED"
-    assert latest_run["error_message"] == "orphaned_dedup_scan_run_cleaned_on_startup"
 
 
 def test_repository_requeues_processing_blogs_on_restart(tmp_path: Path) -> None:
@@ -1000,61 +945,50 @@ def test_repository_claims_waiting_blogs_in_id_order(tmp_path: Path) -> None:
     assert second_claim["id"] == second_blog_id
 
 
-def test_repository_claims_priority_blogs_by_request_priority(tmp_path: Path) -> None:
-    """Priority queue claiming should follow ingestion priority before request age."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    first = repository.create_ingestion_request(
-        homepage_url="https://first-priority.example/",
-        email="owner@example.com",
+def test_repository_creates_user_seed_as_accepted_waiting_blog(tmp_path: Path) -> None:
+    """User seeds should be accepted as blogs while remaining crawlable."""
+    repository = repository_module.build_repository(
+        db_path=tmp_path / "db.sqlite",
+        settings=Settings(
+            db_path=tmp_path / "db.sqlite",
+            seed_path=tmp_path / "seed.csv",
+            export_dir=tmp_path / "exports",
+            decision_model_consensus_enabled=False,
+        ),
     )
-    second = repository.create_ingestion_request(
-        homepage_url="https://second-priority.example/",
-        email="owner@example.com",
-    )
 
-    with session_scope(repository.session_factory) as session:
-        first_request = session.scalar(
-            repository_module.select(repository_module.IngestionRequestModel).where(
-                repository_module.IngestionRequestModel.id == first["request_id"]
-            )
-        )
-        second_request = session.scalar(
-            repository_module.select(repository_module.IngestionRequestModel).where(
-                repository_module.IngestionRequestModel.id == second["request_id"]
-            )
-        )
-        assert first_request is not None
-        assert second_request is not None
-        first_request.priority = 100
-        second_request.priority = 200
-        first_request.updated_at = repository_module.now_utc()
-        second_request.updated_at = repository_module.now_utc()
+    result = repository.create_user_seed(homepage_url="https://user-blog.example.com/")
 
-    claimed = repository.get_next_priority_blog()
-
+    assert result["status"] == "QUEUED"
+    blog = repository.get_blog(result["blog_id"])
+    assert blog is not None
+    assert blog["acceptance_status"] == "ACCEPTED"
+    assert blog["accepted_by"] == "user"
+    assert blog["crawl_status"] == "WAITING"
+    seeds = repository.list_seeds()
+    assert len(seeds) == 1
+    assert seeds[0]["normalized_url"] == "https://user-blog.example.com/"
+    assert seeds[0]["source_path"] == "user"
+    assert seeds[0]["blog_id"] == result["blog_id"]
+    claimed = repository.get_next_waiting_blog()
     assert claimed is not None
-    assert claimed["id"] == second["seed_blog_id"]
+    assert claimed["id"] == result["blog_id"]
 
 
-def test_repository_waiting_queue_can_exclude_priority_seed_blogs(tmp_path: Path) -> None:
-    """Normal queue claiming should skip active ingestion seeds when requested."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-    priority_request = repository.create_ingestion_request(
-        homepage_url="https://priority-seed.example/",
-        email="owner@example.com",
+def test_repository_user_seed_runs_rule_filters_only(tmp_path: Path) -> None:
+    """User seed submission should reject deterministic rule failures."""
+    repository = repository_module.build_repository(
+        db_path=tmp_path / "db.sqlite",
+        settings=Settings(
+            db_path=tmp_path / "db.sqlite",
+            seed_path=tmp_path / "seed.csv",
+            export_dir=tmp_path / "exports",
+            decision_model_consensus_enabled=False,
+        ),
     )
-    normal_blog_id, inserted = repository.upsert_blog(
-        url="https://normal.example/",
-        normalized_url="https://normal.example/",
-        domain="normal.example",
-    )
-    assert inserted is True
 
-    claimed = repository.get_next_waiting_blog(include_priority=False)
-
-    assert claimed is not None
-    assert claimed["id"] == normal_blog_id
-    assert repository.get_blog(priority_request["seed_blog_id"])["crawl_status"] == "WAITING"
+    with pytest.raises(ValueError, match="rule:non_root_path"):
+        repository.create_user_seed(homepage_url="https://user-blog.example.com/posts/1")
 
 
 def test_repository_blog_catalog_paginates_and_filters(tmp_path: Path) -> None:
@@ -1140,6 +1074,7 @@ def test_repository_blog_catalog_normalizes_query_inputs(tmp_path: Path) -> None
         "has_title": None,
         "has_icon": None,
         "min_connections": 0,
+        "acceptance_status": "ACCEPTED",
     }
 
     last_page = repository.list_blogs_catalog(page=99, page_size=2)
@@ -1200,7 +1135,13 @@ def test_repository_blog_catalog_supports_random_sort_for_finished_sampling(tmp_
 
 def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(tmp_path: Path) -> None:
     """Random catalog should exclude admin non-blog URLs and store public votes separately."""
-    repository = repository_module.build_repository(db_path=tmp_path / "heyblog.sqlite")
+    settings = Settings(
+        db_path=tmp_path / "heyblog.sqlite",
+        seed_path=tmp_path / "seed.csv",
+        export_dir=tmp_path / "exports",
+        email_dev_expose_tokens=True,
+    )
+    repository = repository_module.build_repository(db_path=settings.db_path, settings=settings)
     blog_tag = repository.create_blog_label_tag(name="blog")
     company_tag = repository.create_blog_label_tag(name="company")
     other_tag = repository.create_blog_label_tag(name="other")
@@ -1253,8 +1194,8 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     user_label = repository.increment_blog_user_label(blog_id=kept_id, label="blog")
     duplicate_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", previous_label="blog")
     user_non_blog = repository.increment_blog_user_label(blog_id=kept_id, label="other", previous_label="blog")
-    account = repository.register_user(email="labeler@example.com", password="long enough")
-    user_id = int(account["user"]["id"])
+    account = register_and_verify_user(repository, email="labeler@example.com", password="long enough")
+    user_id = int(account["id"])
     account_blog = repository.increment_blog_user_label(blog_id=kept_id, label="blog", user_id=user_id)
     account_other = repository.increment_blog_user_label(blog_id=kept_id, label="other", user_id=user_id)
 
@@ -1273,8 +1214,175 @@ def test_repository_random_catalog_filters_admin_non_blog_and_saves_user_labels(
     assert raw_kept not in [item["id"] for item in admin_labeled["items"]]
 
 
+def test_repository_random_catalog_only_demotes_user_non_blog_feedback(tmp_path: Path) -> None:
+    """Random catalog weighting should ignore blog votes and demote non-blog votes."""
+    repository = repository_module.build_repository(db_path=tmp_path / "heyblog.sqlite")
+    repository.create_blog_label_tag(name="blog")
+    repository.create_blog_label_tag(name="other")
+
+    if repository.engine.dialect.name == "sqlite":
+        def fixed_random(dbapi_connection: object, _connection_record: object) -> None:
+            dbapi_connection.create_function("random", 0, lambda: 1)
+
+        event.listen(repository.engine, "connect", fixed_random)
+        repository.engine.dispose()
+
+    boosted_id, boosted_inserted = repository.upsert_blog(
+        url="https://boosted.example/",
+        normalized_url="https://boosted.example/",
+        domain="boosted.example",
+    )
+    baseline_id, baseline_inserted = repository.upsert_blog(
+        url="https://baseline.example/",
+        normalized_url="https://baseline.example/",
+        domain="baseline.example",
+    )
+    demoted_id, demoted_inserted = repository.upsert_blog(
+        url="https://demoted.example/",
+        normalized_url="https://demoted.example/",
+        domain="demoted.example",
+    )
+    assert boosted_inserted is True
+    assert baseline_inserted is True
+    assert demoted_inserted is True
+    for blog_id, title in (
+        (boosted_id, "Boosted"),
+        (baseline_id, "Baseline"),
+        (demoted_id, "Demoted"),
+    ):
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=1,
+            metadata_captured=True,
+            title=title,
+            icon_url=None,
+        )
+
+    repository.increment_blog_user_label(blog_id=boosted_id, label="blog")
+    repository.increment_blog_user_label(blog_id=demoted_id, label="other")
+
+    random_page = repository.list_blogs_catalog(status="finished", sort="random", page_size=10)
+
+    assert [item["url"] for item in random_page["items"]] == [
+        "https://baseline.example/",
+        "https://boosted.example/",
+        "https://demoted.example/",
+    ]
+
+
+def test_repository_persists_random_recommendation_batch_and_interaction_stats(tmp_path: Path) -> None:
+    """Random recommendation batches should persist request, impression, event, and stat rows."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    for index in range(3):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://recommend-{index}.example/",
+            normalized_url=f"https://recommend-{index}.example/",
+            domain=f"recommend-{index}.example",
+            accepted_by="rss",
+        )
+        assert inserted is True
+        repository.mark_blog_result(
+            blog_id=blog_id,
+            crawl_status="FINISHED",
+            status_code=200,
+            friend_links_count=index,
+            metadata_captured=True,
+            title=f"Recommend {index}",
+            icon_url=None,
+        )
+
+    batch = repository.create_random_recommendation_batch(
+        count=2,
+        visitor_id="visitor-1",
+        session_id="session-1",
+        source="test",
+        page_url="http://localhost/random",
+    )
+
+    assert batch["requested_count"] == 2
+    assert batch["served_count"] == 2
+    assert [item["position"] for item in batch["items"]] == [1, 2]
+    first = batch["items"][0]
+    event = repository.record_blog_interaction(
+        event_uuid="event-1",
+        event_type="detail_open",
+        blog_id=first["id"],
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_detail",
+        entrance_url="http://localhost/random",
+        request_uuid=first["request_uuid"],
+        impression_id=first["impression_id"],
+        interaction_order=1,
+        client_event_at="2026-06-07T12:00:00Z",
+        attributes={"button": "detail"},
+    )
+    duplicate = repository.record_blog_interaction(
+        event_uuid="event-1",
+        event_type="detail_open",
+        blog_id=first["id"],
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_detail",
+        entrance_url="http://localhost/random",
+    )
+    repository.record_blog_interaction(
+        event_uuid="event-2",
+        event_type="external_open",
+        blog_id=first["id"],
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_external",
+        entrance_url="http://localhost/random",
+        request_uuid=first["request_uuid"],
+        impression_id=first["impression_id"],
+        interaction_order=2,
+    )
+    stats = repository.get_blog_recommendation_stats(first["id"])
+    strategy_stats = repository.get_recommendation_strategy_stats()
+    hourly_stats = repository.get_admin_hourly_stats()
+
+    assert event["duplicate"] is False
+    assert event["entrance_kind"] == "test_detail"
+    assert event["entrance_url"] == "http://localhost/random"
+    assert duplicate["duplicate"] is True
+    assert stats is not None
+    assert stats["impressions"] == 1
+    assert stats["detail_opens"] == 1
+    assert stats["external_opens"] == 1
+    assert stats["unique_visitors"] == 1
+    assert stats["ctr"] == 2.0
+    assert strategy_stats["total_requests"] == 1
+    assert strategy_stats["total_impressions"] == 2
+    assert strategy_stats["total_interactions"] == 2
+    assert strategy_stats["by_strategy"][0]["clicks"] == 2
+    assert hourly_stats["current_hour"]["user_count"] == 0
+    assert hourly_stats["current_hour"]["random_request_count"] == 1
+    assert hourly_stats["current_hour"]["random_impression_count"] == 2
+    assert hourly_stats["current_hour"]["detail_open_count"] == 1
+    assert hourly_stats["current_hour"]["external_open_count"] == 1
+    assert hourly_stats["current_hour"]["detail_ctr"] == 0.5
+    assert hourly_stats["current_hour"]["external_ctr"] == 0.5
+    assert hourly_stats["current_hour"]["total_click_ctr"] == 1.0
+    with session_scope(repository.session_factory) as session:
+        assert session.scalar(select(RecommendationRequestModel).limit(1)) is not None
+        stored_impression = session.scalar(select(RecommendationImpressionModel).limit(1))
+        stored_interaction = session.scalar(select(BlogInteractionModel).limit(1))
+        stored_hourly_stats = session.scalar(select(AdminHourlyStatsModel).limit(1))
+        assert stored_impression is not None
+        assert stored_impression.normalized_url == first["normalized_url"]
+        assert "blog_id" not in RecommendationImpressionModel.__table__.columns
+        assert stored_interaction is not None
+        assert stored_interaction.normalized_url == first["normalized_url"]
+        assert "blog_id" not in BlogInteractionModel.__table__.columns
+        assert stored_hourly_stats is not None
+        assert stored_hourly_stats.random_impression_count == 2
+
+
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:
-    """Catalog should remain usable for older rows that were created before metadata capture existed."""
+    """Catalog should keep title fallback but not synthesize unverified icons."""
     repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
     blog_id, inserted = repository.upsert_blog(
         url="https://legacy.example/posts/1",
@@ -1293,9 +1401,9 @@ def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows
     title_filtered = repository.list_blogs_catalog(has_title=True)
     icon_filtered = repository.list_blogs_catalog(has_icon=True)
     assert [row["id"] for row in title_filtered["items"]] == [blog_id]
-    assert [row["id"] for row in icon_filtered["items"]] == [blog_id]
+    assert icon_filtered["items"] == []
     assert title_filtered["items"][0]["title"] == "legacy.example"
-    assert icon_filtered["items"][0]["icon_url"] == "https://legacy.example/favicon.ico"
+    assert title_filtered["items"][0]["icon_url"] is None
 
 
 def test_repository_blog_catalog_has_title_filters_on_stored_title_only(tmp_path: Path) -> None:
@@ -1337,41 +1445,6 @@ def test_repository_blog_catalog_has_title_filters_on_stored_title_only(tmp_path
 
     assert [row["id"] for row in payload["items"]] == [untitled_blog_id, titled_blog_id]
     assert payload["items"][0]["title"] == "untitled.example"
-
-
-def test_repository_priority_ingestion_list_hides_private_fields_and_orders_active_first(tmp_path: Path) -> None:
-    """Public priority list should expose queue state without leaking request secrets."""
-    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
-
-    queued = repository.create_ingestion_request(
-        homepage_url="https://queued.example/",
-        email="owner@example.com",
-    )
-    processing = repository.create_ingestion_request(
-        homepage_url="https://processing.example/",
-        email="runner@example.com",
-    )
-    repository.mark_ingestion_request_crawling(blog_id=processing["seed_blog_id"])
-    repository.mark_blog_result(
-        blog_id=processing["seed_blog_id"],
-        crawl_status="FINISHED",
-        status_code=200,
-        friend_links_count=0,
-        metadata_captured=True,
-        title="Processing Blog",
-        icon_url="https://processing.example/favicon.ico",
-    )
-
-    items = repository.list_priority_ingestion_requests()
-
-    assert [item["status"] for item in items] == ["QUEUED", "COMPLETED"]
-    assert items[0]["request_id"] == queued["request_id"]
-    assert items[0]["requested_url"] == "https://queued.example/"
-    assert items[0]["blog"]["crawl_status"] == "WAITING"
-    assert "email" not in items[0]
-    assert "request_token" not in items[0]
-    assert "priority" not in items[0]
-    assert "email" not in items[0]["blog"]
 
 
 def test_repository_blog_lookup_prefers_identity_match_and_returns_reason(tmp_path: Path) -> None:
@@ -1666,7 +1739,7 @@ def test_repository_blog_labels_are_keyed_by_url_across_reset_and_recrawl(tmp_pa
     labeled = repository.list_blog_labeling_candidates(label="blog", labeled=True)
 
     assert first["blog_id"] == first_raw_id
-    assert reset["blog_link_labels_preserved"] == 1
+    assert reset["raw_discovered_urls_deleted"] == 1
     assert second_raw_id != first_raw_id
     assert [row["id"] for row in labeled["items"]] == [second_raw_id]
     assert labeled["items"][0]["label_id"] == {"1": 1}
@@ -1729,11 +1802,8 @@ def test_repository_blog_labeling_upsert_rejects_non_labelable_raw_targets_and_r
     assert labeled["items"][0]["label_id"] == {"1": 1, "4": 1}
 
     reset = repository.reset()
-    assert reset["blog_link_labels_deleted"] == 0
-    assert reset["blog_label_tags_deleted"] == 0
-    assert reset["blog_link_labels_preserved"] == 1
-    assert reset["blog_labels_preserved"] == 1
-    assert reset["blog_label_tags_preserved"] >= 6
+    assert reset["blogs_deleted"] == 2
+    assert reset["raw_discovered_urls_deleted"] == 1
     assert repository.list_blog_labeling_candidates()["items"] == []
     with session_scope(repository.session_factory) as session:
         label = session.scalar(
@@ -1741,6 +1811,8 @@ def test_repository_blog_labeling_upsert_rejects_non_labelable_raw_targets_and_r
         )
         assert label is not None
         assert label.label_id == {"1": 1, "4": 1}
+        assert session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == "blog")) is not None
+        assert session.scalar(select(BlogLabelTagModel).where(BlogLabelTagModel.slug == "unknown")) is not None
         assert set(label.__table__.columns.keys()) == {
             "normalized_url",
             "title",
@@ -1787,7 +1859,6 @@ def test_repository_blog_label_counts_use_all_persisted_url_labels(tmp_path: Pat
     blog_tag = repository.create_blog_label_tag(name="blog")
     company_tag = repository.create_blog_label_tag(name="company")
     other_tag = repository.create_blog_label_tag(name="other")
-    unknown_tag = repository.create_blog_label_tag(name="unknown")
     timestamp = repository_module.now_utc()
     with session_scope(repository.session_factory) as session:
         session.add_all(
@@ -2335,6 +2406,13 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         "title": "delta.example title",
         "icon_url": "https://delta.example/favicon.ico",
         "status_code": 200,
+        "acceptance_status": "ACCEPTED",
+        "accepted_by": None,
+        "accepted_at": detail["recommended_blogs"][0]["blog"]["accepted_at"],
+        "crawl_error_kind": None,
+        "crawl_error_message": None,
+        "last_crawl_attempt_at": detail["recommended_blogs"][0]["blog"]["last_crawl_attempt_at"],
+        "successful_crawl_at": detail["recommended_blogs"][0]["blog"]["successful_crawl_at"],
         "crawl_status": "FINISHED",
         "friend_links_count": 1,
         "last_crawled_at": detail["recommended_blogs"][0]["blog"]["last_crawled_at"],
@@ -2345,6 +2423,15 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
         "connection_count": 1,
         "activity_at": detail["recommended_blogs"][0]["blog"]["activity_at"],
         "identity_complete": True,
+    }
+    assert detail["relation_graphs"]["incoming"]["focus_blog_id"] == alpha_id
+    assert [node["blog_id"] for node in detail["relation_graphs"]["incoming"]["nodes"]] == [alpha_id, gamma_id]
+    assert detail["relation_graphs"]["incoming"]["edges"][0]["from_blog_id"] == gamma_id
+    assert detail["relation_graphs"]["outgoing"]["focus_blog_id"] == alpha_id
+    assert {node["blog_id"] for node in detail["relation_graphs"]["outgoing"]["nodes"]} == {
+        alpha_id,
+        beta_id,
+        delta_id,
     }
     assert detail["recommended_blogs"][0]["reason"] == "mutual_connection"
     assert detail["recommended_blogs"][0]["mutual_connection_count"] == 1
@@ -2357,3 +2444,216 @@ def test_repository_blog_detail_aggregates_bidirectional_relationships(tmp_path:
             "icon_url": "https://beta.example/favicon.ico",
         }
     ]
+
+
+def test_repository_blog_detail_relation_graph_keeps_all_edges_within_two_layers(
+    tmp_path: Path,
+) -> None:
+    """Relation graphs should keep every edge reachable within the configured two-layer depth."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    focus_id, inserted = repository.upsert_blog(
+        url="https://focus.example/",
+        normalized_url="https://focus.example/",
+        domain="focus.example",
+    )
+    assert inserted is True
+
+    outgoing_first_ids: list[int] = []
+    incoming_first_ids: list[int] = []
+    for index in range(12):
+        outgoing_id, inserted = repository.upsert_blog(
+            url=f"https://out-first-{index}.example/",
+            normalized_url=f"https://out-first-{index}.example/",
+            domain=f"out-first-{index}.example",
+        )
+        assert inserted is True
+        outgoing_first_ids.append(outgoing_id)
+        repository.add_edge(
+            from_blog_id=focus_id,
+            to_blog_id=outgoing_id,
+            link_url_raw=f"https://out-first-{index}.example/",
+            link_text=f"Out first {index}",
+        )
+
+        incoming_id, inserted = repository.upsert_blog(
+            url=f"https://in-first-{index}.example/",
+            normalized_url=f"https://in-first-{index}.example/",
+            domain=f"in-first-{index}.example",
+        )
+        assert inserted is True
+        incoming_first_ids.append(incoming_id)
+        repository.add_edge(
+            from_blog_id=incoming_id,
+            to_blog_id=focus_id,
+            link_url_raw="https://focus.example/",
+            link_text=f"In first {index}",
+        )
+
+    outgoing_second_ids: list[int] = []
+    incoming_second_ids: list[int] = []
+    for index in range(11):
+        outgoing_id, inserted = repository.upsert_blog(
+            url=f"https://out-second-{index}.example/",
+            normalized_url=f"https://out-second-{index}.example/",
+            domain=f"out-second-{index}.example",
+        )
+        assert inserted is True
+        outgoing_second_ids.append(outgoing_id)
+        repository.add_edge(
+            from_blog_id=outgoing_first_ids[0],
+            to_blog_id=outgoing_id,
+            link_url_raw=f"https://out-second-{index}.example/",
+            link_text=f"Out second {index}",
+        )
+
+        incoming_id, inserted = repository.upsert_blog(
+            url=f"https://in-second-{index}.example/",
+            normalized_url=f"https://in-second-{index}.example/",
+            domain=f"in-second-{index}.example",
+        )
+        assert inserted is True
+        incoming_second_ids.append(incoming_id)
+        repository.add_edge(
+            from_blog_id=incoming_id,
+            to_blog_id=incoming_first_ids[0],
+            link_url_raw="https://in-first-0.example/",
+            link_text=f"In second {index}",
+        )
+
+    detail = repository.get_blog_detail(focus_id)
+
+    assert detail is not None
+    outgoing_node_ids = {node["blog_id"] for node in detail["relation_graphs"]["outgoing"]["nodes"]}
+    assert set(outgoing_first_ids).issubset(outgoing_node_ids)
+    assert set(outgoing_second_ids).issubset(outgoing_node_ids)
+
+    incoming_node_ids = {node["blog_id"] for node in detail["relation_graphs"]["incoming"]["nodes"]}
+    assert set(incoming_first_ids).issubset(incoming_node_ids)
+    assert set(incoming_second_ids).issubset(incoming_node_ids)
+
+
+def test_repository_blog_detail_includes_discovery_path(tmp_path: Path) -> None:
+    """Detail payloads should explain manual origins and crawled discovery chains."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    seed_id, inserted = repository.upsert_blog(
+        url="https://seed.example/",
+        normalized_url="https://seed.example/",
+        domain="seed.example",
+        accepted_by="seed",
+        seed_source_path="seed.csv",
+        seed_source_row=2,
+    )
+    assert inserted is True
+    middle_id, inserted = repository.upsert_blog(
+        url="https://middle.example/",
+        normalized_url="https://middle.example/",
+        domain="middle.example",
+        accepted_by="rss",
+    )
+    assert inserted is True
+    target_id, inserted = repository.upsert_blog(
+        url="https://target.example/",
+        normalized_url="https://target.example/",
+        domain="target.example",
+        accepted_by="model",
+    )
+    assert inserted is True
+    first_raw = repository.create_raw_discovered_url(
+        source_blog_id=seed_id,
+        normalized_url="https://middle.example/",
+        status="pending",
+    )
+    repository.update_raw_discovered_url_status(record_id=first_raw, status="success", accepted_by="rss")
+    second_raw = repository.create_raw_discovered_url(
+        source_blog_id=middle_id,
+        normalized_url="https://target.example/",
+        status="pending",
+    )
+    repository.update_raw_discovered_url_status(record_id=second_raw, status="success", accepted_by="model")
+
+    seed_detail = repository.get_blog_detail(seed_id)
+    target_detail = repository.get_blog_detail(target_id)
+
+    assert seed_detail is not None
+    assert seed_detail["discovery_path"]["mode"] == "manual"
+    assert seed_detail["discovery_path"]["steps"][0]["accepted_by"] == "seed"
+    assert target_detail is not None
+    assert target_detail["discovery_path"]["mode"] == "crawled"
+    assert [step["domain"] for step in target_detail["discovery_path"]["steps"]] == [
+        "seed.example",
+        "middle.example",
+        "target.example",
+    ]
+    assert target_detail["discovery_path"]["steps"][0]["accepted_label"] == "种子导入"
+    assert target_detail["discovery_path"]["steps"][1]["raw_source_blog_id"] == seed_id
+    assert target_detail["discovery_path"]["steps"][2]["raw_source_blog_id"] == middle_id
+
+
+def test_repository_blog_detail_discovery_path_keeps_full_history(tmp_path: Path) -> None:
+    """Discovery paths should return every historical source step, even for long chains."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    blog_ids: list[int] = []
+    domains = [f"chain-{index}.example" for index in range(15)]
+    for index, domain in enumerate(domains):
+        blog_id, inserted = repository.upsert_blog(
+            url=f"https://{domain}/",
+            normalized_url=f"https://{domain}/",
+            domain=domain,
+            accepted_by="seed" if index == 0 else "rss",
+        )
+        assert inserted is True
+        blog_ids.append(blog_id)
+
+    for source_id, target_domain in zip(blog_ids[:-1], domains[1:], strict=True):
+        raw_id = repository.create_raw_discovered_url(
+            source_blog_id=source_id,
+            normalized_url=f"https://{target_domain}/",
+            status="pending",
+        )
+        repository.update_raw_discovered_url_status(record_id=raw_id, status="success", accepted_by="rss")
+
+    detail = repository.get_blog_detail(blog_ids[-1])
+
+    assert detail is not None
+    assert detail["discovery_path"]["truncated"] is False
+    assert [step["domain"] for step in detail["discovery_path"]["steps"]] == domains
+
+
+def test_repository_blog_detail_discovery_path_uses_incoming_edge_for_alias_raw_url(tmp_path: Path) -> None:
+    """Discovery paths should follow incoming edges when raw URLs differ from canonical blog URLs."""
+    repository = repository_module.build_repository(db_path=tmp_path / "db.sqlite")
+    seed_id, inserted = repository.upsert_blog(
+        url="https://seed.example/",
+        normalized_url="https://seed.example/",
+        domain="seed.example",
+        accepted_by="seed",
+    )
+    assert inserted is True
+    target_id, inserted = repository.upsert_blog(
+        url="https://target.example/",
+        normalized_url="https://target.example/",
+        domain="target.example",
+        accepted_by="rss",
+    )
+    assert inserted is True
+    raw_id = repository.create_raw_discovered_url(
+        source_blog_id=seed_id,
+        normalized_url="https://blog.target.example/",
+        status="pending",
+    )
+    repository.update_raw_discovered_url_status(record_id=raw_id, status="success", accepted_by="rss")
+    repository.add_edge(
+        from_blog_id=seed_id,
+        to_blog_id=target_id,
+        link_url_raw="https://blog.target.example/",
+        link_text="Target",
+    )
+
+    detail = repository.get_blog_detail(target_id)
+
+    assert detail is not None
+    assert [step["domain"] for step in detail["discovery_path"]["steps"]] == [
+        "seed.example",
+        "target.example",
+    ]
+    assert detail["discovery_path"]["steps"][1]["raw_source_blog_id"] == seed_id

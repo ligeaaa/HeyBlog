@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from threading import Thread
+import ipaddress
+import socket
 from time import sleep
 from typing import Any
 from typing import Callable
-from typing import NoReturn
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -45,14 +46,30 @@ class RunBatchRequest(BaseModel):
     max_nodes: int
 
 
-class CreateIngestionRequest(BaseModel):
+class CreateUserSeedRequest(BaseModel):
     homepage_url: str
-    email: str
 
 
 class UserAuthRequest(BaseModel):
     email: str
     password: str
+
+
+class EmailRequest(BaseModel):
+    email: str
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+class PasswordResetRequest(BaseModel):
+    token: str
+    password: str
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: str
 
 
 class ReplaceBlogLabelsRequest(BaseModel):
@@ -66,6 +83,31 @@ class IncrementBlogUserLabelRequest(BaseModel):
     previous_label: str | None = None
 
 
+class CreateRandomRecommendationBatchRequest(BaseModel):
+    count: int = 9
+    visitor_id: str
+    session_id: str
+    source: str | None = None
+    page_url: str | None = None
+    context: dict[str, Any] | None = None
+
+
+class RecordRecommendationEventRequest(BaseModel):
+    event_uuid: str
+    event_type: str
+    blog_id: int
+    visitor_id: str
+    session_id: str
+    entrance_kind: str
+    entrance_url: str
+    request_uuid: str | None = None
+    impression_id: int | None = None
+    position: int | None = None
+    interaction_order: int = 1
+    client_event_at: str | None = None
+    attributes: dict[str, Any] | None = None
+
+
 class BlogLabelTitlePreviewRequest(BaseModel):
     url: str
 
@@ -75,6 +117,145 @@ class CreateBlogLabelTagRequest(BaseModel):
 
 
 ACTIVE_CRAWLER_RUNNER_STATUSES = frozenset({"starting", "running", "stopping"})
+ICON_PROXY_MAX_BYTES = 1_000_000
+ICON_PROXY_ALLOWED_SCHEMES = frozenset({"http", "https"})
+ICON_PROXY_IMAGE_EXTENSIONS = (".ico", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".avif")
+
+
+def _is_private_icon_proxy_host(hostname: str) -> bool:
+    """Return whether one hostname resolves to local or private network space.
+
+    Args:
+        hostname: Parsed URL hostname to validate before proxying.
+
+    Returns:
+        True when the hostname itself or any resolved address is unsafe for the
+        public icon proxy.
+    """
+    try:
+        ip_addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            return True
+        ip_addresses = []
+        for item in resolved:
+            address = item[4][0]
+            try:
+                ip_addresses.append(ipaddress.ip_address(address))
+            except ValueError:
+                return True
+
+    return any(
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        for address in ip_addresses
+    )
+
+
+def _validate_icon_proxy_url(url: str) -> str:
+    """Normalize and validate a remote icon URL before proxying it.
+
+    Args:
+        url: User-supplied absolute URL.
+
+    Returns:
+        The trimmed URL when it is an allowed public HTTP(S) URL.
+
+    Raises:
+        HTTPException: If the URL is unsupported or points at unsafe address
+            space.
+    """
+    clean_url = url.strip()
+    parsed = urlsplit(clean_url)
+    if parsed.scheme.lower() not in ICON_PROXY_ALLOWED_SCHEMES or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="unsupported_icon_url")
+    if _is_private_icon_proxy_host(parsed.hostname):
+        raise HTTPException(status_code=422, detail="unsafe_icon_url")
+    return clean_url
+
+
+def _is_image_like_icon_response(response: httpx.Response) -> bool:
+    """Return whether one HTTP response looks like an icon image.
+
+    Args:
+        response: HTTP response from the remote icon URL.
+
+    Returns:
+        True when the content type is image-like, or a generic binary response
+        has a known image file extension.
+    """
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type.startswith("image/"):
+        return True
+    if content_type in {"application/octet-stream", "binary/octet-stream"}:
+        return urlsplit(str(response.url)).path.lower().endswith(ICON_PROXY_IMAGE_EXTENSIONS)
+    return False
+
+
+def _fetch_icon_proxy_response(url: str) -> Response:
+    """Fetch one remote icon and return it as a same-origin image response.
+
+    Args:
+        url: Validated public HTTP(S) icon URL.
+
+    Returns:
+        FastAPI response containing the icon bytes.
+
+    Raises:
+        HTTPException: If the remote URL cannot be fetched, is too large, or
+            does not return an image-like response.
+    """
+    try:
+        current_url = url
+        for _ in range(4):
+            with httpx.stream(
+                "GET",
+                current_url,
+                follow_redirects=False,
+                timeout=8.0,
+                headers={"User-Agent": "HeyBlogBot/0.1 (+https://example.invalid/heyblog)"},
+            ) as response:
+                if response.status_code in {301, 302, 303, 307, 308} and response.headers.get("location"):
+                    current_url = _validate_icon_proxy_url(str(httpx.URL(str(response.url)).join(response.headers["location"])))
+                    continue
+                response.raise_for_status()
+                if not _is_image_like_icon_response(response):
+                    raise HTTPException(status_code=502, detail="icon_proxy_not_image")
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        if int(content_length) > ICON_PROXY_MAX_BYTES:
+                            raise HTTPException(status_code=502, detail="icon_proxy_too_large")
+                    except ValueError:
+                        pass
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > ICON_PROXY_MAX_BYTES:
+                        raise HTTPException(status_code=502, detail="icon_proxy_too_large")
+                    chunks.append(chunk)
+                content_type = response.headers.get("content-type", "image/x-icon")
+                return Response(
+                    content=b"".join(chunks),
+                    media_type=content_type,
+                    headers={"cache-control": "public, max-age=86400"},
+                )
+        raise HTTPException(status_code=502, detail="icon_proxy_too_many_redirects")
+    except HTTPException:
+        raise
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="icon_proxy_timeout") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"icon_proxy_http_{exc.response.status_code}") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="icon_proxy_fetch_failed") from exc
 
 
 def _crawler_runtime_is_active(runtime: dict[str, Any]) -> bool:
@@ -235,98 +416,6 @@ def build_backend_state(settings: Settings | None = None) -> BackendState:
     )
 
 
-def _execute_blog_dedup_scan_in_background(
-    state: BackendState,
-    *,
-    run_id: int,
-    crawler_was_running: bool,
-) -> None:
-    restart_attempted = False
-    restart_succeeded = False
-    search_reindexed = False
-    error_message: str | None = None
-    try:
-        state.persistence.execute_blog_dedup_scan_run(run_id=run_id)
-        search_reindexed = _best_effort_search_reindex(state.search)
-    except httpx.HTTPStatusError as exc:
-        error_message = str(_upstream_error_detail(exc))
-    except Exception as exc:  # noqa: BLE001
-        error_message = str(exc)
-    finally:
-        if crawler_was_running:
-            restart_attempted = True
-            try:
-                state.crawler.start()
-                restart_succeeded = True
-            except Exception:  # noqa: BLE001
-                restart_succeeded = False
-        try:
-            state.persistence.finalize_blog_dedup_scan_run(
-                run_id=run_id,
-                crawler_restart_attempted=restart_attempted,
-                crawler_restart_succeeded=restart_succeeded,
-                search_reindexed=search_reindexed,
-                error_message=error_message,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        state.maintenance_in_progress = False
-
-
-def _start_maintenance_background_task(
-    state: BackendState,
-    *,
-    prepare_run: Callable[[bool], tuple[dict[str, Any], dict[str, Any]]],
-    on_http_error: Callable[[httpx.HTTPStatusError], NoReturn],
-    on_http_exception: Callable[[HTTPException], NoReturn],
-    on_unexpected_error: Callable[[Exception], NoReturn],
-    target: Callable[..., None],
-) -> dict[str, Any]:
-    """Start one maintenance-mode background task with shared exception handling."""
-    crawler_was_running = _enter_maintenance(state)
-    try:
-        payload, thread_kwargs = prepare_run(crawler_was_running)
-    except httpx.HTTPStatusError as exc:
-        on_http_error(exc)
-    except HTTPException as exc:
-        on_http_exception(exc)
-    except Exception as exc:  # noqa: BLE001
-        on_unexpected_error(exc)
-    Thread(
-        target=target,
-        kwargs={"state": state, **thread_kwargs},
-        daemon=True,
-    ).start()
-    return payload
-
-
-def _build_maintenance_start_error_handlers(
-    *,
-    cleanup: Callable[[str], None],
-    unexpected_detail: str,
-) -> tuple[
-    Callable[[httpx.HTTPStatusError], NoReturn],
-    Callable[[HTTPException], NoReturn],
-    Callable[[Exception], NoReturn],
-]:
-    """Build the shared error-handler skeleton for maintenance start routes."""
-
-    def on_http_error(exc: httpx.HTTPStatusError) -> NoReturn:
-        detail = _upstream_error_detail(exc)
-        cleanup(str(detail))
-        _raise_upstream_http_error(exc, detail_override=detail)
-
-    def on_http_exception(exc: HTTPException) -> NoReturn:
-        cleanup(str(exc.detail))
-        raise exc
-
-    def on_unexpected_error(exc: Exception) -> NoReturn:
-        cleanup(str(exc))
-        raise HTTPException(status_code=500, detail=unexpected_detail) from exc
-
-    return on_http_error, on_http_exception, on_unexpected_error
-
-
 def create_app(state: BackendState | None = None) -> FastAPI:
     """Create the public backend app."""
     settings = Settings.from_env()
@@ -350,16 +439,29 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         state = get_state()
         if state.admin_dev_bypass:
             return
-        if not state.admin_token:
-            raise HTTPException(status_code=503, detail="admin_auth_not_configured")
         authorization = request.headers.get("authorization", "").strip()
         if not authorization:
             raise HTTPException(status_code=401, detail="admin_auth_required")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(status_code=401, detail="admin_auth_required")
-        if token != state.admin_token:
+        if state.admin_token and token == state.admin_token:
+            return
+        get_user_by_session_token = getattr(state.persistence, "get_user_by_session_token", None)
+        if get_user_by_session_token is None:
+            if not state.admin_token:
+                raise HTTPException(status_code=503, detail="admin_auth_not_configured")
             raise HTTPException(status_code=403, detail="admin_auth_invalid")
+        try:
+            user = get_user_by_session_token(token=token)
+        except httpx.HTTPStatusError as exc:
+            _raise_upstream_http_error(exc, default="admin_auth_invalid", detail_override="admin_auth_invalid")
+        if user is None:
+            if not state.admin_token:
+                raise HTTPException(status_code=503, detail="admin_auth_not_configured")
+            raise HTTPException(status_code=403, detail="admin_auth_invalid")
+        if user.get("role") != "admin" or not user.get("is_active") or not user.get("email_verified"):
+            raise HTTPException(status_code=403, detail="admin_auth_forbidden")
 
     def optional_user(request: Request) -> dict[str, Any] | None:
         authorization = request.headers.get("authorization", "").strip()
@@ -436,6 +538,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         has_title: str | None = None,
         has_icon: str | None = None,
         min_connections: str | None = None,
+        acceptance_status: str | None = "ACCEPTED",
     ) -> dict[str, Any]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.list_blogs_catalog(
@@ -450,6 +553,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
                 has_title=has_title,
                 has_icon=has_icon,
                 min_connections=min_connections,
+                acceptance_status=acceptance_status,
             )
         )
 
@@ -458,6 +562,63 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.lookup_blog_candidates(url=url)
         )
+
+    @app.post("/api/recommendations/random-blog-batches")
+    def post_random_recommendation_batch(
+        payload: CreateRandomRecommendationBatchRequest,
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.create_random_recommendation_batch(
+                **payload.model_dump(),
+                user_id=int(user["id"]) if user is not None else None,
+            )
+        )
+
+    @app.post("/api/recommendation-events")
+    def post_recommendation_event(
+        payload: RecordRecommendationEventRequest,
+        user: dict[str, Any] | None = Depends(optional_user),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.record_blog_interaction(
+                **payload.model_dump(),
+                user_id=int(user["id"]) if user is not None else None,
+            )
+        )
+
+    @app.get("/api/blogs/{blog_id}/stats")
+    def get_blog_recommendation_stats(blog_id: int) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_blog_recommendation_stats(blog_id)
+        )
+
+    @app.get("/api/admin/recommendation-stats")
+    def get_admin_recommendation_stats(_: None = Depends(require_admin_access)) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_recommendation_strategy_stats()
+        )
+
+    @app.get("/api/admin/hourly-stats")
+    def get_admin_hourly_stats(
+        limit: int = 24,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_admin_hourly_stats(limit=limit)
+        )
+
+    @app.get("/api/icons/proxy")
+    def proxy_icon(url: str) -> Response:
+        """Return one remote icon through the backend origin for graph textures.
+
+        Args:
+            url: Absolute HTTP(S) icon URL to fetch.
+
+        Returns:
+            Image response with cache headers when the remote resource is valid.
+        """
+        return _fetch_icon_proxy_response(_validate_icon_proxy_url(url))
 
     @app.post("/api/auth/register")
     def register_user(payload: UserAuthRequest) -> dict[str, Any]:
@@ -483,6 +644,30 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.revoke_user_session(token=token)
         )
 
+    @app.post("/api/auth/email/verify/request")
+    def request_email_verification(payload: EmailRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.request_email_verification(email=payload.email)
+        )
+
+    @app.post("/api/auth/email/verify/confirm")
+    def confirm_email_verification(payload: TokenRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.confirm_email_verification(token=payload.token)
+        )
+
+    @app.post("/api/auth/password/forgot")
+    def request_password_reset(payload: EmailRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.request_password_reset(email=payload.email)
+        )
+
+    @app.post("/api/auth/password/reset")
+    def reset_user_password(payload: PasswordResetRequest) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.reset_user_password(token=payload.token, password=payload.password)
+        )
+
     @app.get("/api/me/label-selections")
     def get_my_label_selections(
         limit: int = 50,
@@ -496,6 +681,26 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     def get_my_label_stats(user: dict[str, Any] = Depends(require_user)) -> dict[str, int]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.get_user_label_stats(user_id=int(user["id"]))
+        )
+
+    @app.get("/api/admin/users")
+    def list_admin_users(
+        page: int = 1,
+        page_size: int = 50,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.list_users(page=page, page_size=page_size)
+        )
+
+    @app.patch("/api/admin/users/{user_id}/role")
+    def patch_admin_user_role(
+        user_id: int,
+        payload: UpdateUserRoleRequest,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.update_user_role(user_id=user_id, role=payload.role)
         )
 
     @app.get("/api/admin/blog-labeling/candidates")
@@ -676,91 +881,20 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: state.crawler.run(max_nodes=max_nodes),
         )
 
-    @app.post("/api/ingestion-requests")
-    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
+    @app.post("/api/blogs/user-seeds")
+    def create_user_seed(payload: CreateUserSeedRequest) -> dict[str, Any]:
         result = _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.create_ingestion_request(**payload.model_dump())
+            lambda: get_state().persistence.create_user_seed(**payload.model_dump())
         )
         log_event(
             LOGGER,
-            event="ingestion.request.created",
-            message="ingestion request created",
+            event="blog.user_seed.created",
+            message="user seed created",
             stage="ingestion",
-            run_id=result.get("request_id"),
+            run_id=result.get("blog_id"),
             url=payload.homepage_url,
         )
         return result
-
-    @app.get("/api/ingestion-requests")
-    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.list_priority_ingestion_requests()
-        )
-
-    @app.get("/api/ingestion-requests/{request_id}")
-    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.get_ingestion_request(
-                request_id=request_id,
-                request_token=request_token,
-            )
-        )
-
-    @app.post("/api/admin/blog-dedup-scans")
-    def run_blog_dedup_scan(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        state = get_state()
-
-        def prepare_run(crawler_was_running: bool) -> tuple[dict[str, Any], dict[str, Any]]:
-            _stop_active_crawler(
-                state,
-                crawler_was_running=crawler_was_running,
-                wait_for_idle=ensure_runtime_idle,
-            )
-            payload = state.persistence.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-            log_event(
-                LOGGER,
-                event="maintenance.blog_dedup.started",
-                message="blog dedup scan started",
-                stage="blog_dedup",
-                run_id=int(payload["id"]),
-                crawler_was_running=crawler_was_running,
-            )
-            return payload, {
-                "run_id": int(payload["id"]),
-                "crawler_was_running": crawler_was_running,
-            }
-
-        def cleanup(_: str) -> None:
-            _leave_maintenance(state)
-
-        on_http_error, on_http_exception, on_unexpected_error = _build_maintenance_start_error_handlers(
-            cleanup=cleanup,
-            unexpected_detail="blog_dedup_scan_failed",
-        )
-
-        return _start_maintenance_background_task(
-            state,
-            prepare_run=prepare_run,
-            on_http_error=on_http_error,
-            on_http_exception=on_http_exception,
-            on_unexpected_error=on_unexpected_error,
-            target=_execute_blog_dedup_scan_in_background,
-        )
-
-    @app.get("/api/admin/blog-dedup-scans/latest")
-    def get_latest_blog_dedup_scan_run(_: None = Depends(require_admin_access)) -> dict[str, Any]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.latest_blog_dedup_scan_run()
-        )
-
-    @app.get("/api/admin/blog-dedup-scans/{run_id}/items")
-    def get_blog_dedup_scan_run_items(
-        run_id: int,
-        _: None = Depends(require_admin_access),
-    ) -> list[dict[str, Any]]:
-        return _call_upstream_with_http_error_translation(
-            lambda: get_state().persistence.list_blog_dedup_scan_run_items(run_id)
-        )
 
     @app.get("/api/admin/runtime/status")
     def runtime_status(_: None = Depends(require_admin_access)) -> dict[str, Any]:

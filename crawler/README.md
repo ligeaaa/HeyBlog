@@ -90,6 +90,7 @@ crawler/
 - 通过 `Settings.from_env()` 读取运行配置。
 - 构建 `PersistenceHttpClient`，说明 crawler 服务默认不直接连数据库，而是通过 persistence-api 通信。
 - 构建 `CrawlPipeline` 和 `CrawlerRuntimeService`。
+- 启动内置 runtime auto scheduler：默认每小时检查一次，若 runtime 已空闲则自动调用 start，以便用户新提交的 `WAITING` 博客被继续抓取。
 - 暴露内部接口：
   - `GET /internal/health`
   - `POST /internal/crawl/bootstrap`
@@ -325,7 +326,7 @@ crawler/
 
 - 启动 / 停止后台抓取线程
 - 维护多个 worker 的运行状态快照
-- 控制 priority queue 和 normal queue 的公平 claim
+- 按等待队列领取并分发待抓取 blog
 - 聚合本次 runtime 的 processed / discovered / failed
 - 对外提供 `/internal/runtime/*` 需要的状态
 

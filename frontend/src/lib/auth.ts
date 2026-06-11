@@ -27,6 +27,22 @@ export function readStoredAuthSession(): AuthSession | null {
 }
 
 /**
+ * Return whether the browser-local user session belongs to an active,
+ * email-verified admin user.
+ *
+ * @returns True when the stored session can be used for admin navigation.
+ */
+export function hasStoredAdminSession(): boolean {
+  const session = readStoredAuthSession();
+  return Boolean(
+    session?.token &&
+      session.user?.role === "admin" &&
+      session.user.isActive &&
+      session.user.emailVerified,
+  );
+}
+
+/**
  * Persist the current user session in localStorage.
  *
  * @param session Auth payload returned by register or login.

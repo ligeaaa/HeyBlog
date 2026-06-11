@@ -1,11 +1,12 @@
 import type {
-  AdminDedupSummary,
   AdminBlogLabelCounts,
   AdminBlogLabelingCandidate,
   AdminBlogLabelingPage,
   AdminBlogLabelParquetStatus,
   AdminRequeueFailedBlogsResult,
   AdminBlogLabelTag,
+  AdminHourlyStats,
+  AdminHourlyStatsRow,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
   BlogCatalogItem,
@@ -16,7 +17,10 @@ import type {
   GraphEdge,
   GraphMeta,
   GraphNode,
+  AuthLifecycleToken,
   LookupResult,
+  RandomRecommendationBatch,
+  RecommendationEventInput,
   RecommendedBlog,
   StatsData,
   StatusData,
@@ -24,6 +28,24 @@ import type {
   UserLabelSelection,
   UserProfile,
 } from "../types/graph";
+
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+
+  /**
+   * Capture one failed API response with the backend detail payload intact.
+   *
+   * @param status HTTP response status.
+   * @param detail Backend error detail payload, when available.
+   */
+  constructor(status: number, detail: unknown) {
+    super(typeof detail === "string" && detail ? detail : `api_error_${status}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
 
 interface BackendGraphNode {
   id: number;
@@ -39,6 +61,7 @@ interface BackendGraphNode {
   icon_url: string | null;
   status_code?: number | null;
   crawl_status?: string;
+  crawl_error_kind?: string | null;
   friend_links_count?: number;
   last_crawled_at?: string | null;
   created_at?: string;
@@ -48,6 +71,9 @@ interface BackendGraphNode {
   outgoing_count?: number;
   activity_at?: string | null;
   identity_complete?: boolean;
+  request_uuid?: string;
+  impression_id?: number;
+  position?: number;
   x?: number;
   y?: number;
   degree?: number;
@@ -114,10 +140,45 @@ interface BackendRecommendedBlog extends BackendGraphNode {
   via_blogs?: BackendNeighborSummary[];
 }
 
+interface BackendBlogDiscoveryStep {
+  blog: BackendNeighborSummary | null;
+  blog_id: number;
+  url: string;
+  domain: string;
+  accepted_by: string | null;
+  accepted_label: string | null;
+  raw_id: number | null;
+  raw_source_blog_id: number | null;
+  raw_accepted_by: string | null;
+  discovered_at: string | null;
+}
+
+interface BackendBlogDiscoveryPath {
+  mode: "manual" | "crawled";
+  origin_source: string | null;
+  origin_label: string;
+  target_source: string | null;
+  truncated: boolean;
+  steps: BackendBlogDiscoveryStep[];
+}
+
+interface BackendBlogRelationGraph {
+  direction: "incoming" | "outgoing";
+  focus_blog_id: number;
+  depth: number;
+  nodes: BackendGraphNode[];
+  edges: BackendGraphEdge[];
+}
+
 interface BackendBlogDetail extends BackendGraphNode {
   incoming_edges: BackendBlogRelation[];
   outgoing_edges: BackendBlogRelation[];
   recommended_blogs: BackendRecommendedBlog[];
+  discovery_path?: BackendBlogDiscoveryPath | null;
+  relation_graphs?: {
+    incoming: BackendBlogRelationGraph;
+    outgoing: BackendBlogRelationGraph;
+  };
 }
 
 interface BackendStatsPayload {
@@ -159,16 +220,27 @@ interface BackendCatalogPayload {
   sort: string;
 }
 
-interface CreateIngestionRequestPayload {
-  request_id: number;
-  request_token: string;
-  status: string;
+interface BackendRandomRecommendationBatchPayload {
+  request_uuid: string;
+  surface: string;
+  strategy: string;
+  strategy_version: string;
+  visitor_id: string;
+  session_id: string;
+  requested_count: number;
+  served_count: number;
+  created_at: string | null;
+  items: BackendGraphNode[];
 }
 
 interface BackendUserProfile {
   id: number;
   email: string;
   display_name: string;
+  role: "admin" | "user";
+  is_active: boolean;
+  email_verified: boolean;
+  email_verified_at: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -177,6 +249,17 @@ interface BackendAuthSession {
   token: string;
   expires_at: string | null;
   user: BackendUserProfile;
+  email_verification?: BackendAuthLifecycleToken;
+}
+
+interface BackendAuthLifecycleToken {
+  sent: boolean;
+  verification_token?: string;
+  verification_url?: string;
+  reset_token?: string;
+  reset_url?: string;
+  expires_at?: string | null;
+  already_verified?: boolean;
 }
 
 interface BackendUserLabelSelection {
@@ -206,15 +289,25 @@ interface BackendRuntimePayload {
   maintenance_in_progress?: boolean;
 }
 
-interface BackendDedupSummary {
+interface BackendAdminHourlyStatsRow {
   id: number;
-  status: string;
-  total_count: number;
-  scanned_count: number;
-  removed_count: number;
-  kept_count: number;
-  created_at: string;
-  updated_at: string;
+  hour_start: string | null;
+  user_count: number;
+  random_request_count: number;
+  random_impression_count: number;
+  detail_open_count: number;
+  external_open_count: number;
+  detail_ctr: number;
+  external_ctr: number;
+  total_click_ctr: number;
+  refreshed_at: string | null;
+  created_at: string | null;
+}
+
+interface BackendAdminHourlyStats {
+  current_hour: BackendAdminHourlyStatsRow;
+  latest: BackendAdminHourlyStatsRow;
+  items: BackendAdminHourlyStatsRow[];
 }
 
 interface BackendBlogLabelTag {
@@ -327,6 +420,9 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
   return {
     ...toGraphNode(node),
     normalizedUrl: node.normalized_url ?? node.url,
+    requestUuid: node.request_uuid,
+    impressionId: node.impression_id,
+    position: node.position,
     identityKey: node.identity_key ?? "",
     identityReasonCodes: node.identity_reason_codes ?? [],
     identityRulesetVersion: node.identity_ruleset_version ?? "",
@@ -342,6 +438,86 @@ function toBlogCatalogItem(node: BackendGraphNode): BlogCatalogItem {
     connectionCount: node.connection_count ?? (node.incoming_count ?? 0) + (node.outgoing_count ?? 0),
     activityAt: node.activity_at ?? null,
     identityComplete: node.identity_complete ?? false,
+  };
+}
+
+/**
+ * Convert one backend recommendation batch into the frontend random-page model.
+ *
+ * @param payload Backend recommendation batch payload.
+ * @returns Normalized batch with catalog items.
+ */
+function toRandomRecommendationBatch(payload: BackendRandomRecommendationBatchPayload): RandomRecommendationBatch {
+  return {
+    requestUuid: payload.request_uuid,
+    surface: payload.surface,
+    strategy: payload.strategy,
+    strategyVersion: payload.strategy_version,
+    visitorId: payload.visitor_id,
+    sessionId: payload.session_id,
+    requestedCount: payload.requested_count,
+    servedCount: payload.served_count,
+    createdAt: payload.created_at,
+    items: payload.items.map(toBlogCatalogItem),
+  };
+}
+
+/**
+ * Convert one backend hourly admin stats row into frontend camelCase shape.
+ *
+ * @param row Raw backend admin stats row.
+ * @returns Normalized admin stats row.
+ */
+function toAdminHourlyStatsRow(row: BackendAdminHourlyStatsRow): AdminHourlyStatsRow {
+  return {
+    id: row.id,
+    hourStart: row.hour_start,
+    userCount: row.user_count,
+    randomRequestCount: row.random_request_count,
+    randomImpressionCount: row.random_impression_count,
+    detailOpenCount: row.detail_open_count,
+    externalOpenCount: row.external_open_count,
+    detailCtr: row.detail_ctr,
+    externalCtr: row.external_ctr,
+    totalClickCtr: row.total_click_ctr,
+    refreshedAt: row.refreshed_at,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Convert backend admin hourly stats payload into frontend shape.
+ *
+ * @param payload Raw backend admin stats payload.
+ * @returns Normalized hourly stats collection.
+ */
+function toAdminHourlyStats(payload: BackendAdminHourlyStats): AdminHourlyStats {
+  return {
+    currentHour: toAdminHourlyStatsRow(payload.current_hour),
+    latest: toAdminHourlyStatsRow(payload.latest),
+    items: payload.items.map(toAdminHourlyStatsRow),
+  };
+}
+
+/**
+ * Convert one backend relation graph into frontend graph coordinates.
+ *
+ * @param graph Backend directional relation graph.
+ * @returns Normalized relation graph.
+ */
+function toBlogRelationGraph(graph: BackendBlogRelationGraph) {
+  return {
+    direction: graph.direction,
+    focusBlogId: graph.focus_blog_id,
+    depth: graph.depth,
+    nodes: graph.nodes.map(toGraphNode),
+    edges: graph.edges.map((edge) => ({
+      id: String(edge.id ?? `${edge.from_blog_id}-${edge.to_blog_id}`),
+      source: edge.from_blog_id,
+      target: edge.to_blog_id,
+      linkText: edge.link_text,
+      linkUrlRaw: edge.link_url_raw,
+    })),
   };
 }
 
@@ -499,7 +675,14 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    throw new Error(`api_error_${response.status}`);
+    let detail: unknown = null;
+    try {
+      const payload = await response.json();
+      detail = (payload as { detail?: unknown }).detail ?? payload;
+    } catch {
+      detail = await response.text().catch(() => null);
+    }
+    throw new ApiError(response.status, detail);
   }
   return (await response.json()) as T;
 }
@@ -527,8 +710,27 @@ function toUserProfile(user: BackendUserProfile): UserProfile {
     id: user.id,
     email: user.email,
     displayName: user.display_name,
+    role: user.role,
+    isActive: user.is_active,
+    emailVerified: user.email_verified,
+    emailVerifiedAt: user.email_verified_at,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
+  };
+}
+
+function toAuthLifecycleToken(payload: BackendAuthLifecycleToken | undefined): AuthLifecycleToken | undefined {
+  if (!payload) {
+    return undefined;
+  }
+  return {
+    sent: payload.sent,
+    verificationToken: payload.verification_token,
+    verificationUrl: payload.verification_url,
+    resetToken: payload.reset_token,
+    resetUrl: payload.reset_url,
+    expiresAt: payload.expires_at,
+    alreadyVerified: payload.already_verified,
   };
 }
 
@@ -537,6 +739,7 @@ function toAuthSession(session: BackendAuthSession): AuthSession {
     token: session.token,
     expiresAt: session.expires_at,
     user: toUserProfile(session.user),
+    emailVerification: toAuthLifecycleToken(session.email_verification),
   };
 }
 
@@ -544,22 +747,13 @@ function toAuthSession(session: BackendAuthSession): AuthSession {
  * Fetch the default core graph view.
  *
  * @param limit Maximum node count requested for the core graph.
- * @param options Optional deterministic sampling settings for graph selection.
  * @returns Normalized graph data.
  */
-export async function fetchGraphData(
-  limit = 200,
-  options: { sampleMode?: "off" | "count" | "percent"; sampleSeed?: number } = {},
-): Promise<GraphData> {
+export async function fetchGraphData(limit = 200): Promise<GraphData> {
   const params = new URLSearchParams({
-    strategy: "degree",
+    strategy: "seed",
     limit: String(limit),
   });
-  if (options.sampleMode && options.sampleMode !== "off") {
-    params.set("sample_mode", options.sampleMode);
-    params.set("sample_value", String(limit));
-    params.set("sample_seed", String(options.sampleSeed ?? 42));
-  }
   const payload = await apiJson<BackendGraphPayload>(`/api/graph/views/core?${params.toString()}`);
   return toGraphData(payload);
 }
@@ -614,9 +808,16 @@ export async function fetchBlogDetail(blogId: number): Promise<BlogDetail> {
     .filter((neighbor): neighbor is BackendNeighborSummary => neighbor !== null)
     .map(toGraphNode);
   const outgoingNeighbors = payload.outgoing_edges
-    .map((edge) => edge.neighbor_blog)
-    .filter((neighbor): neighbor is BackendNeighborSummary => neighbor !== null)
-    .map(toGraphNode);
+    .map((edge) => {
+      if (!edge.neighbor_blog) {
+        return null;
+      }
+      return {
+        ...toGraphNode(edge.neighbor_blog),
+        url: edge.link_url_raw,
+      };
+    })
+    .filter((neighbor): neighbor is GraphNode => neighbor !== null);
   const relatedNodesById = new Map<number, GraphNode>();
   [...incomingNeighbors, ...outgoingNeighbors].forEach((node) => {
     relatedNodesById.set(node.id, node);
@@ -625,12 +826,77 @@ export async function fetchBlogDetail(blogId: number): Promise<BlogDetail> {
     ...toGraphNode(blog),
     viaBlogs: (blog.via_blogs ?? []).map(toGraphNode),
   }));
+  const discoveryPath = payload.discovery_path
+    ? {
+        mode: payload.discovery_path.mode,
+        originSource: payload.discovery_path.origin_source,
+        originLabel: payload.discovery_path.origin_label,
+        targetSource: payload.discovery_path.target_source,
+        truncated: payload.discovery_path.truncated,
+        steps: payload.discovery_path.steps.map((step) => ({
+          blog: step.blog
+            ? {
+                id: step.blog.blog_id ?? step.blog.id,
+                domain: step.blog.domain,
+                title: step.blog.title,
+                iconUrl: step.blog.icon_url,
+              }
+            : null,
+          blogId: step.blog_id,
+          url: step.url,
+          domain: step.domain,
+          acceptedBy: step.accepted_by,
+          acceptedLabel: step.accepted_label,
+          rawId: step.raw_id,
+          rawSourceBlogId: step.raw_source_blog_id,
+          rawAcceptedBy: step.raw_accepted_by,
+          discoveredAt: step.discovered_at,
+        })),
+      }
+    : null;
   return {
     ...toGraphNode(payload),
+    crawlStatus: payload.crawl_status ?? "WAITING",
+    crawlErrorKind: payload.crawl_error_kind ?? null,
     incomingLinks: payload.incoming_edges.length,
     outgoingLinks: payload.outgoing_edges.length,
     relatedNodes: Array.from(relatedNodesById.values()),
+    outgoingNodes: outgoingNeighbors,
     recommendedBlogs,
+    discoveryPath,
+    relationGraphs: payload.relation_graphs
+      ? {
+          incoming: toBlogRelationGraph(payload.relation_graphs.incoming),
+          outgoing: toBlogRelationGraph(payload.relation_graphs.outgoing),
+        }
+      : {
+          incoming: {
+            direction: "incoming",
+            focusBlogId: payload.blog_id ?? payload.id,
+            depth: 2,
+            nodes: [toGraphNode(payload), ...incomingNeighbors],
+            edges: payload.incoming_edges.map((edge) => ({
+              id: String(edge.id),
+              source: edge.from_blog_id,
+              target: edge.to_blog_id,
+              linkText: edge.link_text,
+              linkUrlRaw: edge.link_url_raw,
+            })),
+          },
+          outgoing: {
+            direction: "outgoing",
+            focusBlogId: payload.blog_id ?? payload.id,
+            depth: 2,
+            nodes: [toGraphNode(payload), ...outgoingNeighbors],
+            edges: payload.outgoing_edges.map((edge) => ({
+              id: String(edge.id),
+              source: edge.from_blog_id,
+              target: edge.to_blog_id,
+              linkText: edge.link_text,
+              linkUrlRaw: edge.link_url_raw,
+            })),
+          },
+        },
   };
 }
 
@@ -763,39 +1029,136 @@ export async function fetchBlogsCatalog(query: BlogCatalogQuery = {}): Promise<B
 }
 
 /**
- * Submit one ingestion request when a searched blog is missing.
+ * Fetch and persist one random-blog recommendation batch.
  *
- * @param data User-provided URL and email pair.
- * @returns Created ingestion request summary.
+ * @param input Random batch request metadata.
+ * @returns Persisted batch with ordered impression attribution.
  */
-export async function submitBlogInfo(data: {
-  url: string;
-  email: string;
-}): Promise<CreateIngestionRequestPayload> {
-  if (!data.url.trim()) {
-    throw new Error("url_required");
-  }
-  if (!data.email.trim()) {
-    throw new Error("email_required");
-  }
-  return apiJson<CreateIngestionRequestPayload>("/api/ingestion-requests", {
+export async function fetchRandomBlogBatch(input: {
+  count: number;
+  visitorId: string;
+  sessionId: string;
+  source?: string;
+  pageUrl?: string;
+  context?: Record<string, unknown>;
+  token?: string | null;
+}): Promise<RandomRecommendationBatch> {
+  const payload = await apiJson<BackendRandomRecommendationBatchPayload>("/api/recommendations/random-blog-batches", {
     method: "POST",
+    headers: input.token ? authHeaders(input.token) : undefined,
     body: JSON.stringify({
-      homepage_url: data.url.trim(),
-      email: data.email.trim(),
+      count: input.count,
+      visitor_id: input.visitorId,
+      session_id: input.sessionId,
+      source: input.source,
+      page_url: input.pageUrl,
+      context: input.context,
+    }),
+  });
+  return toRandomRecommendationBatch(payload);
+}
+
+/**
+ * Record one recommendation event without changing page state.
+ *
+ * @param input Event attribution and metadata.
+ * @param token Optional auth token used for registered-user attribution.
+ * @returns Promise resolved after the backend accepts the event.
+ */
+export async function postRecommendationEvent(
+  input: RecommendationEventInput,
+  token?: string | null,
+): Promise<void> {
+  await apiJson("/api/recommendation-events", {
+    method: "POST",
+    headers: token ? authHeaders(token) : undefined,
+    body: JSON.stringify({
+      event_uuid: input.eventUuid,
+      event_type: input.eventType,
+      blog_id: input.blogId,
+      visitor_id: input.visitorId,
+      session_id: input.sessionId,
+      entrance_kind: input.entranceKind,
+      entrance_url: input.entranceUrl,
+      request_uuid: input.requestUuid,
+      impression_id: input.impressionId,
+      position: input.position,
+      interaction_order: input.interactionOrder,
+      client_event_at: input.clientEventAt,
+      attributes: input.attributes,
     }),
   });
 }
 
-export async function registerUser(data: { email: string; password: string }): Promise<AuthSession> {
-  const payload = await apiJson<BackendAuthSession>("/api/auth/register", {
+/**
+ * Submit one user seed URL so it can be accepted and queued for crawling.
+ *
+ * @param data User-provided complete blog URL.
+ * @returns Accepted blog seed summary.
+ */
+export async function submitUserSeed(data: { url: string }): Promise<{ status: string; blogId: number }> {
+  if (!data.url.trim()) {
+    throw new Error("url_required");
+  }
+  let payload: { status: string; blog_id: number };
+  try {
+    payload = await apiJson<{ status: string; blog_id: number }>("/api/blogs/user-seeds", {
+      method: "POST",
+      body: JSON.stringify({
+        homepage_url: data.url.trim(),
+      }),
+    });
+  } catch (error) {
+    throw new Error(describeUserSeedError(error));
+  }
+  return {
+    status: payload.status,
+    blogId: payload.blog_id,
+  };
+}
+
+function describeUserSeedError(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return error instanceof Error ? error.message : "提交失败：未知错误";
+  }
+  const detail = typeof error.detail === "string" ? error.detail : "";
+  const ruleReason = USER_SEED_RULE_REASON_MESSAGES[detail];
+  if (ruleReason) {
+    return `规则过滤未通过：${ruleReason}（${detail}）`;
+  }
+  if (detail === "Unsupported homepage URL") {
+    return "URL 无法识别：请输入完整的 http 或 https 博客首页链接。";
+  }
+  if (detail) {
+    return `提交失败：${detail}`;
+  }
+  return `提交失败：接口返回 ${error.status}`;
+}
+
+const USER_SEED_RULE_REASON_MESSAGES: Record<string, string> = {
+  "rule:duplicate_url": "该 URL 已经存在于发现记录中",
+  "rule:non_http_scheme": "链接不是 http 或 https 协议",
+  "rule:same_domain": "链接与来源域名相同",
+  "rule:exact_url_blocked": "链接命中精确 URL 黑名单",
+  "rule:prefix_blocked": "链接命中 URL 前缀黑名单",
+  "rule:platform_blocked": "域名属于已屏蔽的平台站点",
+  "rule:domain_blocked": "域名命中自定义屏蔽列表",
+  "rule:blocked_tld": "域名后缀被屏蔽",
+  "rule:non_root_path": "链接不是博客首页根路径",
+  "rule:non_root_location": "链接包含查询参数或锚点",
+  "rule:asset_suffix": "链接指向静态资源文件",
+  "rule:blocked_path": "链接路径属于登录、搜索、RSS、管理页等非博客首页",
+};
+
+export async function registerUser(data: { email: string; password: string }): Promise<AuthLifecycleToken> {
+  const payload = await apiJson<BackendAuthLifecycleToken>("/api/auth/register", {
     method: "POST",
     body: JSON.stringify({
       email: data.email.trim(),
       password: data.password,
     }),
   });
-  return toAuthSession(payload);
+  return toAuthLifecycleToken(payload) ?? { sent: true };
 }
 
 export async function loginUser(data: { email: string; password: string }): Promise<AuthSession> {
@@ -821,6 +1184,38 @@ export async function logoutUser(token: string): Promise<void> {
     method: "POST",
     headers: authHeaders(token),
   });
+}
+
+export async function requestEmailVerification(email: string): Promise<AuthLifecycleToken> {
+  const payload = await apiJson<BackendAuthLifecycleToken>("/api/auth/email/verify/request", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim() }),
+  });
+  return toAuthLifecycleToken(payload) ?? { sent: true };
+}
+
+export async function confirmEmailVerification(token: string): Promise<UserProfile> {
+  const payload = await apiJson<BackendUserProfile>("/api/auth/email/verify/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token: token.trim() }),
+  });
+  return toUserProfile(payload);
+}
+
+export async function requestPasswordReset(email: string): Promise<AuthLifecycleToken> {
+  const payload = await apiJson<BackendAuthLifecycleToken>("/api/auth/password/forgot", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim() }),
+  });
+  return toAuthLifecycleToken(payload) ?? { sent: true };
+}
+
+export async function resetPassword(data: { token: string; password: string }): Promise<UserProfile> {
+  const payload = await apiJson<BackendUserProfile>("/api/auth/password/reset", {
+    method: "POST",
+    body: JSON.stringify({ token: data.token.trim(), password: data.password }),
+  });
+  return toUserProfile(payload);
 }
 
 export async function fetchMyLabelSelections(token: string, limit = 50): Promise<UserLabelSelection[]> {
@@ -884,29 +1279,18 @@ export async function fetchAdminRuntimeCurrent(adminToken: string): Promise<Admi
 }
 
 /**
- * Fetch the latest dedup scan summary when available.
+ * Fetch protected hourly admin dashboard statistics.
  *
  * @param adminToken Bearer token used for the protected endpoint.
- * @returns Normalized dedup summary or null when no run exists.
+ * @param limit Maximum number of hourly rows to return.
+ * @returns Normalized hourly statistics payload.
  */
-export async function fetchAdminDedupLatest(adminToken: string): Promise<AdminDedupSummary | null> {
-  try {
-    const payload = await apiJson<BackendDedupSummary>("/api/admin/blog-dedup-scans/latest", {
-      headers: adminHeaders(adminToken),
-    });
-    return {
-      id: payload.id,
-      status: payload.status,
-      totalCount: payload.total_count,
-      scannedCount: payload.scanned_count,
-      removedCount: payload.removed_count,
-      keptCount: payload.kept_count,
-      createdAt: payload.created_at,
-      updatedAt: payload.updated_at,
-    };
-  } catch {
-    return null;
-  }
+export async function fetchAdminHourlyStats(adminToken: string, limit = 24): Promise<AdminHourlyStats> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const payload = await apiJson<BackendAdminHourlyStats>(`/api/admin/hourly-stats?${params.toString()}`, {
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminHourlyStats(payload);
 }
 
 /**

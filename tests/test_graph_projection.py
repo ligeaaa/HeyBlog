@@ -178,14 +178,58 @@ def test_core_view_count_sampling_expands_from_random_seed_by_bfs() -> None:
     assert {edge["id"] for edge in payload["edges"]} == {13, 14}
 
 
-def test_core_view_seed_strategy_prefers_oldest_nodes() -> None:
+def test_core_view_seed_strategy_returns_first_n_nodes_by_id() -> None:
+    blogs, edges = sample_graph()
+    for blog_id in range(4, 32):
+        blogs.append(
+            {
+                "id": blog_id,
+                "url": f"https://extra-{blog_id}.example",
+                "normalized_url": f"https://extra-{blog_id}.example",
+                "domain": f"extra-{blog_id}.example",
+                "title": f"Extra {blog_id}",
+                "icon_url": None,
+                "status_code": 200,
+                "crawl_status": "FINISHED",
+                "friend_links_count": 0,
+                "last_crawled_at": None,
+                "created_at": "2026-03-31T00:00:00Z",
+                "updated_at": "2026-03-31T00:00:00Z",
+            },
+        )
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+
+    payload = build_core_graph_view(snapshot, strategy="seed", limit=24)
+
+    assert payload["meta"]["strategy"] == "seed"
+    assert {node["id"] for node in payload["nodes"]} == set(range(1, 25))
+    assert {edge["id"] for edge in payload["edges"]} == {11, 12}
+
+
+def test_core_view_seed_strategy_keeps_failed_parent_discovery_edges() -> None:
+    blogs, edges = sample_graph()
+    blogs[0]["crawl_status"] = "FAILED"
+
+    snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
+    payload = build_core_graph_view(snapshot, strategy="seed", limit=2)
+
+    assert {node["id"] for node in payload["nodes"]} == {1, 2}
+    assert {edge["id"] for edge in payload["edges"]} == {11}
+    node_by_id = {node["id"]: node for node in payload["nodes"]}
+    assert node_by_id[1]["crawl_status"] == "FAILED"
+    assert node_by_id[2]["incoming_count"] == 1
+
+
+def test_core_view_seed_strategy_allows_zero_nodes() -> None:
     blogs, edges = sample_graph()
     snapshot = build_graph_snapshot_payload(blogs, edges, version="v1", generated_at="2026-03-31T00:00:00Z")
 
-    payload = build_core_graph_view(snapshot, strategy="seed", limit=2)
+    payload = build_core_graph_view(snapshot, strategy="seed", limit=0)
 
     assert payload["meta"]["strategy"] == "seed"
-    assert {node["id"] for node in payload["nodes"][:2]} == {1, 2}
+    assert payload["meta"]["limit"] == 0
+    assert payload["nodes"] == []
+    assert payload["edges"] == []
 
 
 def test_core_view_allows_ten_thousand_node_limit() -> None:

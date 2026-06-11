@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from crawler.crawling.decisions.rule_helpers import BLOCKED_TLDS
-from crawler.crawling.decisions.rule_helpers import FILE_SUFFIX_BLOCKLIST
-from crawler.crawling.decisions.rule_helpers import PATH_BLOCKLIST
 from crawler.crawling.decisions.rule_helpers import PLATFORM_BLOCKLIST
 from crawler.crawling.decisions.rule_helpers import has_asset_suffix
 from crawler.crawling.decisions.rule_helpers import has_extra_location_parts

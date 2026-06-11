@@ -44,6 +44,17 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_LOG_CONSOLE_ENABLED` | `true` | 全部 Python 服务 | 是否同时输出到控制台，方便 Docker logs 查看 |
 | `HEYBLOG_LOG_RETENTION_DAYS` | `7` | 全部 Python 服务 | 自动清理超过该天数的小时切片日志 |
 | `HEYBLOG_BACKEND_BASE_URL` | `http://127.0.0.1:8000` | `frontend` | 浏览器代理层转发到公共 API 的目标地址 |
+| `HEYBLOG_PUBLIC_BASE_URL` | `http://127.0.0.1:3000` | `persistence-api` | 生成邮箱验证与密码重置链接时使用的公开前端基准地址 |
+| `HEYBLOG_EMAIL_PROVIDER` | `disabled` | `persistence-api` | 用户生命周期邮件 provider。可选 `disabled`/`noop` 或 `smtp`；默认不连接邮件服务 |
+| `HEYBLOG_EMAIL_FROM` | 空 | `persistence-api` | SMTP 邮件发件人地址；启用 `smtp` 时必须设置 |
+| `HEYBLOG_EMAIL_DEV_EXPOSE_TOKENS` | `false` | `persistence-api` | 是否在验证/重置 API 响应中暴露 raw token/link。仅本地调试需要手动设置为 `true` |
+| `HEYBLOG_SMTP_HOST` | 空 | `persistence-api` | SMTP 服务器主机名 |
+| `HEYBLOG_SMTP_PORT` | `587` | `persistence-api` | SMTP 服务器端口 |
+| `HEYBLOG_SMTP_USERNAME` | 未设置 | `persistence-api` | SMTP 用户名；为空时不执行登录 |
+| `HEYBLOG_SMTP_PASSWORD` | 未设置 | `persistence-api` | SMTP 密码；为空时不执行登录 |
+| `HEYBLOG_SMTP_USE_TLS` | `true` | `persistence-api` | 是否在普通 SMTP 连接上使用 STARTTLS |
+| `HEYBLOG_SMTP_USE_SSL` | `false` | `persistence-api` | 是否使用隐式 SMTP-over-SSL 连接 |
+| `HEYBLOG_SMTP_TIMEOUT_SECONDS` | `10.0` | `persistence-api` | SMTP 连接与发送超时时间 |
 | `HEYBLOG_CRAWLER_BASE_URL` | `http://127.0.0.1:8010` | `backend` | `backend` 调用 `crawler` 的内部地址 |
 | `HEYBLOG_SEARCH_BASE_URL` | `http://127.0.0.1:8020` | `backend` | `backend` 调用 `search` 的内部地址 |
 | `HEYBLOG_PERSISTENCE_BASE_URL` | `http://127.0.0.1:8030` | `backend`、`crawler`、`search` | 三个服务访问持久化边界的内部地址 |
@@ -53,8 +64,9 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_MAX_PATH_PROBES_PER_BLOG` | `50` | `crawler` | 单站点路径探测上限 |
 | `HEYBLOG_CANDIDATE_PAGE_FETCH_CONCURRENCY` | `4` | `crawler` | 友链候选页抓取并发度，最小为 `1` |
 | `HEYBLOG_RUNTIME_WORKER_COUNT` | `3` | `crawler` | runtime 持续抓取的 worker 数 |
+| `HEYBLOG_RUNTIME_AUTO_START_INTERVAL_SECONDS` | `3600` | `crawler` | crawler 服务内置 idle 检测间隔；到点时若 runtime 不在工作则自动调用 runtime start |
 | `HEYBLOG_RAW_DISCOVERED_URL_LIMIT` | `1000000` | `crawler` | `raw_discovered_urls` 行数达到该值后拒绝启动 crawler，并让正在运行的 runtime 在下一次 claim 前自动停止；设为 `-1` 表示不限制 |
-| `HEYBLOG_MAX_FETCHED_PAGE_BYTES` | `2000000` | `crawler` | 单个页面允许读取的最大字节数；超限后当前 blog 直接记为 `FAILED`，超大页不会继续进入解析阶段 |
+| `HEYBLOG_MAX_FETCHED_PAGE_BYTES` | `2000000` | `crawler` | 单个页面允许读取的最大字节数；超限后当前 crawl attempt 记为 `FAILED` 并记录错误分类，超大页不会继续进入解析阶段；这不会撤销已接受博客的 `acceptance_status` |
 | `HEYBLOG_FRIEND_LINK_DOMAIN_BLOCKLIST` | 空 | `crawler` | 逗号分隔的域名黑名单 |
 | `HEYBLOG_FRIEND_LINK_TLD_BLOCKLIST` | 空 | `crawler` | 逗号分隔的顶级域黑名单 |
 | `HEYBLOG_FRIEND_LINK_EXACT_URL_BLOCKLIST` | 空 | `crawler` | 逗号分隔的精确 URL 黑名单 |
@@ -86,6 +98,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `persistence-api` | `HEYBLOG_DB_DSN` | 启用 PostgreSQL 后端 |
 | `persistence-api` | `HEYBLOG_DOCKER_DECISION_MODEL_ROOT` | 全库规则重扫读取的容器内运行时模型根目录 |
 | `persistence-api` | `HEYBLOG_DECISION_MODEL_CONSENSUS_STRATEGY` / `HEYBLOG_DECISION_MODEL_CONSENSUS_THRESHOLD` | 全库规则重扫使用的模型共识策略与 weighted 阈值 |
+| `persistence-api` | `HEYBLOG_EMAIL_PROVIDER` / `HEYBLOG_EMAIL_FROM` / `HEYBLOG_SMTP_*` | 发送邮箱验证与密码重置邮件 |
 
 ## 3.1 运行时资源目录约定
 

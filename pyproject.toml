@@ -13,6 +13,7 @@ dependencies = [
   "beautifulsoup4>=4.12,<5",
   "fastapi>=0.115,<1",
   "feedparser>=6.0,<7",
+  "extract-favicon>=0.5.4,<1",
   "httpx>=0.28,<1",
   "pydantic>=2.7,<3",
   "pyarrow>=18.1,<25",
@@ -29,6 +30,7 @@ runtime-models = [
 ]
 dev = [
   "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
 ]
 
 [tool.pytest.ini_options]

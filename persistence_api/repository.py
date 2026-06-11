@@ -36,21 +36,29 @@ from sqlalchemy.orm import Session
 from persistence_api.db import create_persistence_engine
 from persistence_api.db import create_session_factory
 from persistence_api.db import session_scope
+from persistence_api.email_delivery import EmailDelivery
+from persistence_api.email_delivery import NoopEmailDelivery
 from persistence_api.models import Base
+from persistence_api.models import AdminHourlyStatsModel
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
+from persistence_api.models import BlogInteractionModel
 from persistence_api.models import BlogUserLabelModel
 from persistence_api.models import BlogUserLabelSelectionModel
 from persistence_api.models import BlogModel
-from persistence_api.models import BlogDedupScanRunItemModel
-from persistence_api.models import BlogDedupScanRunModel
 from persistence_api.models import EdgeModel
-from persistence_api.models import IngestionRequestModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import RecommendationImpressionModel
+from persistence_api.models import RecommendationRequestModel
+from persistence_api.models import SeedModel
+from persistence_api.models import PendingUserRegistrationModel
+from persistence_api.models import UserAuditEventModel
 from persistence_api.models import UserModel
+from persistence_api.models import UserVerificationTokenModel
 from persistence_api.models import UserSessionModel
 from persistence_api.recommendations import collect_friends_of_friends_candidates
 from crawler.crawling.decisions.chain import build_url_decision_chain
+from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.normalization import IDENTITY_RULESET_VERSION
 from crawler.crawling.normalization import BlogIdentityResolution
 from crawler.crawling.normalization import normalize_url
@@ -59,6 +67,8 @@ from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
 from shared.observability import get_logger
 
+BLOG_ACCEPTANCE_ACCEPTED = "ACCEPTED"
+BLOG_ACCEPTANCE_UNKNOWN = "UNKNOWN"
 BLOG_CATALOG_ALLOWED_STATUSES = frozenset({status.value for status in CrawlStatus})
 BLOG_CATALOG_DEFAULT_PAGE_SIZE = 50
 BLOG_CATALOG_MAX_PAGE_SIZE = 200
@@ -66,7 +76,9 @@ BLOG_CATALOG_DEFAULT_SORT = "id_desc"
 BLOG_CATALOG_ALLOWED_SORTS = frozenset(
     {"id_asc", "id_desc", "recent_activity", "connections", "recently_discovered", "random"}
 )
-INGESTION_PRIORITY_LIST_LIMIT = 20
+BLOG_CATALOG_ALLOWED_ACCEPTANCE_STATUSES = frozenset(
+    {BLOG_ACCEPTANCE_ACCEPTED, BLOG_ACCEPTANCE_UNKNOWN, "REJECTED"}
+)
 BLOG_LABELING_DEFAULT_PAGE_SIZE = 50
 BLOG_LABELING_MAX_PAGE_SIZE = 200
 BLOG_LABELING_DEFAULT_SORT = "id_desc"
@@ -88,26 +100,26 @@ RANDOM_BLOG_LABEL_SLUGS = frozenset({"blog", "company", "other", "unknown"})
 BLOG_LABEL_BLOG_ID = BLOG_LABEL_NAME_TO_ID["blog"]
 RAW_DISCOVERED_URL_DUPLICATE_STATUS = "rule:duplicate_url"
 RAW_DISCOVERED_URL_SUCCESS_STATUS = "success"
+RANDOM_RECOMMENDATION_SURFACE = "random_blog_page"
+RANDOM_RECOMMENDATION_STRATEGY = "weighted_random"
+RANDOM_RECOMMENDATION_STRATEGY_VERSION = "v1"
+RECOMMENDATION_EVENT_TYPES = frozenset(
+    {"click", "detail_open", "external_open", "label_select", "refresh", "dismiss", "copy_url"}
+)
 REPOSITORY_LOGGER_NAME = "heyblog.repository"
 LOGGER = get_logger(REPOSITORY_LOGGER_NAME)
-INGESTION_REQUEST_STATUS_RECEIVED = "RECEIVED"
-INGESTION_REQUEST_STATUS_DEDUPED_EXISTING = "DEDUPED_EXISTING"
-INGESTION_REQUEST_STATUS_QUEUED = "QUEUED"
-INGESTION_REQUEST_STATUS_CRAWLING_SEED = "CRAWLING_SEED"
-INGESTION_REQUEST_STATUS_COMPLETED = "COMPLETED"
-INGESTION_REQUEST_STATUS_FAILED = "FAILED"
-INGESTION_REQUEST_STATUS_EXPIRED = "EXPIRED"
-ACTIVE_INGESTION_REQUEST_STATUSES = frozenset(
-    {
-        INGESTION_REQUEST_STATUS_RECEIVED,
-        INGESTION_REQUEST_STATUS_QUEUED,
-        INGESTION_REQUEST_STATUS_CRAWLING_SEED,
-    }
-)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 USER_SESSION_TTL_DAYS = 30
 PASSWORD_HASH_ITERATIONS = 210_000
+USER_ROLE_ADMIN = "admin"
+USER_ROLE_USER = "user"
+USER_ROLES = frozenset({USER_ROLE_ADMIN, USER_ROLE_USER})
+USER_TOKEN_EMAIL_VERIFICATION = "email_verification"
+USER_TOKEN_PASSWORD_RESET = "password_reset"
+USER_EMAIL_VERIFICATION_TTL_HOURS = 24
+USER_PASSWORD_RESET_TTL_HOURS = 2
+PENDING_REGISTRATION_TTL_HOURS = 24
 
 
 class BlogLabelingError(Exception):
@@ -238,6 +250,19 @@ def _hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _hash_user_lifecycle_token(token: str) -> str:
+    """Return the storage hash for an email verification or reset token.
+
+    Args:
+        token: Raw lifecycle token returned once to a caller.
+
+    Returns:
+        SHA-256 hex digest used for lookup without storing the raw token.
+    """
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def _user_payload(model: UserModel) -> dict[str, Any]:
     """Return the public user profile payload.
 
@@ -252,9 +277,33 @@ def _user_payload(model: UserModel) -> dict[str, Any]:
         "id": int(model.id),
         "email": model.email,
         "display_name": model.display_name,
+        "role": model.role,
+        "is_active": bool(model.is_active),
+        "email_verified": model.email_verified_at is not None,
+        "email_verified_at": _iso(model.email_verified_at),
         "created_at": _iso(model.created_at),
         "updated_at": _iso(model.updated_at),
     }
+
+
+def _user_admin_payload(model: UserModel) -> dict[str, Any]:
+    """Return an admin-safe user management payload.
+
+    Args:
+        model: User database row.
+
+    Returns:
+        JSON-serializable account summary for admin user lists.
+    """
+
+    payload = _user_payload(model)
+    payload.update(
+        {
+            "last_login_at": _iso(model.last_login_at),
+            "password_changed_at": _iso(model.password_changed_at),
+        }
+    )
+    return payload
 
 
 def _sortable_datetime(value: datetime | None) -> datetime:
@@ -267,6 +316,80 @@ def _sortable_datetime(value: datetime | None) -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _clean_event_text(value: str, *, field: str, max_length: int = 256) -> str:
+    """Return a non-empty event text field or raise a stable validation error.
+
+    Args:
+        value: Raw event field value supplied by a caller.
+        field: Field name included in the validation error.
+        max_length: Maximum accepted character length.
+
+    Returns:
+        Trimmed field value.
+
+    Raises:
+        ValueError: Raised when the value is blank or too long.
+    """
+
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise ValueError(f"{field}_required")
+    if len(cleaned) > max_length:
+        raise ValueError(f"{field}_too_long")
+    return cleaned
+
+
+def _coerce_json_object(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a JSON object payload with unsupported values normalized by JSON.
+
+    Args:
+        value: Optional JSON-like mapping supplied by a caller.
+
+    Returns:
+        A JSON-serializable dictionary.
+
+    Raises:
+        ValueError: Raised when the mapping cannot be encoded as JSON.
+    """
+
+    if value is None:
+        return {}
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=True, default=str))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_json_attributes") from exc
+
+
+def _parse_event_datetime(value: str | datetime | None) -> datetime | None:
+    """Return an optional timezone-aware client event timestamp.
+
+    Args:
+        value: ISO datetime string, datetime instance, or `None`.
+
+    Returns:
+        Parsed datetime with UTC timezone when supplied.
+
+    Raises:
+        ValueError: Raised when the value cannot be parsed.
+    """
+
+    if value is None or isinstance(value, datetime):
+        parsed = value
+    else:
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("invalid_client_event_at") from exc
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _business_blog_id(model: BlogModel | None) -> int | None:
@@ -449,6 +572,7 @@ def normalize_blog_catalog_query(
     has_title: bool | str | None = None,
     has_icon: bool | str | None = None,
     min_connections: int | str | None = None,
+    acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
 ) -> dict[str, Any]:
     """Normalize catalog query params into one shared spec."""
     normalized_statuses: list[str] | None = None
@@ -477,6 +601,11 @@ def normalize_blog_catalog_query(
     normalized_sort = _normalize_catalog_text(sort) or BLOG_CATALOG_DEFAULT_SORT
     if normalized_sort not in BLOG_CATALOG_ALLOWED_SORTS:
         raise ValueError(f"Unsupported blog catalog sort: {normalized_sort}")
+    normalized_acceptance_status = _normalize_catalog_text(acceptance_status)
+    if normalized_acceptance_status is not None:
+        normalized_acceptance_status = normalized_acceptance_status.upper()
+        if normalized_acceptance_status not in BLOG_CATALOG_ALLOWED_ACCEPTANCE_STATUSES:
+            raise ValueError(f"Unsupported blog acceptance status: {normalized_acceptance_status}")
 
     return {
         "page": max(page, 1),
@@ -490,6 +619,7 @@ def normalize_blog_catalog_query(
         "has_title": _normalize_catalog_bool(has_title),
         "has_icon": _normalize_catalog_bool(has_icon),
         "min_connections": _normalize_catalog_int(min_connections),
+        "acceptance_status": normalized_acceptance_status,
     }
 
 
@@ -580,10 +710,9 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
     """Apply additive compatibility fixes needed by existing persistence databases."""
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    if "blogs" not in existing_tables or "ingestion_requests" not in existing_tables:
+    if "blogs" not in existing_tables:
         return
     blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
-    ingestion_columns = {column["name"] for column in inspector.get_columns("ingestion_requests")}
     with engine.begin() as connection:
         if "email" not in blog_columns:
             connection.execute(text("ALTER TABLE blogs ADD COLUMN email TEXT"))
@@ -599,37 +728,40 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             connection.execute(
                 text("ALTER TABLE blogs ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL")
             )
-        if "identity_key" not in ingestion_columns:
-            connection.execute(text("ALTER TABLE ingestion_requests ADD COLUMN identity_key TEXT"))
-        if "identity_reason_codes" not in ingestion_columns:
-            connection.execute(
-                text(
-                    "ALTER TABLE ingestion_requests ADD COLUMN identity_reason_codes TEXT DEFAULT '[]' NOT NULL"
-                )
-            )
-        if "identity_ruleset_version" not in ingestion_columns:
-            connection.execute(
-                text(
-                    "ALTER TABLE ingestion_requests ADD COLUMN identity_ruleset_version TEXT DEFAULT '' NOT NULL"
-                )
-            )
-        if "blog_dedup_scan_runs" in existing_tables:
-            run_columns = {column["name"] for column in inspector.get_columns("blog_dedup_scan_runs")}
-            if "total_count" not in run_columns:
-                connection.execute(
-                    text("ALTER TABLE blog_dedup_scan_runs ADD COLUMN total_count INTEGER DEFAULT 0 NOT NULL")
-                )
         if "ix_blogs_identity_key" not in {index["name"] for index in inspector.get_indexes("blogs")}:
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_blogs_identity_key ON blogs (identity_key)"))
-        if "ix_ingestion_requests_identity_key" not in {
-            index["name"] for index in inspector.get_indexes("ingestion_requests")
-        }:
-            connection.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_ingestion_requests_identity_key "
-                    "ON ingestion_requests (identity_key)"
+        if "seeds" not in existing_tables:
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        "CREATE TABLE seeds ("
+                        "id SERIAL PRIMARY KEY, "
+                        "url TEXT NOT NULL, "
+                        "normalized_url TEXT NOT NULL UNIQUE, "
+                        "domain TEXT NOT NULL, "
+                        "source_path TEXT, "
+                        "source_row INTEGER, "
+                        "blog_id INTEGER REFERENCES blogs(blog_id) ON DELETE SET NULL, "
+                        "imported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
                 )
-            )
+            else:
+                connection.execute(
+                    text(
+                        "CREATE TABLE seeds ("
+                        "id INTEGER PRIMARY KEY, "
+                        "url TEXT NOT NULL, "
+                        "normalized_url TEXT NOT NULL UNIQUE, "
+                        "domain TEXT NOT NULL, "
+                        "source_path TEXT, "
+                        "source_row INTEGER, "
+                        "blog_id INTEGER REFERENCES blogs(blog_id) ON DELETE SET NULL, "
+                        "imported_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                        "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                    )
+                )
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_seeds_normalized_url ON seeds (normalized_url)"))
         if "blog_labels" not in existing_tables:
             if connection.dialect.name == "postgresql":
                 connection.execute(
@@ -704,6 +836,17 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     "email TEXT NOT NULL UNIQUE, "
                     "password_hash TEXT NOT NULL, "
                     "display_name TEXT DEFAULT '' NOT NULL, "
+                    "role TEXT DEFAULT 'user' NOT NULL, "
+                    "is_active BOOLEAN DEFAULT 1 NOT NULL, "
+                    "email_verified_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ", "
+                    "password_changed_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ", "
+                    "last_login_at "
+                    + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
+                    + ", "
                     "created_at "
                     + ("TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME")
                     + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
@@ -714,6 +857,18 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             )
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_users_email ON users (email)"))
             existing_tables.add("users")
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        user_timestamp_type = "TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME"
+        if "role" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user' NOT NULL"))
+        if "is_active" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1 NOT NULL"))
+        if "email_verified_at" not in user_columns:
+            connection.execute(text(f"ALTER TABLE users ADD COLUMN email_verified_at {user_timestamp_type}"))
+        if "password_changed_at" not in user_columns:
+            connection.execute(text(f"ALTER TABLE users ADD COLUMN password_changed_at {user_timestamp_type}"))
+        if "last_login_at" not in user_columns:
+            connection.execute(text(f"ALTER TABLE users ADD COLUMN last_login_at {user_timestamp_type}"))
         if "user_sessions" not in existing_tables:
             connection.execute(
                 text(
@@ -735,6 +890,88 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON user_sessions (user_id)"))
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_sessions_token_hash ON user_sessions (token_hash)"))
             existing_tables.add("user_sessions")
+        if "user_verification_tokens" not in existing_tables:
+            connection.execute(
+                text(
+                    "CREATE TABLE user_verification_tokens ("
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+                    "token_hash TEXT NOT NULL UNIQUE, "
+                    "purpose TEXT NOT NULL, "
+                    "created_at "
+                    + user_timestamp_type
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "expires_at "
+                    + user_timestamp_type
+                    + " NOT NULL, "
+                    "consumed_at "
+                    + user_timestamp_type
+                    + ")"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_user_verification_tokens_user_id ON user_verification_tokens (user_id)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_user_verification_tokens_token_hash "
+                    "ON user_verification_tokens (token_hash)"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_user_verification_tokens_purpose ON user_verification_tokens (purpose)")
+            )
+            existing_tables.add("user_verification_tokens")
+        if "pending_user_registrations" not in existing_tables:
+            pending_id_type = "SERIAL PRIMARY KEY" if connection.dialect.name == "postgresql" else "INTEGER PRIMARY KEY"
+            connection.execute(
+                text(
+                    "CREATE TABLE pending_user_registrations ("
+                    f"id {pending_id_type}, "
+                    "email TEXT NOT NULL UNIQUE, "
+                    "password_hash TEXT NOT NULL, "
+                    "token_hash TEXT NOT NULL UNIQUE, "
+                    "created_at "
+                    + user_timestamp_type
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    "expires_at "
+                    + user_timestamp_type
+                    + " NOT NULL, "
+                    "consumed_at "
+                    + user_timestamp_type
+                    + ")"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_pending_user_registrations_email ON pending_user_registrations (email)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_pending_user_registrations_token_hash "
+                    "ON pending_user_registrations (token_hash)"
+                )
+            )
+            existing_tables.add("pending_user_registrations")
+        if "user_audit_events" not in existing_tables:
+            json_type = "JSONB" if connection.dialect.name == "postgresql" else "JSON"
+            json_default = "'{}'::jsonb" if connection.dialect.name == "postgresql" else "'{}'"
+            connection.execute(
+                text(
+                    "CREATE TABLE user_audit_events ("
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, "
+                    "event_type TEXT NOT NULL, "
+                    f"details {json_type} DEFAULT {json_default} NOT NULL, "
+                    "created_at "
+                    + user_timestamp_type
+                    + " DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                )
+            )
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_user_audit_events_user_id ON user_audit_events (user_id)"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_user_audit_events_event_type ON user_audit_events (event_type)")
+            )
+            existing_tables.add("user_audit_events")
         if "blog_user_label_selections" not in existing_tables:
             connection.execute(
                 text(
@@ -762,6 +999,50 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                 )
             )
             existing_tables.add("blog_user_label_selections")
+        if "blog_interactions" in existing_tables:
+            interaction_columns = {column["name"] for column in inspector.get_columns("blog_interactions")}
+            if "entrance_kind" not in interaction_columns:
+                connection.execute(
+                    text("ALTER TABLE blog_interactions ADD COLUMN entrance_kind TEXT NOT NULL DEFAULT 'legacy_unknown'")
+                )
+                if connection.dialect.name == "postgresql":
+                    connection.execute(text("ALTER TABLE blog_interactions ALTER COLUMN entrance_kind DROP DEFAULT"))
+            if "entrance_url" not in interaction_columns:
+                connection.execute(
+                    text("ALTER TABLE blog_interactions ADD COLUMN entrance_url TEXT NOT NULL DEFAULT 'legacy_unknown'")
+                )
+                if connection.dialect.name == "postgresql":
+                    connection.execute(text("ALTER TABLE blog_interactions ALTER COLUMN entrance_url DROP DEFAULT"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_blog_interactions_entrance_kind ON blog_interactions (entrance_kind)")
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_blog_interactions_entrance_url ON blog_interactions (entrance_url)")
+            )
+        if "admin_hourly_stats" not in existing_tables:
+            stats_id_type = "SERIAL PRIMARY KEY" if connection.dialect.name == "postgresql" else "INTEGER PRIMARY KEY"
+            stats_timestamp_type = "TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME"
+            connection.execute(
+                text(
+                    "CREATE TABLE admin_hourly_stats ("
+                    f"id {stats_id_type}, "
+                    f"hour_start {stats_timestamp_type} NOT NULL UNIQUE, "
+                    "user_count INTEGER DEFAULT 0 NOT NULL, "
+                    "random_request_count INTEGER DEFAULT 0 NOT NULL, "
+                    "random_impression_count INTEGER DEFAULT 0 NOT NULL, "
+                    "detail_open_count INTEGER DEFAULT 0 NOT NULL, "
+                    "external_open_count INTEGER DEFAULT 0 NOT NULL, "
+                    "detail_ctr FLOAT DEFAULT 0 NOT NULL, "
+                    "external_ctr FLOAT DEFAULT 0 NOT NULL, "
+                    "total_click_ctr FLOAT DEFAULT 0 NOT NULL, "
+                    f"refreshed_at {stats_timestamp_type} DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    f"created_at {stats_timestamp_type} DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_admin_hourly_stats_hour_start ON admin_hourly_stats (hour_start)")
+            )
+            existing_tables.add("admin_hourly_stats")
         if "blog_label_tags" not in existing_tables:
             connection.execute(
                 text(
@@ -934,6 +1215,37 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                         connection.execute(
                             text(f'ALTER TABLE raw_discovered_urls DROP CONSTRAINT IF EXISTS "{constraint_name}"')
                         )
+        if "blogs" in existing_tables:
+            blog_columns = {column["name"] for column in inspector.get_columns("blogs")}
+            for column_name, ddl in (
+                ("acceptance_status", "ALTER TABLE blogs ADD COLUMN acceptance_status TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+                ("accepted_by", "ALTER TABLE blogs ADD COLUMN accepted_by TEXT"),
+                ("accepted_at", "ALTER TABLE blogs ADD COLUMN accepted_at TIMESTAMP"),
+                ("crawl_error_kind", "ALTER TABLE blogs ADD COLUMN crawl_error_kind TEXT"),
+                ("crawl_error_message", "ALTER TABLE blogs ADD COLUMN crawl_error_message TEXT"),
+                ("last_crawl_attempt_at", "ALTER TABLE blogs ADD COLUMN last_crawl_attempt_at TIMESTAMP"),
+                ("successful_crawl_at", "ALTER TABLE blogs ADD COLUMN successful_crawl_at TIMESTAMP"),
+            ):
+                if column_name not in blog_columns:
+                    connection.execute(text(ddl))
+            connection.execute(
+                text(
+                    "UPDATE blogs SET acceptance_status = 'ACCEPTED', "
+                    "accepted_by = COALESCE(accepted_by, 'seed'), "
+                    "accepted_at = COALESCE(accepted_at, created_at) "
+                    "WHERE acceptance_status = 'UNKNOWN' "
+                    "AND blog_id NOT IN (SELECT to_blog_id FROM edges)"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE blogs SET acceptance_status = 'ACCEPTED', "
+                    "accepted_by = COALESCE(accepted_by, 'graph'), "
+                    "accepted_at = COALESCE(accepted_at, created_at) "
+                    "WHERE acceptance_status = 'UNKNOWN' "
+                    "AND blog_id IN (SELECT from_blog_id FROM edges UNION SELECT to_blog_id FROM edges)"
+                )
+            )
         blog_rows = connection.execute(
             text(
                 "SELECT id, blog_id, url, normalized_url, domain, identity_key, identity_ruleset_version "
@@ -962,40 +1274,6 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
                     "domain": str(row["domain"] or identity.domain),
                 },
             )
-        ingestion_rows = connection.execute(
-            text(
-                "SELECT id, requested_url, normalized_url, identity_key, identity_ruleset_version "
-                "FROM ingestion_requests"
-            )
-        ).mappings().all()
-        for row in ingestion_rows:
-            needs_refresh = (
-                not row["identity_key"]
-                or str(row["identity_ruleset_version"] or "") != IDENTITY_RULESET_VERSION
-            )
-            if not needs_refresh:
-                continue
-            identity = resolve_blog_identity(str(row["requested_url"]) or str(row["normalized_url"]))
-            storage_url = (
-                identity.canonical_url
-                if _uses_tenant_root_canonicalization(identity.reason_codes)
-                else normalize_url(str(row["requested_url"]) or str(row["normalized_url"])).normalized_url
-            )
-            connection.execute(
-                text(
-                    "UPDATE ingestion_requests SET identity_key = :identity_key, "
-                    "identity_reason_codes = :reason_codes, identity_ruleset_version = :ruleset_version, "
-                    "normalized_url = :normalized_url "
-                    "WHERE id = :request_id"
-                ),
-                {
-                    "request_id": row["id"],
-                    "identity_key": identity.identity_key,
-                    "reason_codes": _dump_reason_codes(identity.reason_codes),
-                    "ruleset_version": identity.ruleset_version,
-                    "normalized_url": storage_url,
-                },
-            )
 
 def _resolved_blog_title(model: BlogModel) -> str:
     title = (model.title or "").strip()
@@ -1008,11 +1286,7 @@ def _resolved_blog_icon_url(model: BlogModel) -> str | None:
     icon_url = (model.icon_url or "").strip()
     if icon_url:
         return icon_url
-
-    parsed = urlparse(model.url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1061,6 +1335,13 @@ class _BlogPayloadView:
             "title": self.title,
             "icon_url": self.icon_url,
             "status_code": self.model.status_code,
+            "acceptance_status": self.model.acceptance_status,
+            "accepted_by": self.model.accepted_by,
+            "accepted_at": _iso(self.model.accepted_at),
+            "crawl_error_kind": self.model.crawl_error_kind,
+            "crawl_error_message": self.model.crawl_error_message,
+            "last_crawl_attempt_at": _iso(self.model.last_crawl_attempt_at),
+            "successful_crawl_at": _iso(self.model.successful_crawl_at),
             "crawl_status": self.model.crawl_status.value,
             "friend_links_count": int(self.model.friend_links_count),
             "last_crawled_at": _iso(self.model.last_crawled_at),
@@ -1101,87 +1382,6 @@ class _BlogPayloadView:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class _IngestionRequestPayloadView:
-    """Hold one ingestion request plus its related blogs and expose output slices."""
-
-    model: IngestionRequestModel
-    seed_blog_view: _BlogPayloadView | None
-    matched_blog_view: _BlogPayloadView | None
-
-    @classmethod
-    def from_model(
-        cls,
-        model: IngestionRequestModel,
-        *,
-        seed_blog: BlogModel | None = None,
-        matched_blog: BlogModel | None = None,
-    ) -> _IngestionRequestPayloadView:
-        """Return the resolved request view for one ingestion request row."""
-        return cls(
-            model=model,
-            seed_blog_view=_BlogPayloadView.from_model(seed_blog),
-            matched_blog_view=_BlogPayloadView.from_model(matched_blog),
-        )
-
-    def _resolved_blog_view(self) -> _BlogPayloadView | None:
-        """Return the matched blog when present, otherwise the seed blog."""
-        return self.matched_blog_view or self.seed_blog_view
-
-    def _resolved_blog_id(self) -> int | None:
-        """Return the business id of the resolved blog used by public payloads."""
-        resolved_blog_view = self._resolved_blog_view()
-        return resolved_blog_view.blog_id if resolved_blog_view is not None else None
-
-    def as_full_payload(self) -> dict[str, Any]:
-        """Return the full ingestion request payload used by private flows."""
-        resolved_blog_view = self._resolved_blog_view()
-        return {
-            "id": int(self.model.id),
-            "request_id": int(self.model.id),
-            "requested_url": self.model.requested_url,
-            "normalized_url": self.model.normalized_url,
-            "identity_key": self.model.identity_key,
-            "identity_reason_codes": _load_reason_codes(self.model.identity_reason_codes),
-            "identity_ruleset_version": self.model.identity_ruleset_version,
-            "email": self.model.requester_email,
-            "status": self.model.status,
-            "priority": int(self.model.priority),
-            "seed_blog_id": int(self.model.seed_blog_id) if self.model.seed_blog_id is not None else None,
-            "matched_blog_id": int(self.model.matched_blog_id) if self.model.matched_blog_id is not None else None,
-            "blog_id": self._resolved_blog_id(),
-            "request_token": self.model.request_token,
-            "expires_at": _iso(self.model.expires_at),
-            "error_message": self.model.error_message,
-            "created_at": _iso(self.model.created_at),
-            "updated_at": _iso(self.model.updated_at),
-            "seed_blog": self.seed_blog_view.as_blog_payload() if self.seed_blog_view is not None else None,
-            "matched_blog": self.matched_blog_view.as_blog_payload() if self.matched_blog_view is not None else None,
-            "blog": resolved_blog_view.as_blog_payload() if resolved_blog_view is not None else None,
-        }
-
-    def as_priority_payload(self) -> dict[str, Any]:
-        """Return the public priority-list payload with private fields removed."""
-        resolved_blog_view = self._resolved_blog_view()
-        return {
-            "request_id": int(self.model.id),
-            "requested_url": self.model.requested_url,
-            "normalized_url": self.model.normalized_url,
-            "status": self.model.status,
-            "seed_blog_id": int(self.model.seed_blog_id) if self.model.seed_blog_id is not None else None,
-            "matched_blog_id": int(self.model.matched_blog_id) if self.model.matched_blog_id is not None else None,
-            "blog_id": self._resolved_blog_id(),
-            "error_message": self.model.error_message,
-            "created_at": _iso(self.model.created_at),
-            "updated_at": _iso(self.model.updated_at),
-            "blog": (
-                resolved_blog_view.as_public_summary_payload()
-                if resolved_blog_view is not None
-                else None
-            ),
-        }
-
-
 def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     return {
         "id": int(model.id),
@@ -1193,30 +1393,27 @@ def _edge_payload(model: EdgeModel) -> dict[str, Any]:
     }
 
 
-def _ingestion_request_payload(
-    model: IngestionRequestModel,
-    *,
-    seed_blog: BlogModel | None = None,
-    matched_blog: BlogModel | None = None,
-) -> dict[str, Any]:
-    return _IngestionRequestPayloadView.from_model(
-        model,
-        seed_blog=seed_blog,
-        matched_blog=matched_blog,
-    ).as_full_payload()
+def _seed_payload(model: SeedModel) -> dict[str, Any]:
+    """Serialize one durable seed row for crawler bootstrap.
 
+    Args:
+        model: Seed ORM row to serialize.
 
-def _priority_ingestion_request_payload(
-    model: IngestionRequestModel,
-    *,
-    seed_blog: BlogModel | None = None,
-    matched_blog: BlogModel | None = None,
-) -> dict[str, Any]:
-    return _IngestionRequestPayloadView.from_model(
-        model,
-        seed_blog=seed_blog,
-        matched_blog=matched_blog,
-    ).as_priority_payload()
+    Returns:
+        Plain JSON-compatible seed payload.
+    """
+
+    return {
+        "id": int(model.id),
+        "url": str(model.url),
+        "normalized_url": str(model.normalized_url),
+        "domain": str(model.domain),
+        "source_path": model.source_path,
+        "source_row": model.source_row,
+        "blog_id": model.blog_id,
+        "imported_at": _iso(model.imported_at),
+        "updated_at": _iso(model.updated_at),
+    }
 
 
 def _blog_lookup_payload(
@@ -1434,82 +1631,6 @@ class _BlogLabelStateView:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class _MaintenanceRunPayloadView:
-    """Hold the shared lifecycle facts exposed by maintenance run summaries."""
-
-    run_id: int
-    status: str
-    crawler_was_running: bool
-    started_at: datetime | None
-    completed_at: datetime | None
-    error_message: str | None
-    created_at: datetime | None
-    updated_at: datetime | None
-
-    @classmethod
-    def from_model(
-        cls,
-        model: BlogDedupScanRunModel,
-    ) -> _MaintenanceRunPayloadView:
-        """Return the shared lifecycle view for one maintenance run row."""
-        return cls(
-            run_id=int(model.id),
-            status=str(model.status),
-            crawler_was_running=bool(model.crawler_was_running),
-            started_at=model.started_at,
-            completed_at=model.completed_at,
-            error_message=model.error_message,
-            created_at=model.created_at,
-            updated_at=model.updated_at,
-        )
-
-    def as_payload(self) -> dict[str, Any]:
-        """Return the shared lifecycle payload used by maintenance run summaries."""
-        return {
-            "id": self.run_id,
-            "status": self.status,
-            "crawler_was_running": self.crawler_was_running,
-            "started_at": _iso(self.started_at),
-            "completed_at": _iso(self.completed_at),
-            "error_message": self.error_message,
-            "created_at": _iso(self.created_at),
-            "updated_at": _iso(self.updated_at),
-        }
-
-
-def _blog_dedup_scan_run_payload(model: BlogDedupScanRunModel) -> dict[str, Any]:
-    run_view = _MaintenanceRunPayloadView.from_model(model)
-    return run_view.as_payload() | {
-        "ruleset_version": model.ruleset_version,
-        "duration_ms": int(model.duration_ms),
-        "total_count": int(model.total_count),
-        "scanned_count": int(model.scanned_count),
-        "removed_count": int(model.removed_count),
-        "kept_count": int(model.kept_count),
-        "crawler_restart_attempted": bool(model.crawler_restart_attempted),
-        "crawler_restart_succeeded": bool(model.crawler_restart_succeeded),
-        "search_reindexed": bool(model.search_reindexed),
-    }
-
-
-def _blog_dedup_scan_run_item_payload(model: BlogDedupScanRunItemModel) -> dict[str, Any]:
-    return {
-        "id": int(model.id),
-        "run_id": int(model.run_id),
-        "survivor_blog_id": int(model.survivor_blog_id) if model.survivor_blog_id is not None else None,
-        "removed_blog_id": int(model.removed_blog_id) if model.removed_blog_id is not None else None,
-        "survivor_identity_key": model.survivor_identity_key,
-        "removed_url": model.removed_url,
-        "removed_normalized_url": model.removed_normalized_url,
-        "removed_domain": model.removed_domain,
-        "reason_code": model.reason_code,
-        "reason_codes": _load_reason_codes(model.reason_codes),
-        "survivor_selection_basis": model.survivor_selection_basis,
-        "created_at": _iso(model.created_at),
-    }
-
-
 def _decision_scan_ruleset_version(settings: Settings) -> str:
     """Describe the current URL decision-chain configuration in one string.
 
@@ -1620,6 +1741,14 @@ def _recommended_blog_payload(
     }
 
 
+DISCOVERY_SOURCE_LABELS = {
+    "seed": "种子导入",
+    "user": "用户手动添加",
+    "rss": "RSS 判定",
+    "model": "模型判定",
+}
+
+
 class RepositoryProtocol(Protocol):
     """Protocol shared by in-process and HTTP-backed repositories."""
 
@@ -1635,13 +1764,16 @@ class RepositoryProtocol(Protocol):
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
+        seed_source_path: str | None = None,
+        seed_source_row: int | None = None,
     ) -> tuple[int, bool]: ...
 
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None: ...
+    def list_seeds(self) -> list[dict[str, Any]]: ...
 
-    def get_next_priority_blog(self) -> dict[str, Any] | None: ...
+    def get_next_waiting_blog(self) -> dict[str, Any] | None: ...
 
-    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]: ...
+    def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]: ...
 
     def register_user(self, *, email: str, password: str) -> dict[str, Any]: ...
 
@@ -1651,22 +1783,25 @@ class RepositoryProtocol(Protocol):
 
     def revoke_user_session(self, *, token: str) -> bool: ...
 
+    def request_email_verification(self, *, email: str) -> dict[str, Any]: ...
+
+    def confirm_email_verification(self, *, token: str) -> dict[str, Any]: ...
+
+    def request_password_reset(self, *, email: str) -> dict[str, Any]: ...
+
+    def reset_user_password(self, *, token: str, password: str) -> dict[str, Any]: ...
+
+    def list_users(self, *, page: int = 1, page_size: int = 50) -> dict[str, Any]: ...
+
+    def update_user_role(self, *, user_id: int, role: str) -> dict[str, Any]: ...
+
     def list_user_label_selections(self, *, user_id: int, limit: int = 50) -> list[dict[str, Any]]: ...
 
     def count_user_label_selections(self, *, user_id: int) -> int: ...
 
-    def get_ingestion_request(
-        self,
-        *,
-        request_id: int,
-        request_token: str,
-    ) -> dict[str, Any] | None: ...
-
-    def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]: ...
-
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]: ...
 
-    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None: ...
+    def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None: ...
 
     def mark_blog_result(
         self,
@@ -1678,6 +1813,8 @@ class RepositoryProtocol(Protocol):
         metadata_captured: bool = False,
         title: str | None = None,
         icon_url: str | None = None,
+        crawl_error_kind: str | None = None,
+        crawl_error_message: str | None = None,
     ) -> None: ...
 
     def add_edge(
@@ -1731,7 +1868,45 @@ class RepositoryProtocol(Protocol):
         has_title: bool | str | None = None,
         has_icon: bool | str | None = None,
         min_connections: int | None = None,
+        acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
     ) -> dict[str, Any]: ...
+
+    def create_random_recommendation_batch(
+        self,
+        *,
+        count: int = 9,
+        visitor_id: str,
+        session_id: str,
+        user_id: int | None = None,
+        source: str | None = None,
+        page_url: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def record_blog_interaction(
+        self,
+        *,
+        event_uuid: str,
+        event_type: str,
+        blog_id: int,
+        visitor_id: str,
+        session_id: str,
+        entrance_kind: str,
+        entrance_url: str,
+        request_uuid: str | None = None,
+        impression_id: int | None = None,
+        position: int | None = None,
+        interaction_order: int = 1,
+        user_id: int | None = None,
+        client_event_at: str | datetime | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any] | None: ...
+
+    def get_recommendation_strategy_stats(self) -> dict[str, Any]: ...
+
+    def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]: ...
 
     def list_blog_labeling_candidates(
         self,
@@ -1789,24 +1964,6 @@ class RepositoryProtocol(Protocol):
 
     def get_filter_stats_by_chain_order(self) -> dict[str, Any]: ...
 
-    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]: ...
-
-    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]: ...
-
-    def finalize_blog_dedup_scan_run(
-        self,
-        *,
-        run_id: int,
-        crawler_restart_attempted: bool,
-        crawler_restart_succeeded: bool,
-        search_reindexed: bool,
-        error_message: str | None = None,
-    ) -> dict[str, Any]: ...
-
-    def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None: ...
-
-    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]: ...
-
     def reset(self) -> dict[str, Any]: ...
 
 
@@ -1817,17 +1974,22 @@ class SQLAlchemyRepository:
     database_url: str
     decision_settings: Settings | None = None
     startup_schema_sync: bool = True
+    public_base_url: str = "http://127.0.0.1:3000"
+    email_delivery: EmailDelivery = field(default_factory=NoopEmailDelivery)
+    email_dev_expose_tokens: bool = False
     engine: Any = field(init=False, repr=False)
     session_factory: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.decision_settings is not None:
+            self.public_base_url = self.decision_settings.public_base_url
+            self.email_dev_expose_tokens = self.decision_settings.email_dev_expose_tokens
         self.engine = create_persistence_engine(self.database_url)
         self.session_factory = create_session_factory(self.engine)
         if self.startup_schema_sync:
             Base.metadata.create_all(self.engine)
             ensure_legacy_compat_schema(self.engine)
         with session_scope(self.session_factory) as session:
-            self._fail_orphaned_dedup_scan_runs(session)
             self._requeue_processing(session)
 
     @property
@@ -1841,29 +2003,6 @@ class SQLAlchemyRepository:
                 BlogModel.updated_at: now_utc(),
             }
         )
-        session.query(IngestionRequestModel).filter(
-            IngestionRequestModel.status == INGESTION_REQUEST_STATUS_CRAWLING_SEED
-        ).update(
-            {
-                IngestionRequestModel.status: INGESTION_REQUEST_STATUS_QUEUED,
-                IngestionRequestModel.updated_at: now_utc(),
-            }
-        )
-
-    def _fail_orphaned_dedup_scan_runs(self, session: Session) -> None:
-        orphaned_runs = session.scalars(
-            select(BlogDedupScanRunModel).where(BlogDedupScanRunModel.status == "RUNNING")
-        ).all()
-        if not orphaned_runs:
-            return
-        failed_at = now_utc()
-        for run in orphaned_runs:
-            started_at = _sortable_datetime(run.started_at)
-            run.status = "FAILED"
-            run.completed_at = failed_at
-            run.duration_ms = max(int((failed_at - started_at).total_seconds() * 1000), 0)
-            run.error_message = "orphaned_dedup_scan_run_cleaned_on_startup"
-            run.updated_at = failed_at
 
     def _get_blog_by_business_id(self, session: Session, blog_id: int) -> BlogModel | None:
         """Return one blog row by business ``blog_id``."""
@@ -1957,52 +2096,6 @@ class SQLAlchemyRepository:
             activity_at=row.activity_at,
             identity_complete=bool(row.identity_complete),
         )
-
-    def _serialize_ingestion_request_payload(
-        self,
-        session: Session,
-        request: IngestionRequestModel,
-        *,
-        serializer: Callable[..., dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Resolve request blogs once and pass them to the chosen serializer."""
-        seed_blog, matched_blog = self._resolve_ingestion_request_blogs(session, request)
-        return serializer(request, seed_blog=seed_blog, matched_blog=matched_blog)
-
-    def _serialize_ingestion_request_payloads(
-        self,
-        session: Session,
-        requests: list[IngestionRequestModel],
-        *,
-        serializer: Callable[..., dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Resolve and serialize multiple ingestion requests using the shared serializer handoff."""
-        return [
-            self._serialize_ingestion_request_payload(
-                session,
-                request,
-                serializer=serializer,
-            )
-            for request in requests
-        ]
-
-    def _resolve_ingestion_request_blogs(
-        self,
-        session: Session,
-        request: IngestionRequestModel,
-    ) -> tuple[BlogModel | None, BlogModel | None]:
-        """Resolve the seed and matched blogs referenced by one ingestion request."""
-        seed_blog = (
-            self._get_blog_by_business_id(session, request.seed_blog_id)
-            if request.seed_blog_id is not None
-            else None
-        )
-        matched_blog = (
-            self._get_blog_by_business_id(session, request.matched_blog_id)
-            if request.matched_blog_id is not None
-            else None
-        )
-        return seed_blog, matched_blog
 
     def _latest_row_payload(
         self,
@@ -2136,10 +2229,8 @@ class SQLAlchemyRepository:
         """
 
         admin_non_blog = _non_blog_label_count_expr(BlogLabelModel.label_id)
-        user_blog_count = _json_label_count_expr(BlogUserLabelModel.label_id, BLOG_LABEL_BLOG_ID)
         user_non_blog_count = _non_blog_label_count_expr(BlogUserLabelModel.label_id)
-        raw_weight = cast(10 + user_blog_count, Float) / cast(1 + user_non_blog_count, Float)
-        random_weight = case((raw_weight > 10, 10.0), else_=raw_weight)
+        random_weight = cast(10, Float) / cast(1 + user_non_blog_count, Float)
         return (
             statement.outerjoin(BlogLabelModel, BlogLabelModel.normalized_url == BlogModel.normalized_url)
             .outerjoin(BlogUserLabelModel, BlogUserLabelModel.normalized_url == BlogModel.normalized_url)
@@ -2185,6 +2276,212 @@ class SQLAlchemyRepository:
             }
             for edge in edges
         ]
+
+    def _blog_discovery_path_payload(self, session: Session, blog: BlogModel) -> dict[str, Any]:
+        """Return a compact discovery-path payload for one blog.
+
+        Args:
+            session: Active database session used for tracing raw discoveries.
+            blog: Blog row being displayed on the detail page.
+
+        Returns:
+            Payload with discovery mode and ordered path steps from origin to
+            target. Manual seed/user blogs return a single-step path.
+        """
+
+        path_reversed: list[dict[str, Any]] = []
+        visited_blog_ids: set[int] = set()
+        current_blog: BlogModel | None = blog
+        while current_blog is not None:
+            if current_blog is None:
+                break
+            current_blog_id = int(_business_blog_id(current_blog))
+            if current_blog_id in visited_blog_ids:
+                break
+            visited_blog_ids.add(current_blog_id)
+            accepted_by = str(current_blog.accepted_by or "").strip().lower()
+            if accepted_by in {"seed", "user"}:
+                path_reversed.append(self._discovery_path_step(current_blog, raw=None, edge=None))
+                break
+            incoming_edge = self._earliest_incoming_discovery_edge(session, current_blog_id)
+            raw = (
+                self._success_raw_for_edge(session, incoming_edge)
+                if incoming_edge is not None
+                else self._earliest_success_raw_for_blog(session, current_blog)
+            )
+            path_reversed.append(self._discovery_path_step(current_blog, raw=raw, edge=incoming_edge))
+            source_blog_id = int(incoming_edge.from_blog_id) if incoming_edge is not None else (
+                int(raw.source_blog_id) if raw is not None else None
+            )
+            if source_blog_id is None:
+                break
+            current_blog = self._get_blog_by_business_id(session, source_blog_id)
+
+        path = list(reversed(path_reversed))
+        origin_source = str(path[0].get("accepted_by") or path[0].get("raw_accepted_by") or "").strip().lower() if path else ""
+        target_source = str(path[-1].get("accepted_by") or path[-1].get("raw_accepted_by") or "").strip().lower() if path else ""
+        mode = "manual" if target_source in {"seed", "user"} and len(path) == 1 else "crawled"
+        if origin_source in {"seed", "user"} and mode == "crawled":
+            origin_label = DISCOVERY_SOURCE_LABELS.get(origin_source, origin_source)
+        else:
+            origin_label = "发现链路"
+        return {
+            "mode": mode,
+            "origin_source": origin_source or None,
+            "origin_label": origin_label,
+            "target_source": target_source or None,
+            "truncated": False,
+            "steps": path,
+        }
+
+    def _earliest_incoming_discovery_edge(self, session: Session, blog_id: int) -> EdgeModel | None:
+        """Return the earliest non-self incoming edge that discovered a blog."""
+
+        return session.scalar(
+            select(EdgeModel)
+            .where(
+                EdgeModel.to_blog_id == blog_id,
+                EdgeModel.from_blog_id != blog_id,
+            )
+            .order_by(EdgeModel.discovered_at.asc(), EdgeModel.id.asc())
+            .limit(1)
+        )
+
+    def _success_raw_for_edge(self, session: Session, edge: EdgeModel) -> RawDiscoveredUrlModel | None:
+        """Return the successful raw discovery row that produced one edge when available."""
+
+        candidate_urls = {
+            str(edge.link_url_raw or ""),
+            normalize_url(str(edge.link_url_raw or "")).normalized_url,
+            resolve_blog_identity(str(edge.link_url_raw or "")).canonical_url,
+        }
+        return session.scalar(
+            select(RawDiscoveredUrlModel)
+            .where(
+                RawDiscoveredUrlModel.source_blog_id == int(edge.from_blog_id),
+                RawDiscoveredUrlModel.normalized_url.in_([url for url in candidate_urls if url]),
+                RawDiscoveredUrlModel.status == RAW_DISCOVERED_URL_SUCCESS_STATUS,
+            )
+            .order_by(RawDiscoveredUrlModel.id.asc())
+            .limit(1)
+        )
+
+    def _earliest_success_raw_for_blog(self, session: Session, blog: BlogModel) -> RawDiscoveredUrlModel | None:
+        """Return the earliest successful raw discovery row for one blog."""
+
+        candidate_urls = {str(blog.normalized_url or ""), str(blog.url or "")}
+        identity = resolve_blog_identity(str(blog.url or blog.normalized_url or ""))
+        candidate_urls.add(identity.canonical_url)
+        normalized = normalize_url(str(blog.url or blog.normalized_url or ""))
+        candidate_urls.add(normalized.normalized_url)
+        return session.scalar(
+            select(RawDiscoveredUrlModel)
+            .where(
+                RawDiscoveredUrlModel.normalized_url.in_([url for url in candidate_urls if url]),
+                RawDiscoveredUrlModel.status == RAW_DISCOVERED_URL_SUCCESS_STATUS,
+            )
+            .order_by(RawDiscoveredUrlModel.id.asc())
+            .limit(1)
+        )
+
+    def _discovery_path_step(
+        self,
+        blog: BlogModel,
+        *,
+        raw: RawDiscoveredUrlModel | None,
+        edge: EdgeModel | None,
+    ) -> dict[str, Any]:
+        """Serialize one blog as a discovery path step."""
+
+        blog_view = _BlogPayloadView.from_model(blog)
+        accepted_by = str(blog.accepted_by or "").strip().lower() or None
+        raw_accepted_by = str(raw.accepted_by or "").strip().lower() if raw is not None else None
+        source = accepted_by or raw_accepted_by
+        raw_source_blog_id = int(raw.source_blog_id) if raw is not None else (
+            int(edge.from_blog_id) if edge is not None else None
+        )
+        discovered_at = _iso(raw.discovered_at) if raw is not None else (
+            _iso(edge.discovered_at) if edge is not None else None
+        )
+        return {
+            "blog": blog_view.as_neighbor_payload() if blog_view is not None else None,
+            "blog_id": int(_business_blog_id(blog)),
+            "url": str(blog.url or ""),
+            "domain": str(blog.domain or ""),
+            "accepted_by": accepted_by,
+            "accepted_label": DISCOVERY_SOURCE_LABELS.get(str(source or ""), source),
+            "raw_id": int(raw.id) if raw is not None else None,
+            "raw_source_blog_id": raw_source_blog_id,
+            "raw_accepted_by": raw_accepted_by or None,
+            "discovered_at": discovered_at,
+        }
+
+    def _blog_relation_graph_payload(
+        self,
+        session: Session,
+        *,
+        blog: BlogModel,
+        direction: str,
+        depth: int = 2,
+    ) -> dict[str, Any]:
+        """Return a small directional relation graph around one blog.
+
+        Args:
+            session: Active database session.
+            blog: Focus blog for the graph.
+            direction: Either ``incoming`` for upstream sources or
+                ``outgoing`` for downstream targets.
+            depth: Number of graph layers to traverse.
+
+        Returns:
+            Payload with normalized graph nodes, directed edges, focus blog id,
+            direction, and depth metadata.
+        """
+
+        focus_id = int(_business_blog_id(blog))
+        node_ids: set[int] = {focus_id}
+        edges_by_id: dict[int, EdgeModel] = {}
+        frontier = {focus_id}
+        for layer_index in range(depth):
+            next_frontier: set[int] = set()
+            for current_id in sorted(frontier):
+                if direction == "incoming":
+                    statement = (
+                        select(EdgeModel)
+                        .where(EdgeModel.to_blog_id == current_id, EdgeModel.from_blog_id != current_id)
+                        .order_by(EdgeModel.discovered_at.asc(), EdgeModel.id.asc())
+                    )
+                else:
+                    statement = (
+                        select(EdgeModel)
+                        .where(EdgeModel.from_blog_id == current_id, EdgeModel.to_blog_id != current_id)
+                        .order_by(EdgeModel.discovered_at.asc(), EdgeModel.id.asc())
+                    )
+                layer_edges = session.scalars(statement).all()
+                for edge in layer_edges:
+                    edges_by_id[int(edge.id)] = edge
+                    related_id = int(edge.from_blog_id) if direction == "incoming" else int(edge.to_blog_id)
+                    if related_id not in node_ids:
+                        next_frontier.add(related_id)
+                    node_ids.add(related_id)
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        blog_rows = session.execute(
+            self._blog_select()[0].where(BlogModel.blog_id.in_(sorted(node_ids)))
+        ).all()
+        nodes_by_id: dict[int, dict[str, Any]] = {}
+        for row in blog_rows:
+            payload = self._row_blog_payload(row)
+            nodes_by_id[int(payload["blog_id"])] = payload
+        return {
+            "direction": direction,
+            "focus_blog_id": focus_id,
+            "depth": depth,
+            "nodes": [nodes_by_id[node_id] for node_id in sorted(node_ids) if node_id in nodes_by_id],
+            "edges": [_edge_payload(edge) for edge in sorted(edges_by_id.values(), key=lambda item: int(item.id))],
+        }
 
     def _recommended_blog_rows(
         self,
@@ -2270,6 +2567,7 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
         preferred_blog_id: int | None = None,
     ) -> tuple[BlogModel, bool]:
         """Create or update one blog row and initialize its business id.
@@ -2282,6 +2580,8 @@ class SQLAlchemyRepository:
             email: Optional contact email to fill when the row is missing one.
             feed_url: Optional RSS/Atom feed URL discovered for the blog. Stored
                 when present; an existing feed is never overwritten with ``None``.
+            accepted_by: Optional acceptance source such as ``seed``, ``rss``,
+                or ``model``. When present, the blog is durably accepted.
             preferred_blog_id: Preferred externally meaningful ``blogs.blog_id``.
 
         Returns:
@@ -2313,6 +2613,12 @@ class SQLAlchemyRepository:
                 existing.email = email
             if feed_url is not None and not (existing.feed_url or "").strip():
                 existing.feed_url = feed_url
+            if existing.acceptance_status != BLOG_ACCEPTANCE_ACCEPTED:
+                existing.acceptance_status = BLOG_ACCEPTANCE_ACCEPTED
+                existing.accepted_at = existing.accepted_at or now_utc()
+            if accepted_by is not None:
+                existing.accepted_by = accepted_by
+                existing.accepted_at = existing.accepted_at or now_utc()
             existing.identity_key = identity.identity_key
             existing.identity_reason_codes = _dump_reason_codes(identity.reason_codes)
             existing.identity_ruleset_version = identity.ruleset_version
@@ -2335,6 +2641,9 @@ class SQLAlchemyRepository:
             domain=stored_domain,
             email=email,
             feed_url=feed_url,
+            acceptance_status=BLOG_ACCEPTANCE_ACCEPTED,
+            accepted_by=accepted_by,
+            accepted_at=now_utc(),
             crawl_status=CrawlStatus.WAITING,
             friend_links_count=0,
             created_at=now_utc(),
@@ -2429,9 +2738,9 @@ class SQLAlchemyRepository:
             blog_id: Blog identifier that should be removed from persistence.
 
         Returns:
-            ``None``. The blog, its edges, and dangling ingestion references
-            are removed or cleared in place. URL-keyed label assignments are
-            intentionally preserved across graph cleanup.
+            ``None``. The blog and its edges are removed in place.
+            URL-keyed label assignments are intentionally preserved across
+            graph cleanup.
         """
         edge_ids = session.scalars(
             select(EdgeModel.id).where(
@@ -2443,12 +2752,6 @@ class SQLAlchemyRepository:
         ).all()
         if edge_ids:
             session.query(EdgeModel).filter(EdgeModel.id.in_(edge_ids)).delete(synchronize_session=False)
-        session.query(IngestionRequestModel).filter(
-            IngestionRequestModel.seed_blog_id == blog_id
-        ).update({IngestionRequestModel.seed_blog_id: None})
-        session.query(IngestionRequestModel).filter(
-            IngestionRequestModel.matched_blog_id == blog_id
-        ).update({IngestionRequestModel.matched_blog_id: None})
         blog = self._get_blog_by_business_id(session, blog_id)
         if blog is not None:
             session.delete(blog)
@@ -2467,6 +2770,9 @@ class SQLAlchemyRepository:
         domain: str,
         email: str | None = None,
         feed_url: str | None = None,
+        accepted_by: str | None = None,
+        seed_source_path: str | None = None,
+        seed_source_row: int | None = None,
     ) -> tuple[int, bool]:
         with session_scope(self.session_factory) as session:
             blog, inserted = self._upsert_blog_in_session(
@@ -2476,113 +2782,150 @@ class SQLAlchemyRepository:
                 domain=domain,
                 email=email,
                 feed_url=feed_url,
+                accepted_by=accepted_by,
             )
+            if accepted_by == "seed":
+                self._upsert_seed_in_session(
+                    session,
+                    url=url,
+                    normalized_url=str(blog.normalized_url),
+                    domain=str(blog.domain),
+                    blog_id=int(_business_blog_id(blog)),
+                    source_path=seed_source_path,
+                    source_row=seed_source_row,
+                )
             return int(_business_blog_id(blog)), inserted
 
-    def create_ingestion_request(self, *, homepage_url: str, email: str) -> dict[str, Any]:
-        requested_url, normalized_url, domain, identity_key, reason_codes, ruleset_version = normalize_homepage_url(
+    def _upsert_seed_in_session(
+        self,
+        session: Session,
+        *,
+        url: str,
+        normalized_url: str,
+        domain: str,
+        blog_id: int,
+        source_path: str | None = None,
+        source_row: int | None = None,
+    ) -> SeedModel:
+        """Create or refresh the durable seed row for one imported URL.
+
+        Args:
+            session: Active SQLAlchemy session that already contains the blog
+                upsert for the same import.
+            url: Original URL from the seed CSV row.
+            normalized_url: Stored blog normalized URL after identity
+                canonicalization.
+            domain: Stored blog domain.
+            blog_id: Business blog identifier linked from the seed row.
+            source_path: Optional CSV path used for traceability.
+            source_row: Optional one-based CSV data row number.
+
+        Returns:
+            The created or updated seed row.
+        """
+
+        imported_at = now_utc()
+        seed = session.scalar(select(SeedModel).where(SeedModel.normalized_url == normalized_url))
+        if seed is None:
+            seed = SeedModel(
+                url=url,
+                normalized_url=normalized_url,
+                domain=domain,
+                source_path=source_path,
+                source_row=source_row,
+                blog_id=blog_id,
+                imported_at=imported_at,
+                updated_at=imported_at,
+            )
+            session.add(seed)
+            session.flush()
+            return seed
+
+        seed.url = url
+        seed.domain = domain
+        seed.blog_id = blog_id
+        seed.source_path = source_path
+        seed.source_row = source_row
+        seed.updated_at = imported_at
+        return seed
+
+    def list_seeds(self) -> list[dict[str, Any]]:
+        """Return all durable seed rows in deterministic insertion order.
+
+        Args:
+            None.
+
+        Returns:
+            Seed payloads ordered by primary key for bootstrap replay.
+        """
+
+        with session_scope(self.session_factory) as session:
+            return self._ordered_row_payloads(
+                session,
+                statement=select(SeedModel).order_by(SeedModel.id.asc()),
+                serializer=_seed_payload,
+            )
+
+    def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
+        """Accept one user-submitted URL as a crawler seed after rule checks.
+
+        Args:
+            homepage_url: Complete blog homepage URL provided by a public user.
+
+        Returns:
+            Payload describing the accepted blog and whether a row was inserted.
+
+        Raises:
+            ValueError: Raised when URL normalization fails or deterministic
+                rule filters reject the URL.
+        """
+
+        requested_url, normalized_url, domain, _identity_key, _reason_codes, _ruleset_version = normalize_homepage_url(
             homepage_url
         )
-        normalized_email = normalize_ingestion_email(email)
+        settings = self._decision_scan_settings()
+        decision_chain = build_url_decision_chain(settings)
+        candidate = UrlCandidateContext(
+            source_blog_id=0,
+            source_domain="",
+            normalized_url=normalized_url,
+            link_text="user",
+            context_text="user-submitted seed",
+        )
+        for rule_filter in decision_chain.rule_filters:
+            decision = rule_filter.apply(candidate)
+            if not decision.accepted:
+                raise ValueError(str(decision.status or "rule_filter_rejected"))
+
         with session_scope(self.session_factory) as session:
-            existing_blog = session.scalar(
-                select(BlogModel).where(BlogModel.identity_key == identity_key)
-            )
-            if existing_blog is not None and not (existing_blog.email or "").strip():
-                existing_blog.email = normalized_email
-            if existing_blog is not None:
-                if _uses_tenant_root_canonicalization(reason_codes):
-                    existing_blog.url = normalized_url
-                    existing_blog.normalized_url = normalized_url
-                    existing_blog.domain = domain
-                existing_blog.identity_key = identity_key
-                existing_blog.identity_reason_codes = _dump_reason_codes(reason_codes)
-                existing_blog.identity_ruleset_version = ruleset_version
-                existing_blog.updated_at = now_utc()
-
-            if existing_blog is not None and existing_blog.crawl_status == CrawlStatus.FINISHED:
-                existing_blog_view = _BlogPayloadView.from_model(existing_blog)
-                return {
-                    "status": INGESTION_REQUEST_STATUS_DEDUPED_EXISTING,
-                    "blog_id": int(_business_blog_id(existing_blog)),
-                    "matched_blog_id": int(_business_blog_id(existing_blog)),
-                    "request_id": None,
-                    "request_token": None,
-                    "blog": existing_blog_view.as_blog_payload() if existing_blog_view is not None else None,
-                }
-
-            existing_request = self._oldest_ingestion_request(
+            blog, inserted = self._upsert_blog_in_session(
                 session,
-                filters=(IngestionRequestModel.identity_key == identity_key,),
-                statuses=tuple(ACTIVE_INGESTION_REQUEST_STATUSES),
-            )
-            if existing_request is not None:
-                if not (existing_request.requester_email or "").strip():
-                    existing_request.requester_email = normalized_email
-                if _uses_tenant_root_canonicalization(reason_codes):
-                    existing_request.normalized_url = normalized_url
-                existing_request.identity_key = identity_key
-                existing_request.identity_reason_codes = _dump_reason_codes(reason_codes)
-                existing_request.identity_ruleset_version = ruleset_version
-                existing_request.updated_at = now_utc()
-                return self._serialize_ingestion_request_payload(
-                    session,
-                    existing_request,
-                    serializer=_ingestion_request_payload,
-                )
-
-            if existing_blog is None:
-                existing_blog = BlogModel(
-                    blog_id=None,
-                    url=normalized_url,
-                    normalized_url=normalized_url,
-                    identity_key=identity_key,
-                    identity_reason_codes=_dump_reason_codes(reason_codes),
-                    identity_ruleset_version=ruleset_version,
-                    domain=domain,
-                    email=normalized_email,
-                    crawl_status=CrawlStatus.WAITING,
-                    friend_links_count=0,
-                    created_at=now_utc(),
-                    updated_at=now_utc(),
-                )
-                session.add(existing_blog)
-                session.flush()
-                existing_blog.blog_id = int(existing_blog.id)
-                session.flush()
-            elif existing_blog.crawl_status == CrawlStatus.FAILED:
-                existing_blog.crawl_status = CrawlStatus.WAITING
-                existing_blog.updated_at = now_utc()
-
-            request_status = (
-                INGESTION_REQUEST_STATUS_CRAWLING_SEED
-                if existing_blog.crawl_status == CrawlStatus.PROCESSING
-                else INGESTION_REQUEST_STATUS_QUEUED
-            )
-            request = IngestionRequestModel(
-                requested_url=requested_url,
+                url=requested_url,
                 normalized_url=normalized_url,
-                identity_key=identity_key,
-                identity_reason_codes=_dump_reason_codes(reason_codes),
-                identity_ruleset_version=ruleset_version,
-                requester_email=normalized_email,
-                status=request_status,
-                priority=100,
-                seed_blog_id=int(_business_blog_id(existing_blog)),
-                matched_blog_id=None,
-                request_token=token_urlsafe(18),
-                expires_at=None,
-                error_message=None,
-                created_at=now_utc(),
-                updated_at=now_utc(),
+                domain=domain,
+                accepted_by="user",
             )
-            session.add(request)
-            session.flush()
-            return self._serialize_ingestion_request_payload(
+            if blog.crawl_status == CrawlStatus.FAILED:
+                blog.crawl_status = CrawlStatus.WAITING
+                blog.crawl_error_kind = None
+                blog.crawl_error_message = None
+            blog.updated_at = now_utc()
+            self._upsert_seed_in_session(
                 session,
-                request,
-                serializer=_ingestion_request_payload,
+                url=requested_url,
+                normalized_url=str(blog.normalized_url),
+                domain=str(blog.domain),
+                blog_id=int(_business_blog_id(blog)),
+                source_path="user",
+                source_row=None,
             )
+            blog_view = _BlogPayloadView.from_model(blog)
+            return {
+                "status": "QUEUED" if blog.crawl_status == CrawlStatus.WAITING else "EXISTING",
+                "blog_id": int(_business_blog_id(blog)),
+                "inserted": inserted,
+                "blog": blog_view.as_blog_payload() if blog_view is not None else None,
+            }
 
     def _create_user_session_payload(self, session: Session, user: UserModel) -> dict[str, Any]:
         """Create one session row and return the auth response payload.
@@ -2606,6 +2949,7 @@ class SQLAlchemyRepository:
             revoked_at=None,
         )
         session.add(session_row)
+        user.last_login_at = timestamp
         user.updated_at = timestamp
         session.flush()
         return {
@@ -2614,19 +2958,201 @@ class SQLAlchemyRepository:
             "user": _user_payload(user),
         }
 
+    def _record_user_audit_event(
+        self,
+        session: Session,
+        *,
+        user_id: int | None,
+        event_type: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Append one user audit event without storing raw secrets.
+
+        Args:
+            session: Active SQLAlchemy session.
+            user_id: Optional user ID attached to the event.
+            event_type: Stable event name.
+            details: Optional JSON-safe metadata. Raw tokens and passwords must
+                not be supplied.
+
+        Returns:
+            None.
+        """
+
+        session.add(
+            UserAuditEventModel(
+                user_id=user_id,
+                event_type=event_type,
+                details=_coerce_json_object(details),
+                created_at=now_utc(),
+            )
+        )
+
+    def _create_lifecycle_token(
+        self,
+        session: Session,
+        *,
+        user: UserModel,
+        purpose: str,
+        ttl_hours: int,
+    ) -> dict[str, Any]:
+        """Create one hashed lifecycle token and return its raw one-time value.
+
+        Args:
+            session: Active SQLAlchemy session.
+            user: User row that owns the token.
+            purpose: Token purpose such as email verification or password reset.
+            ttl_hours: Token lifetime in hours.
+
+        Returns:
+            JSON payload containing the raw token once and expiry metadata.
+        """
+
+        timestamp = now_utc()
+        token = token_urlsafe(32)
+        row = UserVerificationTokenModel(
+            user_id=int(user.id),
+            token_hash=_hash_user_lifecycle_token(token),
+            purpose=purpose,
+            created_at=timestamp,
+            expires_at=timestamp + timedelta(hours=ttl_hours),
+            consumed_at=None,
+        )
+        session.add(row)
+        session.flush()
+        return {
+            "token": token,
+            "expires_at": _iso(row.expires_at),
+        }
+
+    def _consume_lifecycle_token(
+        self,
+        session: Session,
+        *,
+        token: str,
+        purpose: str,
+    ) -> tuple[UserVerificationTokenModel, UserModel]:
+        """Consume one valid lifecycle token and return its row plus user.
+
+        Args:
+            session: Active SQLAlchemy session.
+            token: Raw token supplied by the caller.
+            purpose: Required token purpose.
+
+        Returns:
+            Tuple of token row and owning user row.
+
+        Raises:
+            UserAuthError: Raised when the token is invalid, expired, consumed,
+                or points to a missing/inactive user.
+        """
+
+        clean_token = token.strip()
+        if not clean_token:
+            raise UserAuthError("invalid_token")
+        timestamp = now_utc()
+        row = session.scalar(
+            select(UserVerificationTokenModel).where(
+                UserVerificationTokenModel.token_hash == _hash_user_lifecycle_token(clean_token),
+                UserVerificationTokenModel.purpose == purpose,
+                UserVerificationTokenModel.consumed_at.is_(None),
+                UserVerificationTokenModel.expires_at > timestamp,
+            ).limit(1)
+        )
+        if row is None:
+            raise UserAuthError("invalid_token")
+        user = session.scalar(select(UserModel).where(UserModel.id == row.user_id).limit(1))
+        if user is None or not user.is_active:
+            raise UserAuthError("invalid_token")
+        row.consumed_at = timestamp
+        return row, user
+
+    def _email_verification_payload(self, token_payload: dict[str, Any]) -> dict[str, Any]:
+        """Return an email verification response payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Payload containing delivery status and expiry. Development mode also
+            includes the raw token and verification URL for local manual flows.
+        """
+
+        token = str(token_payload["token"])
+        verification_url = f"{self.public_base_url}/profile?verify_token={token}"
+        payload = {
+            "sent": True,
+            "expires_at": token_payload["expires_at"],
+        }
+        if self.email_dev_expose_tokens:
+            payload["verification_token"] = token
+            payload["verification_url"] = verification_url
+        return payload
+
+    def _verification_url(self, token_payload: dict[str, Any]) -> str:
+        """Build the public email verification URL for one raw token payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Public frontend URL that consumes the one-time verification token.
+        """
+
+        return f"{self.public_base_url}/profile?verify_token={token_payload['token']}"
+
+    def _password_reset_payload(self, token_payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a password reset response payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Payload containing delivery status and expiry. Development mode also
+            includes the raw token and reset URL for local manual flows.
+        """
+
+        token = str(token_payload["token"])
+        reset_url = f"{self.public_base_url}/profile?reset_token={token}"
+        payload = {
+            "sent": True,
+            "expires_at": token_payload["expires_at"],
+        }
+        if self.email_dev_expose_tokens:
+            payload["reset_token"] = token
+            payload["reset_url"] = reset_url
+        return payload
+
+    def _password_reset_url(self, token_payload: dict[str, Any]) -> str:
+        """Build the public password reset URL for one raw token payload.
+
+        Args:
+            token_payload: Raw lifecycle token payload returned by
+                `_create_lifecycle_token`.
+
+        Returns:
+            Public frontend URL that consumes the one-time reset token.
+        """
+
+        return f"{self.public_base_url}/profile?reset_token={token_payload['token']}"
+
     def register_user(self, *, email: str, password: str) -> dict[str, Any]:
-        """Create a user account and first login session.
+        """Create a pending registration and send a verification email.
 
         Args:
             email: User email address used as the login identifier.
-            password: Plaintext password to hash and store.
+            password: Plaintext password to hash and hold until verification.
 
         Returns:
-            Auth payload with bearer token and user profile.
+            Email verification delivery payload.
 
         Raises:
             ValueError: Raised for invalid email or weak password.
-            UserAuthError: Raised when the email is already registered.
+            UserAuthError: Raised when the email is already registered or has a
+                still-valid pending registration.
         """
 
         normalized_email = _normalize_user_email(email)
@@ -2636,16 +3162,45 @@ class SQLAlchemyRepository:
             existing = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
             if existing is not None:
                 raise UserAuthError("email_already_registered")
-            user = UserModel(
+            pending = session.scalar(
+                select(PendingUserRegistrationModel)
+                .where(
+                    PendingUserRegistrationModel.email == normalized_email,
+                    PendingUserRegistrationModel.consumed_at.is_(None),
+                    PendingUserRegistrationModel.expires_at > timestamp,
+                )
+                .limit(1)
+            )
+            if pending is not None:
+                raise UserAuthError("email_registration_pending")
+            session.query(PendingUserRegistrationModel).filter(
+                PendingUserRegistrationModel.email == normalized_email
+            ).delete(synchronize_session=False)
+            token_payload = {
+                "token": token_urlsafe(32),
+                "expires_at": _iso(timestamp + timedelta(hours=PENDING_REGISTRATION_TTL_HOURS)),
+            }
+            pending = PendingUserRegistrationModel(
                 email=normalized_email,
                 password_hash=_hash_password(validated_password),
-                display_name=normalized_email.split("@", 1)[0],
+                token_hash=_hash_user_lifecycle_token(str(token_payload["token"])),
                 created_at=timestamp,
-                updated_at=timestamp,
+                expires_at=timestamp + timedelta(hours=PENDING_REGISTRATION_TTL_HOURS),
+                consumed_at=None,
             )
-            session.add(user)
+            session.add(pending)
+            self.email_delivery.send_verification_email(
+                to_email=normalized_email,
+                verification_url=self._verification_url(token_payload),
+            )
+            self._record_user_audit_event(
+                session,
+                user_id=None,
+                event_type="user.registration_verification_sent",
+                details={"email": normalized_email},
+            )
             session.flush()
-            return self._create_user_session_payload(session, user)
+            return self._email_verification_payload(token_payload)
 
     def login_user(self, *, email: str, password: str) -> dict[str, Any]:
         """Authenticate an existing user and create a fresh session.
@@ -2665,8 +3220,9 @@ class SQLAlchemyRepository:
         normalized_email = _normalize_user_email(email)
         with session_scope(self.session_factory) as session:
             user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
-            if user is None or not _verify_password(password, user.password_hash):
+            if user is None or not user.is_active or not _verify_password(password, user.password_hash):
                 raise UserAuthError("invalid_credentials")
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.login")
             return self._create_user_session_payload(session, user)
 
     def _active_user_by_session_token(self, session: Session, *, token: str) -> UserModel | None:
@@ -2694,7 +3250,8 @@ class SQLAlchemyRepository:
         )
         if row is None:
             return None
-        return session.scalar(select(UserModel).where(UserModel.id == row.user_id).limit(1))
+        user = session.scalar(select(UserModel).where(UserModel.id == row.user_id, UserModel.is_active.is_(True)).limit(1))
+        return user
 
     def get_user_by_session_token(self, *, token: str) -> dict[str, Any] | None:
         """Load the current user for one bearer token.
@@ -2736,42 +3293,217 @@ class SQLAlchemyRepository:
             session.flush()
             return True
 
-    def get_ingestion_request(
-        self,
-        *,
-        request_id: int,
-        request_token: str,
-    ) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            request = session.scalar(
-                select(IngestionRequestModel).where(IngestionRequestModel.id == request_id)
-            )
-            if request is None or request.request_token != request_token:
-                return None
-            return self._serialize_ingestion_request_payload(
-                session,
-                request,
-                serializer=_ingestion_request_payload,
-            )
+    def request_email_verification(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh email verification token for one account.
 
-    def list_priority_ingestion_requests(self, *, limit: int = INGESTION_PRIORITY_LIST_LIMIT) -> list[dict[str, Any]]:
-        resolved_limit = max(1, min(int(limit), INGESTION_PRIORITY_LIST_LIMIT))
-        active_sort = case(
-            (IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)), 0),
-            else_=1,
-        )
+        Args:
+            email: Account email address.
+
+        Returns:
+            Dev-friendly verification payload. Unknown emails receive the same
+            neutral `sent` shape without token fields.
+        """
+
+        normalized_email = _normalize_user_email(email)
         with session_scope(self.session_factory) as session:
-            requests = session.scalars(
-                select(IngestionRequestModel)
-                .where(IngestionRequestModel.priority >= 100)
-                .order_by(active_sort.asc(), IngestionRequestModel.created_at.desc(), IngestionRequestModel.id.desc())
-                .limit(resolved_limit)
-            ).all()
-            return self._serialize_ingestion_request_payloads(
+            user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
+            if user is None or not user.is_active:
+                return {"sent": True}
+            if user.email_verified_at is not None:
+                return {"sent": True, "already_verified": True}
+            token_payload = self._create_lifecycle_token(
                 session,
-                requests,
-                serializer=_priority_ingestion_request_payload,
+                user=user,
+                purpose=USER_TOKEN_EMAIL_VERIFICATION,
+                ttl_hours=USER_EMAIL_VERIFICATION_TTL_HOURS,
             )
+            self.email_delivery.send_verification_email(
+                to_email=normalized_email,
+                verification_url=self._verification_url(token_payload),
+            )
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.email_verification_requested")
+            return self._email_verification_payload(token_payload)
+
+    def confirm_email_verification(self, *, token: str) -> dict[str, Any]:
+        """Consume an email verification token and activate the account.
+
+        Args:
+            token: Raw verification token supplied by the user.
+
+        Returns:
+            Created or updated user profile payload.
+        """
+
+        clean_token = token.strip()
+        if not clean_token:
+            raise UserAuthError("invalid_token")
+        with session_scope(self.session_factory) as session:
+            timestamp = now_utc()
+            pending = session.scalar(
+                select(PendingUserRegistrationModel)
+                .where(
+                    PendingUserRegistrationModel.token_hash == _hash_user_lifecycle_token(clean_token),
+                    PendingUserRegistrationModel.consumed_at.is_(None),
+                    PendingUserRegistrationModel.expires_at > timestamp,
+                )
+                .limit(1)
+            )
+            if pending is not None:
+                existing = session.scalar(select(UserModel).where(UserModel.email == pending.email).limit(1))
+                if existing is not None:
+                    pending.consumed_at = timestamp
+                    raise UserAuthError("email_already_registered")
+                user = UserModel(
+                    email=str(pending.email),
+                    password_hash=str(pending.password_hash),
+                    display_name=str(pending.email).split("@", 1)[0],
+                    role=USER_ROLE_USER,
+                    is_active=True,
+                    email_verified_at=timestamp,
+                    password_changed_at=None,
+                    last_login_at=None,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                session.add(user)
+                pending.consumed_at = timestamp
+                session.flush()
+                self._record_user_audit_event(session, user_id=int(user.id), event_type="user.registered")
+                self._record_user_audit_event(session, user_id=int(user.id), event_type="user.email_verified")
+                session.flush()
+                return _user_payload(user)
+
+            _, user = self._consume_lifecycle_token(
+                session,
+                token=clean_token,
+                purpose=USER_TOKEN_EMAIL_VERIFICATION,
+            )
+            user.email_verified_at = timestamp
+            user.updated_at = timestamp
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.email_verified")
+            session.flush()
+            return _user_payload(user)
+
+    def request_password_reset(self, *, email: str) -> dict[str, Any]:
+        """Create a fresh password reset token for one account.
+
+        Args:
+            email: Account email address.
+
+        Returns:
+            Neutral reset payload. Known active users include a dev token so
+            local tests and manual flows can complete without SMTP.
+        """
+
+        normalized_email = _normalize_user_email(email)
+        with session_scope(self.session_factory) as session:
+            user = session.scalar(select(UserModel).where(UserModel.email == normalized_email).limit(1))
+            if user is None or not user.is_active:
+                return {"sent": True}
+            token_payload = self._create_lifecycle_token(
+                session,
+                user=user,
+                purpose=USER_TOKEN_PASSWORD_RESET,
+                ttl_hours=USER_PASSWORD_RESET_TTL_HOURS,
+            )
+            self.email_delivery.send_password_reset_email(
+                to_email=normalized_email,
+                reset_url=self._password_reset_url(token_payload),
+            )
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.password_reset_requested")
+            return self._password_reset_payload(token_payload)
+
+    def reset_user_password(self, *, token: str, password: str) -> dict[str, Any]:
+        """Consume a reset token, update password, and revoke active sessions.
+
+        Args:
+            token: Raw password reset token supplied by the user.
+            password: New plaintext password.
+
+        Returns:
+            Updated user profile payload.
+        """
+
+        validated_password = _validate_password(password)
+        with session_scope(self.session_factory) as session:
+            _, user = self._consume_lifecycle_token(
+                session,
+                token=token,
+                purpose=USER_TOKEN_PASSWORD_RESET,
+            )
+            timestamp = now_utc()
+            user.password_hash = _hash_password(validated_password)
+            user.password_changed_at = timestamp
+            user.updated_at = timestamp
+            session.query(UserSessionModel).filter(
+                UserSessionModel.user_id == int(user.id),
+                UserSessionModel.revoked_at.is_(None),
+            ).update({UserSessionModel.revoked_at: timestamp})
+            self._record_user_audit_event(session, user_id=int(user.id), event_type="user.password_reset_completed")
+            session.flush()
+            return _user_payload(user)
+
+    def list_users(self, *, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        """List registered users for the admin user table.
+
+        Args:
+            page: One-based page number.
+            page_size: Number of users per page.
+
+        Returns:
+            Paginated user management payload.
+        """
+
+        safe_page = max(1, page)
+        safe_page_size = min(max(1, page_size), 200)
+        offset = (safe_page - 1) * safe_page_size
+        with session_scope(self.session_factory) as session:
+            total_items = int(session.scalar(select(func.count(UserModel.id))) or 0)
+            users = session.scalars(
+                select(UserModel)
+                .order_by(UserModel.id.asc())
+                .limit(safe_page_size)
+                .offset(offset)
+            ).all()
+            total_pages = max(1, ceil(total_items / safe_page_size)) if total_items else 1
+            return {
+                "items": [_user_admin_payload(user) for user in users],
+                "page": safe_page,
+                "page_size": safe_page_size,
+                "total_items": total_items,
+                "total_pages": total_pages,
+                "has_next": safe_page < total_pages,
+                "has_prev": safe_page > 1,
+            }
+
+    def update_user_role(self, *, user_id: int, role: str) -> dict[str, Any]:
+        """Update one user's role in the simplified admin/user role model.
+
+        Args:
+            user_id: Target user ID.
+            role: New role. Supported values are `admin` and `user`.
+
+        Returns:
+            Updated admin user payload.
+        """
+
+        clean_role = role.strip().lower()
+        if clean_role not in USER_ROLES:
+            raise ValueError("invalid_user_role")
+        with session_scope(self.session_factory) as session:
+            user = session.scalar(select(UserModel).where(UserModel.id == user_id).limit(1))
+            if user is None:
+                raise UserAuthError("user_not_found")
+            user.role = clean_role
+            user.updated_at = now_utc()
+            self._record_user_audit_event(
+                session,
+                user_id=int(user.id),
+                event_type="user.role_updated",
+                details={"role": clean_role},
+            )
+            session.flush()
+            return _user_admin_payload(user)
 
     def lookup_blog_candidates(self, *, url: str) -> dict[str, Any]:
         normalized = normalize_url(url)
@@ -2818,18 +3550,6 @@ class SQLAlchemyRepository:
                 match_reason=None,
             )
 
-    def mark_ingestion_request_crawling(self, *, blog_id: int) -> None:
-        with session_scope(self.session_factory) as session:
-            request = self._oldest_seed_ingestion_request(
-                session,
-                blog_id=blog_id,
-                statuses=(INGESTION_REQUEST_STATUS_QUEUED,),
-            )
-            if request is None:
-                return
-            request.status = INGESTION_REQUEST_STATUS_CRAWLING_SEED
-            request.updated_at = now_utc()
-
     def _claim_blog_for_statement(self, session: Session, statement: Any) -> dict[str, Any] | None:
         blog = session.scalar(statement)
         if blog is None:
@@ -2846,43 +3566,26 @@ class SQLAlchemyRepository:
             statement = statement.with_for_update(skip_locked=True)
         return self._claim_blog_for_statement(session, statement)
 
-    def _active_ingestion_seed_ids_statement(self) -> Any:
-        """Return the active ingestion seed ids used to exclude priority-backed blogs."""
-        return select(IngestionRequestModel.seed_blog_id).where(
-            IngestionRequestModel.seed_blog_id.is_not(None),
-            IngestionRequestModel.status.in_(tuple(ACTIVE_INGESTION_REQUEST_STATUSES)),
-        )
+    def get_next_waiting_blog(self) -> dict[str, Any] | None:
+        """Claim the next ordinary waiting blog for crawler processing.
 
-    def _oldest_ingestion_request(
-        self,
-        session: Session,
-        *,
-        filters: tuple[ColumnElement[bool], ...],
-        statuses: tuple[str, ...],
-    ) -> IngestionRequestModel | None:
-        """Return the oldest ingestion request matching the given filters and statuses."""
-        return session.scalar(
-            select(IngestionRequestModel)
-            .where(
-                *filters,
-                IngestionRequestModel.status.in_(statuses),
+        Args:
+            None.
+
+        Returns:
+            Serialized blog payload for the claimed row, or ``None`` when no
+            `WAITING` blog is available. The claimed row is immediately moved
+            to `PROCESSING`.
+        """
+
+        with session_scope(self.session_factory) as session:
+            statement = (
+                select(BlogModel)
+                .where(BlogModel.crawl_status == CrawlStatus.WAITING)
+                .order_by(BlogModel.id.asc())
+                .limit(1)
             )
-            .order_by(IngestionRequestModel.created_at.asc(), IngestionRequestModel.id.asc())
-        )
-
-    def _oldest_seed_ingestion_request(
-        self,
-        session: Session,
-        *,
-        blog_id: int,
-        statuses: tuple[str, ...],
-    ) -> IngestionRequestModel | None:
-        """Return the oldest ingestion request for one seed blog within the allowed statuses."""
-        return self._oldest_ingestion_request(
-            session,
-            filters=(IngestionRequestModel.seed_blog_id == blog_id,),
-            statuses=statuses,
-        )
+            return self._claim_first_matching_blog(session, statement)
 
     def _lookup_blog_matches(
         self,
@@ -2908,47 +3611,6 @@ class SQLAlchemyRepository:
             match_reason=match_reason,
         )
 
-    def _priority_blog_claim_statement(self) -> Any:
-        """Build the priority queue statement without changing claim semantics."""
-        return (
-            select(BlogModel)
-            .join(
-                IngestionRequestModel,
-                IngestionRequestModel.seed_blog_id == BlogModel.blog_id,
-            )
-            .where(
-                BlogModel.crawl_status == CrawlStatus.WAITING,
-                IngestionRequestModel.status == INGESTION_REQUEST_STATUS_QUEUED,
-            )
-            .order_by(
-                IngestionRequestModel.priority.desc(),
-                IngestionRequestModel.created_at.asc(),
-                BlogModel.blog_id.asc(),
-                BlogModel.id.asc(),
-            )
-            .limit(1)
-        )
-
-    def _waiting_blog_claim_statement(self, *, include_priority: bool) -> Any:
-        """Build the waiting queue statement while preserving priority exclusion semantics."""
-        statement = select(BlogModel).where(BlogModel.crawl_status == CrawlStatus.WAITING)
-        if not include_priority:
-            statement = statement.where(
-                BlogModel.blog_id.not_in(self._active_ingestion_seed_ids_statement())
-            )
-        return statement.order_by(BlogModel.blog_id.asc(), BlogModel.id.asc()).limit(1)
-
-    def get_next_priority_blog(self) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._claim_first_matching_blog(session, self._priority_blog_claim_statement())
-
-    def get_next_waiting_blog(self, *, include_priority: bool = True) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._claim_first_matching_blog(
-                session,
-                self._waiting_blog_claim_statement(include_priority=include_priority),
-            )
-
     def requeue_failed_blogs(self) -> dict[str, Any]:
         """Move every failed blog back into the waiting crawl queue.
 
@@ -2963,18 +3625,9 @@ class SQLAlchemyRepository:
             for blog in blogs:
                 blog.crawl_status = CrawlStatus.WAITING
                 blog.status_code = None
+                blog.crawl_error_kind = None
+                blog.crawl_error_message = None
                 blog.updated_at = timestamp
-
-            requests = session.scalars(
-                select(IngestionRequestModel).where(
-                    IngestionRequestModel.seed_blog_id.in_([int(_business_blog_id(blog)) for blog in blogs]),
-                    IngestionRequestModel.status == INGESTION_REQUEST_STATUS_FAILED,
-                )
-            ).all()
-            for request in requests:
-                request.status = INGESTION_REQUEST_STATUS_QUEUED
-                request.error_message = None
-                request.updated_at = timestamp
 
             return {"requeued": requeued_count}
 
@@ -2988,33 +3641,31 @@ class SQLAlchemyRepository:
         metadata_captured: bool = False,
         title: str | None = None,
         icon_url: str | None = None,
+        crawl_error_kind: str | None = None,
+        crawl_error_message: str | None = None,
     ) -> None:
         with session_scope(self.session_factory) as session:
             blog = self._get_blog_by_business_id(session, blog_id)
             if blog is None:
                 return
-            blog.crawl_status = CrawlStatus(crawl_status)
+            resolved_status = CrawlStatus(crawl_status)
+            timestamp = now_utc()
+            blog.crawl_status = resolved_status
             blog.status_code = status_code
             blog.friend_links_count = friend_links_count
-            blog.last_crawled_at = now_utc()
-            blog.updated_at = now_utc()
+            blog.last_crawled_at = timestamp
+            blog.last_crawl_attempt_at = timestamp
+            blog.updated_at = timestamp
+            if resolved_status == CrawlStatus.FINISHED:
+                blog.successful_crawl_at = timestamp
+                blog.crawl_error_kind = None
+                blog.crawl_error_message = None
+            elif resolved_status == CrawlStatus.FAILED:
+                blog.crawl_error_kind = crawl_error_kind
+                blog.crawl_error_message = crawl_error_message
             if metadata_captured:
                 blog.title = title
                 blog.icon_url = icon_url
-            request = self._oldest_seed_ingestion_request(
-                session,
-                blog_id=blog_id,
-                statuses=tuple(ACTIVE_INGESTION_REQUEST_STATUSES),
-            )
-            if request is not None:
-                if blog.crawl_status == CrawlStatus.FINISHED:
-                    request.status = INGESTION_REQUEST_STATUS_COMPLETED
-                    request.matched_blog_id = int(_business_blog_id(blog))
-                    request.error_message = None
-                elif blog.crawl_status == CrawlStatus.FAILED:
-                    request.status = INGESTION_REQUEST_STATUS_FAILED
-                    request.error_message = "seed crawl failed"
-                request.updated_at = now_utc()
 
     def add_edge(
         self,
@@ -3114,6 +3765,36 @@ class SQLAlchemyRepository:
             record.updated_at = now_utc()
             session.flush()
             return {"id": int(record.id), "status": str(record.status)}
+
+    def find_blog_id_by_normalized_url(self, *, normalized_url: str) -> int | None:
+        """Return the persisted blog id for one normalized URL when it exists.
+
+        Args:
+            normalized_url: Canonical URL value used by crawler discovery and
+                blog upsert identity checks.
+
+        Returns:
+            Business ``blog_id`` for the matching blog, or ``None`` when the
+            URL has not yet been accepted as a blog.
+        """
+
+        identity = resolve_blog_identity(normalized_url)
+        with session_scope(self.session_factory) as session:
+            blog_id = session.scalar(
+                select(BlogModel.blog_id)
+                .where(BlogModel.normalized_url == normalized_url)
+                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
+                .limit(1)
+            )
+            if blog_id is not None:
+                return int(blog_id)
+            blog_id = session.scalar(
+                select(BlogModel.blog_id)
+                .where(BlogModel.identity_key == identity.identity_key)
+                .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
+                .limit(1)
+            )
+            return int(blog_id) if blog_id is not None else None
 
     def update_raw_discovered_url_status(
         self,
@@ -3308,6 +3989,7 @@ class SQLAlchemyRepository:
         has_title: bool | str | None = None,
         has_icon: bool | str | None = None,
         min_connections: int | None = None,
+        acceptance_status: str | None = BLOG_ACCEPTANCE_ACCEPTED,
     ) -> dict[str, Any]:
         query = normalize_blog_catalog_query(
             page=page,
@@ -3321,9 +4003,12 @@ class SQLAlchemyRepository:
             has_title=has_title,
             has_icon=has_icon,
             min_connections=min_connections,
+            acceptance_status=acceptance_status,
         )
         with session_scope(self.session_factory) as session:
             statement, metrics = self._blog_select()
+            if query["acceptance_status"] is not None:
+                statement = statement.where(BlogModel.acceptance_status == query["acceptance_status"])
             if query["site"] is not None:
                 pattern = f"%{query['site']}%"
                 statement = statement.where(
@@ -3357,11 +4042,7 @@ class SQLAlchemyRepository:
                 )
             if query["has_icon"] is True:
                 statement = statement.where(
-                    or_(
-                        and_(BlogModel.icon_url.is_not(None), BlogModel.icon_url != ""),
-                        BlogModel.url.like("http://%"),
-                        BlogModel.url.like("https://%"),
-                    )
+                    and_(BlogModel.icon_url.is_not(None), BlogModel.icon_url != "")
                 )
             if query["min_connections"] > 0:
                 statement = statement.where(metrics["connection_count"] >= query["min_connections"])
@@ -3410,8 +4091,507 @@ class SQLAlchemyRepository:
                     "has_title": query["has_title"],
                     "has_icon": query["has_icon"],
                     "min_connections": query["min_connections"],
+                    "acceptance_status": query["acceptance_status"],
                 },
             )
+
+    def create_random_recommendation_batch(
+        self,
+        *,
+        count: int = 9,
+        visitor_id: str,
+        session_id: str,
+        user_id: int | None = None,
+        source: str | None = None,
+        page_url: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist one random-blog recommendation request and its impressions.
+
+        Args:
+            count: Number of cards requested by the frontend.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            user_id: Optional authenticated user ID for attribution.
+            source: Optional caller surface detail.
+            page_url: Optional page URL where the batch was shown.
+            context: Optional JSON metadata associated with the serving event.
+
+        Returns:
+            Recommendation batch payload containing request metadata and ordered
+            catalog items with impression attribution fields.
+        """
+
+        if count < 1 or count > 50:
+            raise ValueError("count_out_of_range")
+        clean_visitor_id = _clean_event_text(visitor_id, field="visitor_id")
+        clean_session_id = _clean_event_text(session_id, field="session_id")
+        request_uuid = token_urlsafe(24)
+        with session_scope(self.session_factory) as session:
+            if user_id is not None and session.scalar(select(UserModel.id).where(UserModel.id == user_id)) is None:
+                raise UserAuthError("user_not_found")
+            statement, _ = self._blog_select()
+            statement = statement.where(
+                BlogModel.crawl_status == CrawlStatus.FINISHED,
+                BlogModel.acceptance_status == BLOG_ACCEPTANCE_ACCEPTED,
+            )
+            rows = session.execute(self._random_blog_catalog_statement(statement).limit(count)).all()
+            recommendation = RecommendationRequestModel(
+                request_uuid=request_uuid,
+                surface=RANDOM_RECOMMENDATION_SURFACE,
+                strategy=RANDOM_RECOMMENDATION_STRATEGY,
+                strategy_version=RANDOM_RECOMMENDATION_STRATEGY_VERSION,
+                visitor_id=clean_visitor_id,
+                user_id=user_id,
+                session_id=clean_session_id,
+                source=(source or "").strip() or None,
+                page_url=(page_url or "").strip() or None,
+                requested_count=count,
+                served_count=len(rows),
+                context_json=_coerce_json_object(context),
+            )
+            session.add(recommendation)
+            session.flush()
+            items: list[dict[str, Any]] = []
+            for position, row in enumerate(rows, start=1):
+                blog = row[0]
+                impression = RecommendationImpressionModel(
+                    request_id=recommendation.id,
+                    normalized_url=str(blog.normalized_url),
+                    position=position,
+                    score=None,
+                    reason_json={"strategy": RANDOM_RECOMMENDATION_STRATEGY},
+                )
+                session.add(impression)
+                session.flush()
+                items.append(
+                    self._row_blog_payload(row)
+                    | {
+                        "request_uuid": request_uuid,
+                        "impression_id": impression.id,
+                        "position": position,
+                    }
+                )
+            session.flush()
+            return {
+                "request_uuid": request_uuid,
+                "surface": RANDOM_RECOMMENDATION_SURFACE,
+                "strategy": RANDOM_RECOMMENDATION_STRATEGY,
+                "strategy_version": RANDOM_RECOMMENDATION_STRATEGY_VERSION,
+                "visitor_id": clean_visitor_id,
+                "session_id": clean_session_id,
+                "user_id": user_id,
+                "source": recommendation.source,
+                "page_url": recommendation.page_url,
+                "requested_count": count,
+                "served_count": len(items),
+                "created_at": _iso(recommendation.created_at),
+                "items": items,
+            }
+
+    def _blog_interaction_payload(self, interaction: BlogInteractionModel) -> dict[str, Any]:
+        """Serialize one immutable blog interaction event row.
+
+        Args:
+            interaction: Persisted interaction model.
+
+        Returns:
+            JSON-ready event payload with attribution identifiers.
+        """
+
+        return {
+            "id": interaction.id,
+            "event_uuid": interaction.event_uuid,
+            "request_id": interaction.request_id,
+            "impression_id": interaction.impression_id,
+            "normalized_url": interaction.normalized_url,
+            "event_type": interaction.event_type,
+            "position": interaction.position,
+            "entrance_kind": interaction.entrance_kind,
+            "entrance_url": interaction.entrance_url,
+            "interaction_order": interaction.interaction_order,
+            "visitor_id": interaction.visitor_id,
+            "user_id": interaction.user_id,
+            "session_id": interaction.session_id,
+            "client_event_at": _iso(interaction.client_event_at),
+            "attributes": interaction.attributes_json,
+            "created_at": _iso(interaction.created_at),
+        }
+
+    def record_blog_interaction(
+        self,
+        *,
+        event_uuid: str,
+        event_type: str,
+        blog_id: int,
+        visitor_id: str,
+        session_id: str,
+        entrance_kind: str,
+        entrance_url: str,
+        request_uuid: str | None = None,
+        impression_id: int | None = None,
+        position: int | None = None,
+        interaction_order: int = 1,
+        user_id: int | None = None,
+        client_event_at: str | datetime | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist one idempotent recommendation interaction event.
+
+        Args:
+            event_uuid: Client-generated idempotency key.
+            event_type: Interaction type such as ``detail_open``.
+            blog_id: Public/business blog ID receiving the event.
+            visitor_id: Stable anonymous visitor identifier.
+            session_id: Stable browser-session identifier.
+            entrance_kind: Stable entrance category such as ``random_blog_card``.
+            entrance_url: Raw URL for the entrance context.
+            request_uuid: Optional serving request UUID for attribution.
+            impression_id: Optional impression row ID for attribution.
+            position: Optional card position displayed to the visitor.
+            interaction_order: Monotonic client-side order within the session.
+            user_id: Optional authenticated user ID.
+            client_event_at: Optional client timestamp.
+            attributes: Optional JSON metadata for the event.
+
+        Returns:
+            Serialized event payload plus a ``duplicate`` flag.
+        """
+
+        clean_event_uuid = _clean_event_text(event_uuid, field="event_uuid")
+        clean_event_type = _clean_event_text(event_type, field="event_type", max_length=64)
+        if clean_event_type not in RECOMMENDATION_EVENT_TYPES:
+            raise ValueError("unsupported_recommendation_event_type")
+        clean_visitor_id = _clean_event_text(visitor_id, field="visitor_id")
+        clean_session_id = _clean_event_text(session_id, field="session_id")
+        clean_entrance_kind = _clean_event_text(entrance_kind, field="entrance_kind", max_length=128)
+        clean_entrance_url = _clean_event_text(entrance_url, field="entrance_url", max_length=2048)
+        if interaction_order < 1:
+            raise ValueError("interaction_order_out_of_range")
+        with session_scope(self.session_factory) as session:
+            existing = session.scalar(
+                select(BlogInteractionModel).where(BlogInteractionModel.event_uuid == clean_event_uuid)
+            )
+            if existing is not None:
+                return self._blog_interaction_payload(existing) | {"duplicate": True}
+            blog = self._get_blog_by_business_id(session, blog_id)
+            if blog is None:
+                raise BlogLabelingNotFoundError("blog_not_found")
+            if user_id is not None and session.scalar(select(UserModel.id).where(UserModel.id == user_id)) is None:
+                raise UserAuthError("user_not_found")
+            recommendation: RecommendationRequestModel | None = None
+            if request_uuid is not None:
+                recommendation = session.scalar(
+                    select(RecommendationRequestModel).where(
+                        RecommendationRequestModel.request_uuid == request_uuid
+                    )
+                )
+                if recommendation is None:
+                    raise ValueError("recommendation_request_not_found")
+            impression: RecommendationImpressionModel | None = None
+            if impression_id is not None:
+                impression = session.get(RecommendationImpressionModel, impression_id)
+                if impression is None:
+                    raise ValueError("recommendation_impression_not_found")
+                if str(impression.normalized_url) != str(blog.normalized_url):
+                    raise ValueError("recommendation_impression_blog_mismatch")
+                if recommendation is not None and int(impression.request_id) != int(recommendation.id):
+                    raise ValueError("recommendation_impression_request_mismatch")
+                if position is None:
+                    position = int(impression.position)
+            interaction = BlogInteractionModel(
+                event_uuid=clean_event_uuid,
+                request_id=recommendation.id if recommendation is not None else None,
+                impression_id=impression.id if impression is not None else None,
+                normalized_url=str(blog.normalized_url),
+                event_type=clean_event_type,
+                position=position,
+                entrance_kind=clean_entrance_kind,
+                entrance_url=clean_entrance_url,
+                interaction_order=interaction_order,
+                visitor_id=clean_visitor_id,
+                user_id=user_id,
+                session_id=clean_session_id,
+                client_event_at=_parse_event_datetime(client_event_at),
+                attributes_json=_coerce_json_object(attributes),
+            )
+            session.add(interaction)
+            session.flush()
+            return self._blog_interaction_payload(interaction) | {"duplicate": False}
+
+    def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any] | None:
+        """Return recommendation exposure and interaction stats for one blog.
+
+        Args:
+            blog_id: Public/business blog ID.
+
+        Returns:
+            Stats payload, or ``None`` when the blog does not exist.
+        """
+
+        with session_scope(self.session_factory) as session:
+            blog = self._get_blog_by_business_id(session, blog_id)
+            if blog is None:
+                return None
+            impressions = int(
+                session.scalar(
+                    select(func.count(RecommendationImpressionModel.id)).where(
+                        RecommendationImpressionModel.normalized_url == blog.normalized_url
+                    )
+                )
+                or 0
+            )
+            event_counts = {
+                str(event_type): int(count or 0)
+                for event_type, count in session.execute(
+                    select(BlogInteractionModel.event_type, func.count(BlogInteractionModel.id))
+                    .where(BlogInteractionModel.normalized_url == blog.normalized_url)
+                    .group_by(BlogInteractionModel.event_type)
+                ).all()
+            }
+            unique_visitors = int(
+                session.scalar(
+                    select(func.count(func.distinct(BlogInteractionModel.visitor_id))).where(
+                        BlogInteractionModel.normalized_url == blog.normalized_url
+                    )
+                )
+                or 0
+            )
+            last_interaction_at = session.scalar(
+                select(func.max(BlogInteractionModel.created_at)).where(
+                    BlogInteractionModel.normalized_url == blog.normalized_url
+                )
+            )
+            clicks = int(event_counts.get("click", 0))
+            detail_opens = int(event_counts.get("detail_open", 0))
+            external_opens = int(event_counts.get("external_open", 0))
+            label_selects = int(event_counts.get("label_select", 0))
+            return {
+                "blog_id": blog_id,
+                "normalized_url": blog.normalized_url,
+                "impressions": impressions,
+                "clicks": clicks,
+                "detail_opens": detail_opens,
+                "external_opens": external_opens,
+                "label_selects": label_selects,
+                "unique_visitors": unique_visitors,
+                "ctr": (clicks + detail_opens + external_opens) / impressions if impressions else 0.0,
+                "last_interaction_at": _iso(last_interaction_at),
+                "by_event_type": event_counts,
+            }
+
+    def _hour_start(self, value: datetime | None = None) -> datetime:
+        """Return the UTC natural-hour boundary for one timestamp.
+
+        Args:
+            value: Optional timestamp to normalize. Current UTC time is used
+                when omitted.
+
+        Returns:
+            Timezone-aware UTC datetime truncated to the hour.
+        """
+
+        current = value or datetime.now(UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        return current.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+    def _admin_hourly_stats_payload(self, row: AdminHourlyStatsModel) -> dict[str, Any]:
+        """Serialize one hourly admin statistics row.
+
+        Args:
+            row: Persisted hourly statistics snapshot.
+
+        Returns:
+            JSON-ready snapshot payload.
+        """
+
+        return {
+            "id": row.id,
+            "hour_start": _iso(row.hour_start),
+            "user_count": row.user_count,
+            "random_request_count": row.random_request_count,
+            "random_impression_count": row.random_impression_count,
+            "detail_open_count": row.detail_open_count,
+            "external_open_count": row.external_open_count,
+            "detail_ctr": row.detail_ctr,
+            "external_ctr": row.external_ctr,
+            "total_click_ctr": row.total_click_ctr,
+            "refreshed_at": _iso(row.refreshed_at),
+            "created_at": _iso(row.created_at),
+        }
+
+    def _refresh_admin_hourly_stats(self, session: Session, hour_start: datetime) -> AdminHourlyStatsModel:
+        """Refresh or create one admin statistics snapshot for a natural hour.
+
+        Args:
+            session: Active SQLAlchemy session.
+            hour_start: UTC natural-hour boundary to aggregate.
+
+        Returns:
+            Persisted snapshot row after source-table aggregation.
+        """
+
+        hour_end = hour_start + timedelta(hours=1)
+        user_count = int(
+            session.scalar(select(func.count(UserModel.id)).where(UserModel.is_active.is_(True))) or 0
+        )
+        random_request_count = int(
+            session.scalar(
+                select(func.count(RecommendationRequestModel.id)).where(
+                    RecommendationRequestModel.surface == RANDOM_RECOMMENDATION_SURFACE,
+                    RecommendationRequestModel.created_at >= hour_start,
+                    RecommendationRequestModel.created_at < hour_end,
+                )
+            )
+            or 0
+        )
+        random_impression_count = int(
+            session.scalar(
+                select(func.count(RecommendationImpressionModel.id))
+                .join(RecommendationRequestModel, RecommendationImpressionModel.request_id == RecommendationRequestModel.id)
+                .where(
+                    RecommendationRequestModel.surface == RANDOM_RECOMMENDATION_SURFACE,
+                    RecommendationImpressionModel.created_at >= hour_start,
+                    RecommendationImpressionModel.created_at < hour_end,
+                )
+            )
+            or 0
+        )
+        interaction_counts = {
+            str(event_type): int(count or 0)
+            for event_type, count in session.execute(
+                select(BlogInteractionModel.event_type, func.count(BlogInteractionModel.id))
+                .join(RecommendationRequestModel, BlogInteractionModel.request_id == RecommendationRequestModel.id)
+                .where(
+                    RecommendationRequestModel.surface == RANDOM_RECOMMENDATION_SURFACE,
+                    BlogInteractionModel.created_at >= hour_start,
+                    BlogInteractionModel.created_at < hour_end,
+                    BlogInteractionModel.event_type.in_(("detail_open", "external_open")),
+                )
+                .group_by(BlogInteractionModel.event_type)
+            ).all()
+        }
+        detail_open_count = int(interaction_counts.get("detail_open", 0))
+        external_open_count = int(interaction_counts.get("external_open", 0))
+        denominator = random_impression_count or 0
+        detail_ctr = detail_open_count / denominator if denominator else 0.0
+        external_ctr = external_open_count / denominator if denominator else 0.0
+        total_click_ctr = (detail_open_count + external_open_count) / denominator if denominator else 0.0
+        row = session.scalar(
+            select(AdminHourlyStatsModel).where(AdminHourlyStatsModel.hour_start == hour_start)
+        )
+        if row is None:
+            row = AdminHourlyStatsModel(hour_start=hour_start)
+            session.add(row)
+        row.user_count = user_count
+        row.random_request_count = random_request_count
+        row.random_impression_count = random_impression_count
+        row.detail_open_count = detail_open_count
+        row.external_open_count = external_open_count
+        row.detail_ctr = detail_ctr
+        row.external_ctr = external_ctr
+        row.total_click_ctr = total_click_ctr
+        row.refreshed_at = datetime.now(UTC)
+        session.flush()
+        return row
+
+    def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]:
+        """Return hourly admin statistics and refresh the current hour.
+
+        Args:
+            limit: Maximum number of hourly snapshots to return.
+
+        Returns:
+            Admin statistics payload with latest/current snapshots first.
+        """
+
+        normalized_limit = max(1, min(int(limit), 168))
+        with session_scope(self.session_factory) as session:
+            current_hour = self._hour_start()
+            current = self._refresh_admin_hourly_stats(session, current_hour)
+            rows = list(
+                session.scalars(
+                    select(AdminHourlyStatsModel)
+                    .order_by(AdminHourlyStatsModel.hour_start.desc())
+                    .limit(normalized_limit)
+                )
+            )
+            latest = rows[0] if rows else current
+            return {
+                "current_hour": self._admin_hourly_stats_payload(current),
+                "latest": self._admin_hourly_stats_payload(latest),
+                "items": [self._admin_hourly_stats_payload(row) for row in rows],
+            }
+
+    def get_recommendation_strategy_stats(self) -> dict[str, Any]:
+        """Return aggregate recommendation request, impression, and event stats.
+
+        Args:
+            None.
+
+        Returns:
+            Strategy-grouped aggregate stats for admin dashboards.
+        """
+
+        with session_scope(self.session_factory) as session:
+            total_requests = int(session.scalar(select(func.count(RecommendationRequestModel.id))) or 0)
+            total_impressions = int(session.scalar(select(func.count(RecommendationImpressionModel.id))) or 0)
+            total_interactions = int(session.scalar(select(func.count(BlogInteractionModel.id))) or 0)
+            click_counts = {
+                int(request_id): int(count or 0)
+                for request_id, count in session.execute(
+                    select(BlogInteractionModel.request_id, func.count(BlogInteractionModel.id))
+                    .where(
+                        BlogInteractionModel.request_id.is_not(None),
+                        BlogInteractionModel.event_type.in_(("click", "detail_open", "external_open")),
+                    )
+                    .group_by(BlogInteractionModel.request_id)
+                ).all()
+            }
+            grouped_rows = session.execute(
+                select(
+                    RecommendationRequestModel.surface,
+                    RecommendationRequestModel.strategy,
+                    RecommendationRequestModel.strategy_version,
+                    func.count(RecommendationRequestModel.id),
+                    func.coalesce(func.sum(RecommendationRequestModel.served_count), 0),
+                    func.count(func.distinct(RecommendationRequestModel.visitor_id)),
+                ).group_by(
+                    RecommendationRequestModel.surface,
+                    RecommendationRequestModel.strategy,
+                    RecommendationRequestModel.strategy_version,
+                )
+            ).all()
+            by_strategy: list[dict[str, Any]] = []
+            for surface, strategy, strategy_version, request_count, served_count, visitor_count in grouped_rows:
+                request_ids = session.scalars(
+                    select(RecommendationRequestModel.id).where(
+                        RecommendationRequestModel.surface == surface,
+                        RecommendationRequestModel.strategy == strategy,
+                        RecommendationRequestModel.strategy_version == strategy_version,
+                    )
+                ).all()
+                clicks = sum(click_counts.get(int(request_id), 0) for request_id in request_ids)
+                impressions = int(served_count or 0)
+                by_strategy.append(
+                    {
+                        "surface": surface,
+                        "strategy": strategy,
+                        "strategy_version": strategy_version,
+                        "requests": int(request_count or 0),
+                        "impressions": impressions,
+                        "clicks": clicks,
+                        "unique_visitors": int(visitor_count or 0),
+                        "ctr": clicks / impressions if impressions else 0.0,
+                    }
+                )
+            return {
+                "total_requests": total_requests,
+                "total_impressions": total_impressions,
+                "total_interactions": total_interactions,
+                "by_strategy": by_strategy,
+            }
 
     def list_blog_labeling_candidates(
         self,
@@ -4134,6 +5314,19 @@ class SQLAlchemyRepository:
 
             return {
                 **self._row_blog_payload(blog_row),
+                "discovery_path": self._blog_discovery_path_payload(session, blog_row[0]),
+                "relation_graphs": {
+                    "incoming": self._blog_relation_graph_payload(
+                        session,
+                        blog=blog_row[0],
+                        direction="incoming",
+                    ),
+                    "outgoing": self._blog_relation_graph_payload(
+                        session,
+                        blog=blog_row[0],
+                        direction="outgoing",
+                    ),
+                },
                 "incoming_edges": self._blog_detail_relation_payloads(
                     session,
                     incoming_edges,
@@ -4254,247 +5447,40 @@ class SQLAlchemyRepository:
             "funnel": funnel,
         }
 
-    def create_blog_dedup_scan_run(self, *, crawler_was_running: bool = False) -> dict[str, Any]:
-        started_at = now_utc()
-        settings = self._decision_scan_settings()
-        with session_scope(self.session_factory) as session:
-            total_count = _count_selectable_rows(session, BlogModel)
-            run = BlogDedupScanRunModel(
-                status="RUNNING",
-                ruleset_version=_decision_scan_ruleset_version(settings),
-                started_at=started_at,
-                completed_at=None,
-                duration_ms=0,
-                total_count=total_count,
-                scanned_count=0,
-                removed_count=0,
-                kept_count=0,
-                crawler_was_running=crawler_was_running,
-                crawler_restart_attempted=False,
-                crawler_restart_succeeded=False,
-                search_reindexed=False,
-                error_message=None,
-                created_at=started_at,
-                updated_at=started_at,
-            )
-            session.add(run)
-            session.flush()
-            return _blog_dedup_scan_run_payload(run)
-
-    def execute_blog_dedup_scan_run(self, *, run_id: int) -> dict[str, Any]:
-        started_at = now_utc()
-        settings = self._decision_scan_settings()
-        decision_chain = build_url_decision_chain(settings)
-        try:
-            with session_scope(self.session_factory) as session:
-                run = self._require_model(
-                    session,
-                    BlogDedupScanRunModel,
-                    run_id,
-                    not_found_error="blog_dedup_scan_run_not_found",
-                )
-                run.status = "RUNNING"
-                run.started_at = run.started_at or started_at
-                run.completed_at = None
-                run.duration_ms = 0
-                run.scanned_count = 0
-                run.removed_count = 0
-                run.kept_count = 0
-                run.error_message = None
-                run.updated_at = started_at
-                blog_rows = session.execute(
-                    select(
-                        BlogModel.blog_id,
-                        BlogModel.url,
-                        BlogModel.domain,
-                        BlogModel.identity_key,
-                    )
-                    .order_by(BlogModel.blog_id.asc(), BlogModel.id.asc())
-                ).all()
-                run.total_count = len(blog_rows)
-
-            scanned_count = 0
-            rejected_blog_count = 0
-            for blog_row in blog_rows:
-                with session_scope(self.session_factory) as session:
-                    run = self._require_model(
-                        session,
-                        BlogDedupScanRunModel,
-                        run_id,
-                        not_found_error="blog_dedup_scan_run_not_found",
-                    )
-                    blog = self._get_blog_by_business_id(session, int(blog_row.blog_id))
-                    if blog is None:
-                        continue
-                    decision = decision_chain.decide(
-                        str(blog.url or ""),
-                        "",
-                        link_text=str(blog.domain or ""),
-                        context_text="",
-                    )
-                    if not decision.accepted:
-                        session.add(
-                            BlogDedupScanRunItemModel(
-                                run_id=int(run.id),
-                                survivor_blog_id=None,
-                                removed_blog_id=int(_business_blog_id(blog)),
-                                survivor_identity_key=str(blog.identity_key or ""),
-                                removed_url=str(blog.url or ""),
-                                removed_normalized_url=str(blog.normalized_url or blog.url or ""),
-                                removed_domain=str(blog.domain or ""),
-                                reason_code=decision.reasons[0] if decision.reasons else "decision_rejected",
-                                reason_codes=_dump_reason_codes(list(decision.reasons)),
-                                survivor_selection_basis=(
-                                    f"scanned_blog_id={int(_business_blog_id(blog))}, "
-                                    f"decision_score={decision.score:.6f}"
-                                ),
-                                created_at=now_utc(),
-                            )
-                        )
-                        self._delete_blog_graph(session, blog_id=int(_business_blog_id(blog)))
-                        rejected_blog_count += 1
-
-                    scanned_count += 1
-                    completed_so_far = now_utc()
-                    run.scanned_count = scanned_count
-                    run.removed_count = rejected_blog_count
-                    run.kept_count = max(run.total_count - rejected_blog_count, 0)
-                    run.duration_ms = max(int((completed_so_far - started_at).total_seconds() * 1000), 0)
-                    run.updated_at = completed_so_far
-
-            with session_scope(self.session_factory) as session:
-                run = self._require_model(
-                    session,
-                    BlogDedupScanRunModel,
-                    run_id,
-                    not_found_error="blog_dedup_scan_run_not_found",
-                )
-                completed_at = now_utc()
-                final_blog_count = _count_selectable_rows(session, BlogModel)
-                run.status = "SUCCEEDED"
-                run.completed_at = completed_at
-                run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
-                run.scanned_count = scanned_count
-                run.removed_count = max(run.total_count - final_blog_count, 0)
-                run.kept_count = final_blog_count
-                run.updated_at = completed_at
-                session.flush()
-                return _blog_dedup_scan_run_payload(run)
-        except Exception as exc:
-            with session_scope(self.session_factory) as session:
-                run = session.get(BlogDedupScanRunModel, run_id)
-                if run is not None:
-                    completed_at = now_utc()
-                    run.status = "FAILED"
-                    run.completed_at = completed_at
-                    run.duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
-                    run.error_message = str(exc)
-                    run.updated_at = completed_at
-            raise
-
-    def finalize_blog_dedup_scan_run(
-        self,
-        *,
-        run_id: int,
-        crawler_restart_attempted: bool,
-        crawler_restart_succeeded: bool,
-        search_reindexed: bool,
-        error_message: str | None = None,
-    ) -> dict[str, Any]:
-        with session_scope(self.session_factory) as session:
-            run = self._require_model(
-                session,
-                BlogDedupScanRunModel,
-                run_id,
-                not_found_error="blog_dedup_scan_run_not_found",
-            )
-            run.crawler_restart_attempted = crawler_restart_attempted
-            run.crawler_restart_succeeded = crawler_restart_succeeded
-            run.search_reindexed = search_reindexed
-            if error_message:
-                run.error_message = error_message
-            run.updated_at = now_utc()
-            session.flush()
-            return _blog_dedup_scan_run_payload(run)
-
-    def get_latest_blog_dedup_scan_run(self) -> dict[str, Any] | None:
-        with session_scope(self.session_factory) as session:
-            return self._latest_row_payload(
-                session,
-                statement=select(BlogDedupScanRunModel).order_by(BlogDedupScanRunModel.id.desc()).limit(1),
-                serializer=_blog_dedup_scan_run_payload,
-            )
-
-    def list_blog_dedup_scan_run_items(self, run_id: int) -> list[dict[str, Any]]:
-        with session_scope(self.session_factory) as session:
-            return self._ordered_row_payloads(
-                session,
-                statement=(
-                    select(BlogDedupScanRunItemModel)
-                    .where(BlogDedupScanRunItemModel.run_id == run_id)
-                    .order_by(BlogDedupScanRunItemModel.id.asc())
-                ),
-                serializer=_blog_dedup_scan_run_item_payload,
-            )
-
     def reset(self) -> dict[str, Any]:
         with session_scope(self.session_factory) as session:
             blogs_deleted = _count_selectable_rows(session, BlogModel)
             edges_deleted = _count_selectable_rows(session, EdgeModel)
-            requests_deleted = _count_selectable_rows(session, IngestionRequestModel)
-            users_preserved = _count_selectable_rows(session, UserModel)
-            user_sessions_preserved = _count_selectable_rows(session, UserSessionModel)
-            labels_preserved = _count_selectable_rows(session, BlogLabelModel)
-            user_labels_preserved = _count_selectable_rows(session, BlogUserLabelModel)
-            user_label_selections_preserved = _count_selectable_rows(session, BlogUserLabelSelectionModel)
-            label_tags_preserved = _count_selectable_rows(session, BlogLabelTagModel)
             raw_urls_deleted = _count_selectable_rows(session, RawDiscoveredUrlModel)
-            scan_items_deleted = _count_selectable_rows(session, BlogDedupScanRunItemModel)
-            scan_runs_deleted = _count_selectable_rows(session, BlogDedupScanRunModel)
-            if self.dialect_name == "postgresql":
-                session.execute(
-                    text(
-                        "TRUNCATE TABLE blog_dedup_scan_run_items, blog_dedup_scan_runs, "
-                        "raw_discovered_urls, ingestion_requests, edges, blogs "
-                        "RESTART IDENTITY CASCADE"
-                    )
-                )
-            else:
-                session.query(BlogDedupScanRunItemModel).delete()
-                session.query(BlogDedupScanRunModel).delete()
-                session.query(RawDiscoveredUrlModel).delete()
-                session.query(IngestionRequestModel).delete()
-                session.query(EdgeModel).delete()
-                session.query(BlogModel).delete()
+            # Seeds are durable configuration, but their nullable blog pointer
+            # must be cleared before deleting the referenced blog rows.
+            session.query(SeedModel).update({SeedModel.blog_id: None})
+            session.query(RawDiscoveredUrlModel).delete()
+            session.query(EdgeModel).delete()
+            session.query(BlogModel).delete()
             return {
                 "ok": True,
                 "blogs_deleted": blogs_deleted,
                 "edges_deleted": edges_deleted,
-                "logs_deleted": 0,
-                "ingestion_requests_deleted": requests_deleted,
-                "users_preserved": users_preserved,
-                "user_sessions_preserved": user_sessions_preserved,
-                "blog_link_labels_deleted": 0,
-                "blog_label_tags_deleted": 0,
-                "blog_labels_preserved": labels_preserved,
-                "blog_labels_userlabel_preserved": user_labels_preserved,
-                "blog_user_label_selections_preserved": user_label_selections_preserved,
-                "blog_label_subjects_preserved": 0,
-                "blog_link_labels_preserved": labels_preserved,
-                "blog_label_tags_preserved": label_tags_preserved,
                 "raw_discovered_urls_deleted": raw_urls_deleted,
-                "blog_dedup_scan_items_deleted": scan_items_deleted,
-                "blog_dedup_scan_runs_deleted": scan_runs_deleted,
+                "logs_deleted": 0,
             }
 
 
 class Repository(SQLAlchemyRepository):
     """Compatibility wrapper for test call sites that still pass a db path."""
 
-    def __init__(self, db_path: Path, *, decision_settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        decision_settings: Settings | None = None,
+        email_delivery: EmailDelivery | None = None,
+    ) -> None:
         super().__init__(
             f"sqlite+pysqlite:///{db_path}",
             decision_settings=decision_settings,
+            email_delivery=email_delivery or NoopEmailDelivery(),
             startup_schema_sync=True,
         )
 
@@ -4504,12 +5490,19 @@ def build_repository(
     db_path: Path,
     db_dsn: str | None = None,
     settings: Settings | None = None,
+    email_delivery: EmailDelivery | None = None,
 ) -> RepositoryProtocol:
     """Build the configured repository implementation."""
     if db_dsn is not None:
         try:
-            return SQLAlchemyRepository(db_dsn, decision_settings=settings, startup_schema_sync=True)
+            kwargs: dict[str, Any] = {
+                "decision_settings": settings,
+                "startup_schema_sync": True,
+            }
+            if email_delivery is not None:
+                kwargs["email_delivery"] = email_delivery
+            return SQLAlchemyRepository(db_dsn, **kwargs)
         except ModuleNotFoundError as exc:
             if exc.name != "psycopg":
                 raise
-    return Repository(db_path, decision_settings=settings)
+    return Repository(db_path, decision_settings=settings, email_delivery=email_delivery)

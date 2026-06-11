@@ -16,6 +16,7 @@
     "lucide-react": "^0.487.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-force-graph-2d": "^1.29.1",
     "react-force-graph-3d": "^1.29.0",
     "react-router-dom": "^7.7.1",
     "sonner": "^2.0.3",

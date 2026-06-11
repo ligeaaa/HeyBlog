@@ -20,10 +20,7 @@ depends_on = None
 BLOG_FK_REWRITES = (
     ("edges", "edges_from_blog_id_fkey", "from_blog_id", "CASCADE"),
     ("edges", "edges_to_blog_id_fkey", "to_blog_id", "CASCADE"),
-    ("ingestion_requests", "ingestion_requests_seed_blog_id_fkey", "seed_blog_id", "SET NULL"),
-    ("ingestion_requests", "ingestion_requests_matched_blog_id_fkey", "matched_blog_id", "SET NULL"),
     ("blog_label_assignments", "blog_label_assignments_blog_id_fkey", "blog_id", "CASCADE"),
-    ("blog_dedup_scan_run_items", "blog_dedup_scan_run_items_survivor_blog_id_fkey", "survivor_blog_id", "SET NULL"),
 )
 
 

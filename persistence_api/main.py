@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from persistence_api.email_delivery import EmailDeliveryError
+from persistence_api.email_delivery import build_email_delivery
 from persistence_api.repository import BLOG_CATALOG_DEFAULT_PAGE_SIZE
 from persistence_api.repository import BLOG_LABELING_DEFAULT_PAGE_SIZE
 from persistence_api.age_graph import AgeGraphManager
@@ -49,16 +51,35 @@ class UpsertBlogRequest(BaseModel):
     domain: str
     email: str | None = None
     feed_url: str | None = None
+    accepted_by: str | None = None
+    seed_source_path: str | None = None
+    seed_source_row: int | None = None
 
 
-class CreateIngestionRequest(BaseModel):
+class CreateUserSeedRequest(BaseModel):
     homepage_url: str
-    email: str
 
 
 class UserAuthRequest(BaseModel):
     email: str
     password: str
+
+
+class EmailRequest(BaseModel):
+    email: str
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+class PasswordResetRequest(BaseModel):
+    token: str
+    password: str
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: str
 
 
 class BlogResultRequest(BaseModel):
@@ -68,6 +89,8 @@ class BlogResultRequest(BaseModel):
     metadata_captured: bool = False
     title: str | None = None
     icon_url: str | None = None
+    crawl_error_kind: str | None = None
+    crawl_error_message: str | None = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -107,6 +130,33 @@ class IncrementBlogUserLabelRequest(BaseModel):
     user_id: int | None = None
 
 
+class CreateRandomRecommendationBatchRequest(BaseModel):
+    count: int = 9
+    visitor_id: str
+    session_id: str
+    user_id: int | None = None
+    source: str | None = None
+    page_url: str | None = None
+    context: dict[str, Any] | None = None
+
+
+class RecordBlogInteractionRequest(BaseModel):
+    event_uuid: str
+    event_type: str
+    blog_id: int
+    visitor_id: str
+    session_id: str
+    entrance_kind: str
+    entrance_url: str
+    request_uuid: str | None = None
+    impression_id: int | None = None
+    position: int | None = None
+    interaction_order: int = 1
+    user_id: int | None = None
+    client_event_at: str | None = None
+    attributes: dict[str, Any] | None = None
+
+
 class CreateBlogLabelTagRequest(BaseModel):
     name: str
 
@@ -122,13 +172,6 @@ class BlogLabelParquetStatusResponse(BaseModel):
     rewritten: bool
     message: str
     updated_at: str | None
-
-
-class FinalizeBlogDedupScanRunRequest(BaseModel):
-    crawler_restart_attempted: bool
-    crawler_restart_succeeded: bool
-    search_reindexed: bool
-    error_message: str | None = None
 
 
 _T = TypeVar("_T")
@@ -250,7 +293,12 @@ def build_persistence_state(settings: Settings | None = None) -> PersistenceStat
     resolved = settings or Settings.from_env()
     if resolved.db_dsn:
         run_postgres_migrations(resolved.db_dsn)
-    repository = build_repository(db_path=resolved.db_path, db_dsn=resolved.db_dsn, settings=resolved)
+    repository = build_repository(
+        db_path=resolved.db_path,
+        db_dsn=resolved.db_dsn,
+        settings=resolved,
+        email_delivery=build_email_delivery(resolved),
+    )
     age_manager = AgeGraphManager(
         getattr(repository, "engine", None),
         enabled=resolved.age_enabled and resolved.age_shadow_reads,
@@ -309,6 +357,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         has_title: str | None = None,
         has_icon: str | None = None,
         min_connections: str | None = None,
+        acceptance_status: str | None = "ACCEPTED",
     ) -> dict[str, Any]:
         return _call_with_value_error_http_translation(
             lambda: get_state().repository.list_blogs_catalog(
@@ -323,6 +372,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
                 has_title=has_title,
                 has_icon=has_icon,
                 min_connections=min_connections,
+                acceptance_status=acceptance_status,
             ),
             status_code=422,
         )
@@ -334,9 +384,44 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             status_code=422,
         )
 
-    @app.get("/internal/ingestion-requests")
-    def list_priority_ingestion_requests() -> list[dict[str, Any]]:
-        return get_state().repository.list_priority_ingestion_requests()
+    @app.post("/internal/recommendations/random-blog-batches")
+    def create_random_recommendation_batch(payload: CreateRandomRecommendationBatchRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.create_random_recommendation_batch(**payload.model_dump()),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.post("/internal/recommendation-events")
+    def record_blog_interaction(payload: RecordBlogInteractionRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.record_blog_interaction(**payload.model_dump()),
+            exception_translations=(
+                (ValueError, 422, None),
+                (BlogLabelingNotFoundError, 404, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.get("/internal/blogs/{blog_id}/recommendation-stats")
+    def get_blog_recommendation_stats(blog_id: int) -> dict[str, Any]:
+        return _require_payload(
+            get_state().repository.get_blog_recommendation_stats(blog_id),
+            detail="blog_not_found",
+        )
+
+    @app.get("/internal/recommendation-stats")
+    def get_recommendation_strategy_stats() -> dict[str, Any]:
+        return get_state().repository.get_recommendation_strategy_stats()
+
+    @app.get("/internal/admin/hourly-stats")
+    def get_admin_hourly_stats(limit: int = 24) -> dict[str, Any]:
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.get_admin_hourly_stats(limit=limit),
+            status_code=422,
+        )
 
     @app.post("/internal/users/register")
     def register_user(payload: UserAuthRequest) -> dict[str, Any]:
@@ -345,6 +430,7 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             exception_translations=(
                 (ValueError, 422, None),
                 (UserAuthError, 409, None),
+                (EmailDeliveryError, 502, "email_delivery_failed"),
             ),
         )
 
@@ -368,6 +454,57 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     @app.post("/internal/users/logout")
     def logout_user(session_token: str) -> dict[str, bool]:
         return {"ok": get_state().repository.revoke_user_session(token=session_token)}
+
+    @app.post("/internal/users/email-verification/request")
+    def request_email_verification(payload: EmailRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.request_email_verification(email=payload.email),
+            exception_translations=(
+                (ValueError, 422, None),
+                (EmailDeliveryError, 502, "email_delivery_failed"),
+            ),
+        )
+
+    @app.post("/internal/users/email-verification/confirm")
+    def confirm_email_verification(payload: TokenRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.confirm_email_verification(token=payload.token),
+            exception_translations=((UserAuthError, 401, None),),
+        )
+
+    @app.post("/internal/users/password-reset/request")
+    def request_password_reset(payload: EmailRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.request_password_reset(email=payload.email),
+            exception_translations=(
+                (ValueError, 422, None),
+                (EmailDeliveryError, 502, "email_delivery_failed"),
+            ),
+        )
+
+    @app.post("/internal/users/password-reset/confirm")
+    def reset_user_password(payload: PasswordResetRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.reset_user_password(token=payload.token, password=payload.password),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 401, None),
+            ),
+        )
+
+    @app.get("/internal/users")
+    def list_users(page: int = 1, page_size: int = 50) -> dict[str, Any]:
+        return get_state().repository.list_users(page=page, page_size=page_size)
+
+    @app.patch("/internal/users/{user_id}/role")
+    def update_user_role(user_id: int, payload: UpdateUserRoleRequest) -> dict[str, Any]:
+        return _call_with_http_exception_translation(
+            lambda: get_state().repository.update_user_role(user_id=user_id, role=payload.role),
+            exception_translations=(
+                (ValueError, 422, None),
+                (UserAuthError, 404, None),
+            ),
+        )
 
     @app.get("/internal/users/{user_id}/label-selections")
     def list_user_label_selections(user_id: int, limit: int = 50) -> list[dict[str, Any]]:
@@ -484,15 +621,9 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
         )
 
     @app.get("/internal/queue/next")
-    def next_waiting(include_priority: bool = True) -> dict[str, Any] | None:
+    def next_waiting() -> dict[str, Any] | None:
         return _load_optional_row_as_dict(
-            lambda: get_state().repository.get_next_waiting_blog(include_priority=include_priority),
-        )
-
-    @app.get("/internal/queue/priority-next")
-    def next_priority_waiting() -> dict[str, Any] | None:
-        return _load_optional_row_as_dict(
-            lambda: get_state().repository.get_next_priority_blog(),
+            lambda: get_state().repository.get_next_waiting_blog(),
         )
 
     @app.get("/internal/blogs/{blog_id}/detail")
@@ -502,65 +633,27 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
             detail="blog_not_found",
         )
 
-    @app.post("/internal/ingestion-requests")
-    def create_ingestion_request(payload: CreateIngestionRequest) -> dict[str, Any]:
+    @app.post("/internal/user-seeds")
+    def create_user_seed(payload: CreateUserSeedRequest) -> dict[str, Any]:
         return _call_with_value_error_http_translation(
-            lambda: get_state().repository.create_ingestion_request(**payload.model_dump()),
+            lambda: get_state().repository.create_user_seed(**payload.model_dump()),
             status_code=422,
-        )
-
-    @app.get("/internal/ingestion-requests/{request_id}")
-    def get_ingestion_request(request_id: int, request_token: str) -> dict[str, Any]:
-        return _require_payload(
-            get_state().repository.get_ingestion_request(
-                request_id=request_id,
-                request_token=request_token,
-            ),
-            detail="ingestion_request_not_found",
-        )
-
-    @app.post("/internal/blog-dedup-scans/runs")
-    def create_blog_dedup_scan_run(crawler_was_running: bool = False) -> dict[str, Any]:
-        return get_state().repository.create_blog_dedup_scan_run(crawler_was_running=crawler_was_running)
-
-    @app.post("/internal/blog-dedup-scans/{run_id}/execute")
-    def execute_blog_dedup_scan_run(run_id: int) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
-            lambda: get_state().repository.execute_blog_dedup_scan_run(run_id=run_id),
-            status_code=404,
-        )
-
-    @app.post("/internal/blog-dedup-scans/{run_id}/finalize")
-    def finalize_blog_dedup_scan_run(run_id: int, payload: FinalizeBlogDedupScanRunRequest) -> dict[str, Any]:
-        return _call_with_value_error_http_translation(
-            lambda: get_state().repository.finalize_blog_dedup_scan_run(
-                run_id=run_id,
-                **payload.model_dump(),
-            ),
-            status_code=404,
-        )
-
-    @app.get("/internal/blog-dedup-scans/latest")
-    def get_latest_blog_dedup_scan_run() -> dict[str, Any]:
-        return _require_payload(
-            get_state().repository.get_latest_blog_dedup_scan_run(),
-            detail="blog_dedup_scan_run_not_found",
-        )
-
-    @app.get("/internal/blog-dedup-scans/{run_id}/items")
-    def list_blog_dedup_scan_run_items(run_id: int) -> list[dict[str, Any]]:
-        return get_state().repository.list_blog_dedup_scan_run_items(run_id)
-
-    @app.post("/internal/ingestion-requests/by-blog/{blog_id}/crawling")
-    def mark_ingestion_request_crawling(blog_id: int) -> dict[str, bool]:
-        return _run_action_and_return_ok(
-            lambda: get_state().repository.mark_ingestion_request_crawling(blog_id=blog_id),
         )
 
     @app.post("/internal/blogs/upsert")
     def upsert_blog(payload: UpsertBlogRequest) -> dict[str, Any]:
         blog_id, inserted = get_state().repository.upsert_blog(**payload.model_dump())
         return {"id": blog_id, "inserted": inserted}
+
+    @app.get("/internal/seeds")
+    def list_seeds() -> list[dict[str, Any]]:
+        """Return durable seed rows for crawler bootstrap replay."""
+        return get_state().repository.list_seeds()
+
+    @app.get("/internal/blogs/by-normalized-url")
+    def find_blog_by_normalized_url(normalized_url: str) -> dict[str, int | None]:
+        """Return the existing blog id for one normalized URL."""
+        return {"id": get_state().repository.find_blog_id_by_normalized_url(normalized_url=normalized_url)}
 
     @app.post("/internal/blogs/{blog_id}/result")
     def mark_blog_result(blog_id: int, payload: BlogResultRequest) -> dict[str, bool]:

@@ -139,12 +139,13 @@ def _available_graph(
     blogs: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    nodes = [dict(blog) for blog in blogs if str(blog.get("crawl_status")) == "FINISHED"]
-    finished_ids = {int(node["id"]) for node in nodes}
+    """Return graph nodes and edges whose endpoints still exist in blogs."""
+    nodes = [dict(blog) for blog in blogs]
+    node_ids = {int(node["id"]) for node in nodes}
     filtered_edges = [
         dict(edge)
         for edge in edges
-        if int(edge["from_blog_id"]) in finished_ids and int(edge["to_blog_id"]) in finished_ids
+        if int(edge["from_blog_id"]) in node_ids and int(edge["to_blog_id"]) in node_ids
     ]
     return nodes, filtered_edges
 
@@ -418,7 +419,7 @@ def build_core_graph_view(
     """Return the default structured subgraph view."""
     nodes = snapshot["nodes"]
     edges = snapshot["edges"]
-    limit = _clamp_int(limit, 24, MAX_CORE_LIMIT)
+    limit = _clamp_int(limit, 0, MAX_CORE_LIMIT)
     sampled_ids = _sample_node_ids(
         nodes,
         edges,
@@ -443,7 +444,16 @@ def build_core_graph_view(
     adjacency, _, _ = _build_adjacency(filtered_nodes, edges)
     ordered_nodes = _sorted_nodes(filtered_nodes)
     if strategy == "seed":
-        seed_nodes = sorted(filtered_nodes, key=lambda node: int(node["id"]))[: min(len(filtered_nodes), 18)]
+        selected_ids = {int(node["id"]) for node in sorted(filtered_nodes, key=lambda node: int(node["id"]))[:limit]}
+        return _build_view_payload(
+            snapshot,
+            selected_ids,
+            strategy=strategy,
+            limit=limit,
+            sample_mode=sample_mode,
+            sample_value=sample_value,
+            sample_seed=sample_seed,
+        )
     else:
         strategy = "degree"
         seed_nodes = ordered_nodes[: min(len(ordered_nodes), max(12, limit // 4))]

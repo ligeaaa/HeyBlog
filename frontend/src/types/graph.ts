@@ -10,6 +10,7 @@ export interface GraphNode {
   description?: string | null;
   x?: number;
   y?: number;
+  z?: number;
   degree?: number;
   incomingCount?: number;
   outgoingCount?: number;
@@ -61,11 +62,49 @@ export interface RecommendedBlog extends GraphNode {
   viaBlogs: GraphNode[];
 }
 
+export interface BlogDiscoveryStep {
+  blog: Pick<GraphNode, "id" | "domain" | "title" | "iconUrl"> | null;
+  blogId: number;
+  url: string;
+  domain: string;
+  acceptedBy: string | null;
+  acceptedLabel: string | null;
+  rawId: number | null;
+  rawSourceBlogId: number | null;
+  rawAcceptedBy: string | null;
+  discoveredAt: string | null;
+}
+
+export interface BlogDiscoveryPath {
+  mode: "manual" | "crawled";
+  originSource: string | null;
+  originLabel: string;
+  targetSource: string | null;
+  truncated: boolean;
+  steps: BlogDiscoveryStep[];
+}
+
+export interface BlogRelationGraph {
+  direction: "incoming" | "outgoing";
+  focusBlogId: number;
+  depth: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface BlogDetail extends GraphNode {
+  crawlStatus: string;
+  crawlErrorKind: string | null;
   incomingLinks: number;
   outgoingLinks: number;
   relatedNodes: GraphNode[];
+  outgoingNodes: GraphNode[];
   recommendedBlogs: RecommendedBlog[];
+  discoveryPath: BlogDiscoveryPath | null;
+  relationGraphs: {
+    incoming: BlogRelationGraph;
+    outgoing: BlogRelationGraph;
+  };
 }
 
 export interface StatsData {
@@ -85,6 +124,9 @@ export interface StatusData {
 
 export interface BlogCatalogItem extends GraphNode {
   normalizedUrl: string;
+  requestUuid?: string;
+  impressionId?: number;
+  position?: number;
   identityKey: string;
   identityReasonCodes: string[];
   identityRulesetVersion: string;
@@ -113,10 +155,43 @@ export interface BlogCatalogPage {
   sort: string;
 }
 
+export interface RandomRecommendationBatch {
+  requestUuid: string;
+  surface: string;
+  strategy: string;
+  strategyVersion: string;
+  visitorId: string;
+  sessionId: string;
+  requestedCount: number;
+  servedCount: number;
+  createdAt: string | null;
+  items: BlogCatalogItem[];
+}
+
+export interface RecommendationEventInput {
+  eventUuid: string;
+  eventType: string;
+  blogId: number;
+  visitorId: string;
+  sessionId: string;
+  entranceKind: string;
+  entranceUrl: string;
+  requestUuid?: string;
+  impressionId?: number;
+  position?: number;
+  interactionOrder?: number;
+  clientEventAt?: string;
+  attributes?: Record<string, unknown>;
+}
+
 export interface UserProfile {
   id: number;
   email: string;
   displayName: string;
+  role: "admin" | "user";
+  isActive: boolean;
+  emailVerified: boolean;
+  emailVerifiedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -125,6 +200,17 @@ export interface AuthSession {
   token: string;
   expiresAt: string | null;
   user: UserProfile;
+  emailVerification?: AuthLifecycleToken;
+}
+
+export interface AuthLifecycleToken {
+  sent: boolean;
+  verificationToken?: string;
+  verificationUrl?: string;
+  resetToken?: string;
+  resetUrl?: string;
+  expiresAt?: string | null;
+  alreadyVerified?: boolean;
 }
 
 export interface UserLabelSelection {
@@ -161,19 +247,29 @@ export interface AdminRuntimeCurrent {
   elapsedSeconds: number | null;
 }
 
-export interface AdminRequeueFailedBlogsResult {
-  requeued: number;
+export interface AdminHourlyStatsRow {
+  id: number;
+  hourStart: string | null;
+  userCount: number;
+  randomRequestCount: number;
+  randomImpressionCount: number;
+  detailOpenCount: number;
+  externalOpenCount: number;
+  detailCtr: number;
+  externalCtr: number;
+  totalClickCtr: number;
+  refreshedAt: string | null;
+  createdAt: string | null;
 }
 
-export interface AdminDedupSummary {
-  id: number;
-  status: string;
-  totalCount: number;
-  scannedCount: number;
-  removedCount: number;
-  keptCount: number;
-  createdAt: string;
-  updatedAt: string;
+export interface AdminHourlyStats {
+  currentHour: AdminHourlyStatsRow;
+  latest: AdminHourlyStatsRow;
+  items: AdminHourlyStatsRow[];
+}
+
+export interface AdminRequeueFailedBlogsResult {
+  requeued: number;
 }
 
 export interface AdminBlogLabelTag {

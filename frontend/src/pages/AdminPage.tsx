@@ -18,13 +18,14 @@ import {
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Navigation } from "../components/Navigation";
+import { readStoredAuthSession } from "../lib/auth";
 import {
   downloadAdminBlogLabelParquet,
   fetchAdminBlogLabelCounts,
   fetchAdminBlogLabelingCandidates,
   fetchAdminBlogLabelParquetStatus,
   fetchAdminBlogLabelTitlePreview,
-  fetchAdminDedupLatest,
+  fetchAdminHourlyStats,
   fetchAdminRuntimeCurrent,
   fetchAdminRuntimeStatus,
   fetchStats,
@@ -42,12 +43,12 @@ import {
 import type {
   AdminBlogLabelingCandidate,
   AdminBlogLabelTag,
-  AdminDedupSummary,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
   StatsData,
   AdminBlogLabelCounts,
   AdminBlogLabelParquetStatus,
+  AdminHourlyStats,
 } from "../types/graph";
 
 const ADMIN_TOKEN_STORAGE_KEY = "heyblog_admin_token";
@@ -65,6 +66,19 @@ function readStoredAdminToken(): string {
     return "";
   }
   return window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ?? "";
+}
+
+function readDefaultAdminToken(): string {
+  const session = readStoredAuthSession();
+  if (
+    session?.token &&
+    session.user.role === "admin" &&
+    session.user.isActive &&
+    session.user.emailVerified
+  ) {
+    return session.token;
+  }
+  return readStoredAdminToken();
 }
 
 /**
@@ -100,6 +114,34 @@ function clearStoredAdminToken() {
 }
 
 /**
+ * Format one ratio as a percentage for compact admin stats.
+ *
+ * @param value Ratio where `1` means 100%.
+ * @returns Human-readable percentage string.
+ */
+function formatPercent(value: number | null | undefined): string {
+  return `${((value ?? 0) * 100).toFixed(2)}%`;
+}
+
+/**
+ * Format an ISO timestamp for the current operator locale.
+ *
+ * @param value ISO timestamp or null.
+ * @returns Short local date-time string.
+ */
+function formatAdminTime(value: string | null | undefined): string {
+  if (!value) {
+    return "--";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+/**
  * Resolve an icon URL for a labeling card.
  *
  * @param candidate Blog labeling candidate shown in the admin workbench.
@@ -118,16 +160,16 @@ function resolveLabelingIconUrl(candidate: AdminBlogLabelingCandidate): string {
  * @returns Admin page UI.
  */
 export function AdminPage() {
-  const [adminTokenInput, setAdminTokenInput] = useState(readStoredAdminToken());
-  const [activeAdminToken, setActiveAdminToken] = useState(readStoredAdminToken());
+  const [adminTokenInput, setAdminTokenInput] = useState(readDefaultAdminToken());
+  const [activeAdminToken, setActiveAdminToken] = useState(readDefaultAdminToken());
   const [stats, setStats] = useState<StatsData>({ totalNodes: 0, totalEdges: 0 });
   const [runtimeStatus, setRuntimeStatus] = useState<AdminRuntimeStatus | null>(null);
   const [runtimeCurrent, setRuntimeCurrent] = useState<AdminRuntimeCurrent | null>(null);
-  const [latestDedup, setLatestDedup] = useState<AdminDedupSummary | null>(null);
   const [labelingCandidates, setLabelingCandidates] = useState<AdminBlogLabelingCandidate[]>([]);
   const [labelTags, setLabelTags] = useState<AdminBlogLabelTag[]>([]);
   const [labelCounts, setLabelCounts] = useState<AdminBlogLabelCounts>({ totalLabeled: 0, byLabel: {} });
   const [labelParquetStatus, setLabelParquetStatus] = useState<AdminBlogLabelParquetStatus | null>(null);
+  const [adminHourlyStats, setAdminHourlyStats] = useState<AdminHourlyStats | null>(null);
   const [labelingTotalItems, setLabelingTotalItems] = useState(0);
   const [labelingTotalPages, setLabelingTotalPages] = useState(1);
   const [labelingPage, setLabelingPage] = useState(1);
@@ -180,36 +222,36 @@ export function AdminPage() {
       if (!adminToken.trim()) {
         setRuntimeStatus(null);
         setRuntimeCurrent(null);
-        setLatestDedup(null);
         setLabelingCandidates([]);
         setLabelTags([]);
         setLabelCounts({ totalLabeled: 0, byLabel: {} });
         setLabelParquetStatus(null);
+        setAdminHourlyStats(null);
         setLabelingTotalItems(0);
         setLabelingTotalPages(1);
-        setAdminError("请输入管理员 Token 以加载受保护接口。");
+        setAdminError("请输入管理员 Token 或 Admin 账号登录 Token 以加载受保护接口。");
         return;
       }
 
       const [
         runtimeStatusResponse,
         runtimeCurrentResponse,
-        latestDedupResponse,
         labelCountResponse,
         labelParquetResponse,
+        hourlyStatsResponse,
       ] =
         await Promise.all([
           fetchAdminRuntimeStatus(adminToken),
           fetchAdminRuntimeCurrent(adminToken),
-          fetchAdminDedupLatest(adminToken),
           fetchAdminBlogLabelCounts(adminToken),
           fetchAdminBlogLabelParquetStatus(adminToken),
+          fetchAdminHourlyStats(adminToken),
         ]);
       setRuntimeStatus(runtimeStatusResponse);
       setRuntimeCurrent(runtimeCurrentResponse);
-      setLatestDedup(latestDedupResponse);
       setLabelCounts(labelCountResponse);
       setLabelParquetStatus(labelParquetResponse);
+      setAdminHourlyStats(hourlyStatsResponse);
       setAdminError(null);
 
       try {
@@ -233,14 +275,14 @@ export function AdminPage() {
       console.error(error);
       setRuntimeStatus(null);
       setRuntimeCurrent(null);
-      setLatestDedup(null);
       setLabelingCandidates([]);
       setLabelTags([]);
       setLabelCounts({ totalLabeled: 0, byLabel: {} });
       setLabelParquetStatus(null);
+      setAdminHourlyStats(null);
       setLabelingTotalItems(0);
       setLabelingTotalPages(1);
-      setAdminError("管理员接口加载失败，请确认 Token 是否正确。");
+      setAdminError("管理员接口加载失败，请确认 Token 是否正确且账号具备 Admin 身份。");
     } finally {
       if (!options?.silent) {
         setIsLoading(false);
@@ -318,7 +360,7 @@ export function AdminPage() {
    */
   async function refreshLabelingWorkbench(options: { page?: number; query?: string } = {}) {
     if (!activeAdminToken.trim()) {
-      toast.error("请先输入管理员 Token。");
+      toast.error("请先输入管理员 Token 或 Admin 账号登录 Token。");
       return;
     }
     try {
@@ -337,7 +379,7 @@ export function AdminPage() {
       setLabelParquetStatus(parquetStatus);
     } catch (error) {
       console.error(error);
-      toast.error("标注台加载失败，请检查 token 或服务状态。");
+      toast.error("标注台加载失败，请检查 Token、Admin 身份或服务状态。");
     } finally {
       setIsLabelingLoading(false);
     }
@@ -352,7 +394,7 @@ export function AdminPage() {
    */
   async function handleApplyCandidateLabel(candidate: AdminBlogLabelingCandidate, tag: AdminBlogLabelTag) {
     if (!activeAdminToken.trim()) {
-      toast.error("请先输入管理员 Token。");
+      toast.error("请先输入管理员 Token 或 Admin 账号登录 Token。");
       return;
     }
     try {
@@ -476,6 +518,8 @@ export function AdminPage() {
   }
 
   const avgConnections = stats.totalNodes > 0 ? (stats.totalEdges / stats.totalNodes).toFixed(2) : "0.00";
+  const currentAdminStats = adminHourlyStats?.currentHour ?? null;
+  const recentHourlyRows = adminHourlyStats?.items.slice(0, 6) ?? [];
   const visibleLabelCounts = labelTags.map((tag) => ({
     ...tag,
     count: labelCounts.byLabel[tag.slug] ?? 0,
@@ -555,6 +599,80 @@ export function AdminPage() {
             </div>
             <div className="text-sm text-slate-500">Runtime 状态</div>
             <div className="mt-2 text-2xl text-slate-950">{runtimeStatus?.runnerStatus ?? "未授权"}</div>
+          </div>
+        </section>
+
+        <section className="mb-8 rounded-[32px] border border-slate-200 bg-white/95 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
+          <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="text-2xl text-slate-950">后台统计</h2>
+              <p className="mt-2 text-sm text-slate-500">
+                当前自然小时：{formatAdminTime(currentAdminStats?.hourStart)}，刷新于{" "}
+                {formatAdminTime(currentAdminStats?.refreshedAt)}。
+              </p>
+            </div>
+            <div className="text-sm text-slate-500">统计按推荐曝光计算平均点击率。</div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-sm text-slate-500">当前用户数</div>
+              <div className="mt-2 text-3xl text-slate-950">{currentAdminStats?.userCount ?? 0}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-sm text-slate-500">随机请求 / 曝光</div>
+              <div className="mt-2 text-3xl text-slate-950">
+                {currentAdminStats?.randomRequestCount ?? 0} / {currentAdminStats?.randomImpressionCount ?? 0}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-sm text-slate-500">详情点击率</div>
+              <div className="mt-2 text-3xl text-slate-950">{formatPercent(currentAdminStats?.detailCtr)}</div>
+              <div className="mt-1 text-xs text-slate-500">{currentAdminStats?.detailOpenCount ?? 0} 次详情打开</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-sm text-slate-500">外链点击率</div>
+              <div className="mt-2 text-3xl text-slate-950">{formatPercent(currentAdminStats?.externalCtr)}</div>
+              <div className="mt-1 text-xs text-slate-500">{currentAdminStats?.externalOpenCount ?? 0} 次外链打开</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-sm text-slate-500">总点击率</div>
+              <div className="mt-2 text-3xl text-slate-950">{formatPercent(currentAdminStats?.totalClickCtr)}</div>
+            </div>
+          </div>
+
+          <div className="mt-5 overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 font-medium">小时</th>
+                  <th className="px-3 py-2 font-medium">用户</th>
+                  <th className="px-3 py-2 font-medium">请求</th>
+                  <th className="px-3 py-2 font-medium">曝光</th>
+                  <th className="px-3 py-2 font-medium">详情 CTR</th>
+                  <th className="px-3 py-2 font-medium">外链 CTR</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                {recentHourlyRows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-3 py-2">{formatAdminTime(row.hourStart)}</td>
+                    <td className="px-3 py-2">{row.userCount}</td>
+                    <td className="px-3 py-2">{row.randomRequestCount}</td>
+                    <td className="px-3 py-2">{row.randomImpressionCount}</td>
+                    <td className="px-3 py-2">{formatPercent(row.detailCtr)}</td>
+                    <td className="px-3 py-2">{formatPercent(row.externalCtr)}</td>
+                  </tr>
+                ))}
+                {recentHourlyRows.length === 0 ? (
+                  <tr>
+                    <td className="px-3 py-5 text-slate-500" colSpan={6}>
+                      输入管理员 Token 后加载小时统计。
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
         </section>
 
@@ -913,17 +1031,6 @@ export function AdminPage() {
                     elapsed: {runtimeCurrent?.elapsedSeconds ?? "-"}s
                     <br />
                     active run: {runtimeCurrent?.activeRunId ?? "-"}
-                  </div>
-                </div>
-                <div className="rounded-3xl bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">latest dedup scan</div>
-                  <div className="mt-1 text-xl text-slate-950">{latestDedup?.status ?? "暂无记录"}</div>
-                  <div className="mt-3 text-sm leading-7 text-slate-600">
-                    run id: {latestDedup?.id ?? "-"}
-                    <br />
-                    scanned / total: {latestDedup ? `${latestDedup.scannedCount} / ${latestDedup.totalCount}` : "-"}
-                    <br />
-                    removed: {latestDedup?.removedCount ?? "-"}
                   </div>
                 </div>
               </div>

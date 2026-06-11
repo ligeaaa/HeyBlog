@@ -5,13 +5,16 @@ from typing import Any
 from typing import Callable
 
 import pytest
+from sqlalchemy import func
 from sqlalchemy import select
 
 from crawler.crawling.fetching.base import FetchAttempt
 from crawler.crawling.fetching.base import FetchResult
 from crawler.crawling.pipeline import CrawlPipeline
 from persistence_api.db import session_scope
+from persistence_api.models import BlogModel
 from persistence_api.models import RawDiscoveredUrlModel
+from persistence_api.models import SeedModel
 from persistence_api.repository import Repository
 from shared.config import Settings
 
@@ -26,6 +29,7 @@ class FakeFetcher:
         batch_results: dict[str, FetchAttempt] | None = None,
         on_fetch: Callable[[str, float | None], None] | None = None,
         on_fetch_many: Callable[[list[str], float | None], None] | None = None,
+        valid_icon_urls: dict[str, str | None] | None = None,
     ) -> None:
         self.responses = responses
         self.batch_results = batch_results or {}
@@ -35,6 +39,8 @@ class FakeFetcher:
         self.fetch_timeouts: list[float | None] = []
         self.fetch_many_calls: list[tuple[list[str], int, float | None]] = []
         self.batch_completion_order: list[str] = []
+        self.valid_icon_urls = valid_icon_urls or {}
+        self.icon_validation_calls: list[tuple[str, float | None]] = []
 
     def fetch(self, url: str, *, timeout_seconds: float | None = None) -> FetchResult:
         self.calls.append(url)
@@ -76,6 +82,10 @@ class FakeFetcher:
             for url in urls
         }
 
+    def validate_icon_url(self, url: str, *, timeout_seconds: float | None = None) -> str | None:
+        self.icon_validation_calls.append((url, timeout_seconds))
+        return self.valid_icon_urls.get(url)
+
 
 def build_pipeline(tmp_path: Path) -> tuple[CrawlPipeline, Repository]:
     """Construct a pipeline backed by a temporary repository."""
@@ -102,6 +112,83 @@ def seed_blog(repository: Repository) -> dict[str, Any]:
     blog = repository.get_blog(blog_id)
     assert blog is not None
     return blog
+
+
+def test_bootstrap_seeds_persists_seed_rows_with_blog_links(tmp_path: Path) -> None:
+    """Seed CSV bootstrap should maintain a durable seed table alongside blogs."""
+    pipeline, repository = build_pipeline(tmp_path)
+    seed_path = tmp_path / "seed.csv"
+    seed_path.write_text(
+        "url\nhttps://one.example.com/\n\nhttps://two.example.com/\n",
+        encoding="utf-8",
+    )
+
+    result = pipeline.bootstrap_seeds(seed_path)
+
+    assert result == {"seed_path": str(seed_path), "imported": 2}
+    with session_scope(repository.session_factory) as session:
+        seeds = session.scalars(select(SeedModel).order_by(SeedModel.id)).all()
+        assert [(seed.url, seed.normalized_url, seed.source_path, seed.source_row) for seed in seeds] == [
+            (
+                "https://one.example.com/",
+                "https://one.example.com/",
+                str(seed_path),
+                2,
+            ),
+            (
+                "https://two.example.com/",
+                "https://two.example.com/",
+                str(seed_path),
+                3,
+            ),
+        ]
+        assert all(seed.blog_id is not None for seed in seeds)
+
+
+def test_bootstrap_seeds_does_not_reread_csv_after_seed_table_exists(tmp_path: Path) -> None:
+    """Re-importing after seed table initialization should not read CSV again."""
+    pipeline, repository = build_pipeline(tmp_path)
+    seed_path = tmp_path / "seed.csv"
+    seed_path.write_text("url\nhttps://one.example.com/\n", encoding="utf-8")
+    assert pipeline.bootstrap_seeds(seed_path)["imported"] == 1
+
+    seed_path.write_text("url\nhttps://one.example.com/?utm_source=ignored\n", encoding="utf-8")
+    result = pipeline.bootstrap_seeds(seed_path)
+
+    assert result == {"seed_path": str(seed_path), "imported": 0}
+    with session_scope(repository.session_factory) as session:
+        seeds = session.scalars(select(SeedModel)).all()
+        assert len(seeds) == 1
+        assert seeds[0].url == "https://one.example.com/"
+        assert seeds[0].normalized_url == "https://one.example.com/"
+        assert session.scalar(select(func.count()).select_from(BlogModel)) == 1
+
+
+def test_bootstrap_seeds_replays_seed_table_before_reading_csv(tmp_path: Path) -> None:
+    """When durable seeds exist, bootstrap should use them instead of the CSV file."""
+    pipeline, repository = build_pipeline(tmp_path)
+    seed_path = tmp_path / "seed.csv"
+    seed_path.write_text("url\nhttps://csv-only.example.com/\n", encoding="utf-8")
+    blog_id, inserted = repository.upsert_blog(
+        url="https://table-seed.example.com/",
+        normalized_url="https://table-seed.example.com/",
+        domain="table-seed.example.com",
+        accepted_by="seed",
+        seed_source_path="seed.csv",
+        seed_source_row=2,
+    )
+    assert inserted is True
+    repository.reset()
+
+    result = pipeline.bootstrap_seeds(seed_path)
+
+    assert result == {"seed_path": str(seed_path), "imported": 1}
+    with session_scope(repository.session_factory) as session:
+        blog_urls = session.scalars(select(BlogModel.normalized_url).order_by(BlogModel.id)).all()
+        assert blog_urls == ["https://table-seed.example.com/"]
+        seed = session.scalar(select(SeedModel))
+        assert seed is not None
+        assert seed.blog_id == blog_id
 
 
 def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
@@ -142,7 +229,10 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
                 status_code=200,
                 text=friend_page_html,
             ),
-        }
+        },
+        valid_icon_urls={
+            "https://blog.example.com/static/favicon.png": "https://cdn.example.com/favicon.png",
+        },
     )
 
     discovered = pipeline._crawl_blog(blog)
@@ -174,6 +264,77 @@ def test_pipeline_persists_only_valid_friend_links(tmp_path: Path) -> None:
     child_blog = next(blog_row for blog_row in blogs if blog_row["id"] != blog["id"])
     assert child_blog["domain"] == "friend.example"
     assert "depth" not in child_blog
+
+
+def test_pipeline_persists_edges_for_duplicate_target_urls(tmp_path: Path) -> None:
+    """Repeated target URL discoveries should still preserve new source edges."""
+    pipeline, repository = build_pipeline(tmp_path)
+    alpha = seed_blog(repository)
+    beta_id, _ = repository.upsert_blog(
+        url="https://beta.example/",
+        normalized_url="https://beta.example/",
+        domain="beta.example",
+    )
+    beta = repository.get_blog(beta_id)
+    assert beta is not None
+
+    homepage_html = '<html><body><footer><a href="/friends">友情链接</a></footer></body></html>'
+    alpha_friend_page_html = """
+    <html><body><section class="friend-links">
+      <a href="https://common.example/">Common</a>
+    </section></body></html>
+    """
+    beta_friend_page_html = """
+    <html><body><section class="friend-links">
+      <a href="https://common.example/">Common Again</a>
+      <a href="https://common.example/">Common Duplicate</a>
+    </section></body></html>
+    """
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text=homepage_html,
+            ),
+            "https://blog.example.com/friends": FetchResult(
+                url="https://blog.example.com/friends",
+                status_code=200,
+                text=alpha_friend_page_html,
+            ),
+            "https://beta.example/": FetchResult(
+                url="https://beta.example/",
+                status_code=200,
+                text=homepage_html,
+            ),
+            "https://beta.example/friends": FetchResult(
+                url="https://beta.example/friends",
+                status_code=200,
+                text=beta_friend_page_html,
+            ),
+        }
+    )
+
+    assert pipeline._crawl_blog(alpha) == 1
+    assert pipeline._crawl_blog(beta) == 1
+
+    common_blog = next(blog for blog in repository.list_blogs() if blog["domain"] == "common.example")
+    edges = repository.list_edges()
+    assert {(edge["from_blog_id"], edge["to_blog_id"]) for edge in edges} == {
+        (alpha["blog_id"], common_blog["id"]),
+        (beta["blog_id"], common_blog["id"]),
+    }
+
+    with session_scope(repository.session_factory) as session:
+        raw_rows = [
+            (row.source_blog_id, row.normalized_url, row.status)
+            for row in session.scalars(select(RawDiscoveredUrlModel).order_by(RawDiscoveredUrlModel.id.asc()))
+        ]
+
+    assert raw_rows == [
+        (alpha["blog_id"], "https://common.example/", "success"),
+        (beta["blog_id"], "https://common.example/", "rule:duplicate_url"),
+    ]
 
 
 def test_pipeline_stores_feed_url_when_friend_link_exposes_rss(tmp_path: Path) -> None:
@@ -295,7 +456,10 @@ def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
                 status_code=200,
                 text=friend_page_html,
             ),
-        }
+        },
+        valid_icon_urls={
+            "https://blog.example.com/static/favicon.png": "https://cdn.example.com/favicon.png",
+        },
     )
 
     pipeline._crawl_blog(blog)
@@ -303,11 +467,12 @@ def test_pipeline_persists_site_title_and_icon_metadata(tmp_path: Path) -> None:
     refreshed = repository.get_blog(int(blog["id"]))
     assert refreshed is not None
     assert refreshed["title"] == "Alpha Blog"
-    assert refreshed["icon_url"] == "https://blog.example.com/static/favicon.png"
+    assert refreshed["icon_url"] == "https://cdn.example.com/favicon.png"
+    assert pipeline.fetcher.icon_validation_calls[0][0] == "https://blog.example.com/static/favicon.png"
 
 
-def test_pipeline_falls_back_to_origin_favicon_when_page_has_no_icon_link(tmp_path: Path) -> None:
-    """Missing explicit icon markup should still produce an origin favicon candidate."""
+def test_pipeline_keeps_icon_null_when_page_has_no_icon_link(tmp_path: Path) -> None:
+    """Missing explicit icon markup should leave persisted icon metadata empty."""
     pipeline, repository = build_pipeline(tmp_path)
     blog = seed_blog(repository)
 
@@ -326,7 +491,43 @@ def test_pipeline_falls_back_to_origin_favicon_when_page_has_no_icon_link(tmp_pa
     refreshed = repository.get_blog(int(blog["id"]))
     assert refreshed is not None
     assert refreshed["title"] == "Plain Blog"
-    assert refreshed["icon_url"] == "https://blog.example.com/favicon.ico"
+    assert refreshed["icon_url"] is None
+    with session_scope(repository.session_factory) as session:
+        stored_icon_url = session.scalar(select(BlogModel.icon_url).where(BlogModel.blog_id == int(blog["id"])))
+    assert stored_icon_url is None
+    assert pipeline.fetcher.icon_validation_calls == []
+
+
+def test_pipeline_keeps_icon_null_when_icon_validation_fails(tmp_path: Path) -> None:
+    """Unreachable extracted icon candidates should not be persisted."""
+    pipeline, repository = build_pipeline(tmp_path)
+    blog = seed_blog(repository)
+
+    pipeline.fetcher = FakeFetcher(
+        {
+            "https://blog.example.com/": FetchResult(
+                url="https://blog.example.com/",
+                status_code=200,
+                text=(
+                    "<html><head><title>Plain Blog</title>"
+                    '<link rel="icon" href="/missing.ico" />'
+                    "</head><body></body></html>"
+                ),
+            ),
+        },
+        valid_icon_urls={"https://blog.example.com/missing.ico": None},
+    )
+
+    pipeline._crawl_blog(blog)
+
+    refreshed = repository.get_blog(int(blog["id"]))
+    assert refreshed is not None
+    assert refreshed["title"] == "Plain Blog"
+    assert refreshed["icon_url"] is None
+    with session_scope(repository.session_factory) as session:
+        stored_icon_url = session.scalar(select(BlogModel.icon_url).where(BlogModel.blog_id == int(blog["id"])))
+    assert stored_icon_url is None
+    assert pipeline.fetcher.icon_validation_calls[0][0] == "https://blog.example.com/missing.ico"
 
 
 def test_pipeline_enqueues_discovered_children_without_depth_gating(tmp_path: Path) -> None:
