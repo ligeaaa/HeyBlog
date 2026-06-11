@@ -416,6 +416,13 @@ def create_app(state: PersistenceState | None = None) -> FastAPI:
     def get_recommendation_strategy_stats() -> dict[str, Any]:
         return get_state().repository.get_recommendation_strategy_stats()
 
+    @app.get("/internal/admin/hourly-stats")
+    def get_admin_hourly_stats(limit: int = 24) -> dict[str, Any]:
+        return _call_with_value_error_http_translation(
+            lambda: get_state().repository.get_admin_hourly_stats(limit=limit),
+            status_code=422,
+        )
+
     @app.post("/internal/users/register")
     def register_user(payload: UserAuthRequest) -> dict[str, Any]:
         return _call_with_http_exception_translation(

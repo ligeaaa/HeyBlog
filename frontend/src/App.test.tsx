@@ -421,6 +421,91 @@ beforeEach(() => {
     if (url.pathname === "/api/stats") {
       return new Response(JSON.stringify({ total_blogs: statusPayload.total_blogs, total_edges: statusPayload.total_edges }));
     }
+    if (url.pathname === "/api/admin/runtime/status") {
+      return new Response(
+        JSON.stringify({
+          runner_status: "idle",
+          active_run_id: null,
+          worker_count: 0,
+          active_workers: 0,
+          current_blog_id: null,
+          current_url: null,
+          current_stage: null,
+          elapsed_seconds: null,
+          maintenance_in_progress: false,
+        }),
+      );
+    }
+    if (url.pathname === "/api/admin/runtime/current") {
+      return new Response(
+        JSON.stringify({
+          runner_status: "idle",
+          active_run_id: null,
+          worker_count: 0,
+          active_workers: 0,
+          current_blog_id: null,
+          current_url: null,
+          current_stage: null,
+          elapsed_seconds: null,
+        }),
+      );
+    }
+    if (url.pathname === "/api/admin/hourly-stats") {
+      const row = {
+        id: 1,
+        hour_start: "2026-06-11T10:00:00Z",
+        user_count: 12,
+        random_request_count: 3,
+        random_impression_count: 27,
+        detail_open_count: 4,
+        external_open_count: 5,
+        detail_ctr: 4 / 27,
+        external_ctr: 5 / 27,
+        total_click_ctr: 9 / 27,
+        refreshed_at: "2026-06-11T10:05:00Z",
+        created_at: "2026-06-11T10:05:00Z",
+      };
+      return new Response(JSON.stringify({ current_hour: row, latest: row, items: [row] }));
+    }
+    if (url.pathname === "/api/admin/blog-labeling/counts") {
+      return new Response(JSON.stringify({ total_labeled: 0, by_label: {} }));
+    }
+    if (url.pathname === "/api/admin/blog-labeling/parquet-status") {
+      return new Response(
+        JSON.stringify({
+          path: "/tmp/blog-label-training.parquet",
+          filename: "blog-label-training.parquet",
+          exists: false,
+          saved_count: 0,
+          total_labeled: 0,
+          missing_count: 0,
+          batch_size: 100,
+          rewritten: false,
+          message: "not ready",
+          updated_at: null,
+        }),
+      );
+    }
+    if (url.pathname === "/api/admin/blog-labeling/candidates") {
+      return new Response(
+        JSON.stringify({
+          items: [],
+          available_tags: [
+            { id: 1, name: "blog", slug: "blog", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+            { id: 2, name: "company", slug: "company", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+            { id: 3, name: "other", slug: "other", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+            { id: 4, name: "unknown", slug: "unknown", created_at: "2026-06-11T00:00:00Z", updated_at: "2026-06-11T00:00:00Z" },
+          ],
+          page: 1,
+          page_size: 9,
+          total_items: 0,
+          total_pages: 1,
+          has_next: false,
+          has_prev: false,
+          sort: "id_desc",
+        }),
+      );
+    }
     if (url.pathname === "/api/filter-stats") {
       return new Response(
         JSON.stringify({
@@ -644,6 +729,40 @@ test("shows the admin navigation item only for active verified admin sessions", 
   render(<App />);
 
   expect(await screen.findByRole("link", { name: "管理" })).toHaveAttribute("href", "/admin");
+});
+
+test("renders hourly admin statistics for verified admin sessions", async () => {
+  window.history.replaceState({}, "", "/admin");
+  window.localStorage.setItem(
+    "heyblog_user_session",
+    JSON.stringify({
+      token: "admin-session-token",
+      expiresAt: "2026-07-10T00:00:00Z",
+      user: {
+        id: 70,
+        email: "admin@magic-knowledge.top",
+        displayName: "admin",
+        role: "admin",
+        isActive: true,
+        emailVerified: true,
+        emailVerifiedAt: "2026-06-11T00:00:00Z",
+        createdAt: "2026-06-11T00:00:00Z",
+        updatedAt: "2026-06-11T00:00:00Z",
+      },
+    }),
+  );
+
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "后台统计" })).toBeInTheDocument();
+  expect(screen.getByText("当前用户数")).toBeInTheDocument();
+  expect(screen.getAllByText("12").length).toBeGreaterThan(0);
+  expect(screen.getByText("随机请求 / 曝光")).toBeInTheDocument();
+  expect(screen.getByText("3 / 27")).toBeInTheDocument();
+  expect(screen.getByText("详情点击率")).toBeInTheDocument();
+  expect(screen.getByText("外链点击率")).toBeInTheDocument();
+  expect(screen.getAllByText("14.81%").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("18.52%").length).toBeGreaterThan(0);
 });
 
 test("hides admin navigation and renders 404 for non-admin direct admin URLs", async () => {

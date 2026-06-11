@@ -77,6 +77,7 @@ Admin capabilities:
 - `GET /api/admin/blog-labeling/tags`
 - `POST /api/admin/blog-labeling/tags`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
+- `GET /api/admin/hourly-stats`
 - `GET /api/admin/users`
 - `PATCH /api/admin/users/{user_id}/role`
 

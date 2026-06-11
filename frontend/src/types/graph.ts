@@ -247,6 +247,27 @@ export interface AdminRuntimeCurrent {
   elapsedSeconds: number | null;
 }
 
+export interface AdminHourlyStatsRow {
+  id: number;
+  hourStart: string | null;
+  userCount: number;
+  randomRequestCount: number;
+  randomImpressionCount: number;
+  detailOpenCount: number;
+  externalOpenCount: number;
+  detailCtr: number;
+  externalCtr: number;
+  totalClickCtr: number;
+  refreshedAt: string | null;
+  createdAt: string | null;
+}
+
+export interface AdminHourlyStats {
+  currentHour: AdminHourlyStatsRow;
+  latest: AdminHourlyStatsRow;
+  items: AdminHourlyStatsRow[];
+}
+
 export interface AdminRequeueFailedBlogsResult {
   requeued: number;
 }

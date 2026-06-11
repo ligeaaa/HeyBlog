@@ -599,6 +599,15 @@ def create_app(state: BackendState | None = None) -> FastAPI:
             lambda: get_state().persistence.get_recommendation_strategy_stats()
         )
 
+    @app.get("/api/admin/hourly-stats")
+    def get_admin_hourly_stats(
+        limit: int = 24,
+        _: None = Depends(require_admin_access),
+    ) -> dict[str, Any]:
+        return _call_upstream_with_http_error_translation(
+            lambda: get_state().persistence.get_admin_hourly_stats(limit=limit)
+        )
+
     @app.get("/api/icons/proxy")
     def proxy_icon(url: str) -> Response:
         """Return one remote icon through the backend origin for graph textures.

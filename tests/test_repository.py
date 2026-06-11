@@ -22,6 +22,7 @@ from persistence_api.models import PendingUserRegistrationModel
 from persistence_api.models import RawDiscoveredUrlModel
 from persistence_api.models import RecommendationImpressionModel
 from persistence_api.models import RecommendationRequestModel
+from persistence_api.models import AdminHourlyStatsModel
 from persistence_api.models import SeedModel
 from shared.contracts.enums import CrawlStatus
 from shared.config import Settings
@@ -1310,8 +1311,21 @@ def test_repository_persists_random_recommendation_batch_and_interaction_stats(t
         entrance_kind="test_detail",
         entrance_url="http://localhost/random",
     )
+    repository.record_blog_interaction(
+        event_uuid="event-2",
+        event_type="external_open",
+        blog_id=first["id"],
+        visitor_id="visitor-1",
+        session_id="session-1",
+        entrance_kind="test_external",
+        entrance_url="http://localhost/random",
+        request_uuid=first["request_uuid"],
+        impression_id=first["impression_id"],
+        interaction_order=2,
+    )
     stats = repository.get_blog_recommendation_stats(first["id"])
     strategy_stats = repository.get_recommendation_strategy_stats()
+    hourly_stats = repository.get_admin_hourly_stats()
 
     assert event["duplicate"] is False
     assert event["entrance_kind"] == "test_detail"
@@ -1320,22 +1334,34 @@ def test_repository_persists_random_recommendation_batch_and_interaction_stats(t
     assert stats is not None
     assert stats["impressions"] == 1
     assert stats["detail_opens"] == 1
+    assert stats["external_opens"] == 1
     assert stats["unique_visitors"] == 1
-    assert stats["ctr"] == 1.0
+    assert stats["ctr"] == 2.0
     assert strategy_stats["total_requests"] == 1
     assert strategy_stats["total_impressions"] == 2
-    assert strategy_stats["total_interactions"] == 1
-    assert strategy_stats["by_strategy"][0]["clicks"] == 1
+    assert strategy_stats["total_interactions"] == 2
+    assert strategy_stats["by_strategy"][0]["clicks"] == 2
+    assert hourly_stats["current_hour"]["user_count"] == 0
+    assert hourly_stats["current_hour"]["random_request_count"] == 1
+    assert hourly_stats["current_hour"]["random_impression_count"] == 2
+    assert hourly_stats["current_hour"]["detail_open_count"] == 1
+    assert hourly_stats["current_hour"]["external_open_count"] == 1
+    assert hourly_stats["current_hour"]["detail_ctr"] == 0.5
+    assert hourly_stats["current_hour"]["external_ctr"] == 0.5
+    assert hourly_stats["current_hour"]["total_click_ctr"] == 1.0
     with session_scope(repository.session_factory) as session:
         assert session.scalar(select(RecommendationRequestModel).limit(1)) is not None
         stored_impression = session.scalar(select(RecommendationImpressionModel).limit(1))
         stored_interaction = session.scalar(select(BlogInteractionModel).limit(1))
+        stored_hourly_stats = session.scalar(select(AdminHourlyStatsModel).limit(1))
         assert stored_impression is not None
         assert stored_impression.normalized_url == first["normalized_url"]
         assert "blog_id" not in RecommendationImpressionModel.__table__.columns
         assert stored_interaction is not None
         assert stored_interaction.normalized_url == first["normalized_url"]
         assert "blog_id" not in BlogInteractionModel.__table__.columns
+        assert stored_hourly_stats is not None
+        assert stored_hourly_stats.random_impression_count == 2
 
 
 def test_repository_blog_catalog_uses_display_identity_fallbacks_for_legacy_rows(tmp_path: Path) -> None:

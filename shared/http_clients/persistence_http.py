@@ -329,6 +329,18 @@ class PersistenceHttpClient:
 
         return self._get("/internal/recommendation-stats")
 
+    def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]:
+        """Load hourly admin dashboard statistics snapshots.
+
+        Args:
+            limit: Maximum number of hourly snapshots to fetch.
+
+        Returns:
+            Hourly admin statistics payload returned by persistence.
+        """
+
+        return self._get("/internal/admin/hourly-stats", {"limit": limit})
+
     def create_user_seed(self, *, homepage_url: str) -> dict[str, Any]:
         """Create or refresh a user-submitted crawler seed.
 

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import DateTime
 from sqlalchemy import Enum
+from sqlalchemy import Float
 from sqlalchemy import ForeignKey
 from sqlalchemy import Boolean
 from sqlalchemy import Integer
@@ -432,4 +433,32 @@ class BlogInteractionModel(Base):
     session_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     client_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attributes_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class AdminHourlyStatsModel(Base):
+    """Hourly admin dashboard statistics snapshot.
+
+    Args:
+        None. SQLAlchemy constructs model instances from mapped keyword
+        arguments.
+
+    Returns:
+        One natural-hour aggregate row refreshed from source tables.
+    """
+
+    __tablename__ = "admin_hourly_stats"
+    __table_args__ = (UniqueConstraint("hour_start", name="uq_admin_hourly_stats_hour_start"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    user_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    random_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    random_impression_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail_open_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    external_open_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail_ctr: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    external_ctr: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    total_click_ctr: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

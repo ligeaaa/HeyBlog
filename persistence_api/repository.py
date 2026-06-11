@@ -39,6 +39,7 @@ from persistence_api.db import session_scope
 from persistence_api.email_delivery import EmailDelivery
 from persistence_api.email_delivery import NoopEmailDelivery
 from persistence_api.models import Base
+from persistence_api.models import AdminHourlyStatsModel
 from persistence_api.models import BlogLabelModel
 from persistence_api.models import BlogLabelTagModel
 from persistence_api.models import BlogInteractionModel
@@ -1018,6 +1019,30 @@ def ensure_legacy_compat_schema(engine: Any) -> None:
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_blog_interactions_entrance_url ON blog_interactions (entrance_url)")
             )
+        if "admin_hourly_stats" not in existing_tables:
+            stats_id_type = "SERIAL PRIMARY KEY" if connection.dialect.name == "postgresql" else "INTEGER PRIMARY KEY"
+            stats_timestamp_type = "TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME"
+            connection.execute(
+                text(
+                    "CREATE TABLE admin_hourly_stats ("
+                    f"id {stats_id_type}, "
+                    f"hour_start {stats_timestamp_type} NOT NULL UNIQUE, "
+                    "user_count INTEGER DEFAULT 0 NOT NULL, "
+                    "random_request_count INTEGER DEFAULT 0 NOT NULL, "
+                    "random_impression_count INTEGER DEFAULT 0 NOT NULL, "
+                    "detail_open_count INTEGER DEFAULT 0 NOT NULL, "
+                    "external_open_count INTEGER DEFAULT 0 NOT NULL, "
+                    "detail_ctr FLOAT DEFAULT 0 NOT NULL, "
+                    "external_ctr FLOAT DEFAULT 0 NOT NULL, "
+                    "total_click_ctr FLOAT DEFAULT 0 NOT NULL, "
+                    f"refreshed_at {stats_timestamp_type} DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    f"created_at {stats_timestamp_type} DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_admin_hourly_stats_hour_start ON admin_hourly_stats (hour_start)")
+            )
+            existing_tables.add("admin_hourly_stats")
         if "blog_label_tags" not in existing_tables:
             connection.execute(
                 text(
@@ -1880,6 +1905,8 @@ class RepositoryProtocol(Protocol):
     def get_blog_recommendation_stats(self, blog_id: int) -> dict[str, Any] | None: ...
 
     def get_recommendation_strategy_stats(self) -> dict[str, Any]: ...
+
+    def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]: ...
 
     def list_blog_labeling_candidates(
         self,
@@ -4351,6 +4378,150 @@ class SQLAlchemyRepository:
                 "ctr": (clicks + detail_opens + external_opens) / impressions if impressions else 0.0,
                 "last_interaction_at": _iso(last_interaction_at),
                 "by_event_type": event_counts,
+            }
+
+    def _hour_start(self, value: datetime | None = None) -> datetime:
+        """Return the UTC natural-hour boundary for one timestamp.
+
+        Args:
+            value: Optional timestamp to normalize. Current UTC time is used
+                when omitted.
+
+        Returns:
+            Timezone-aware UTC datetime truncated to the hour.
+        """
+
+        current = value or datetime.now(UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        return current.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+    def _admin_hourly_stats_payload(self, row: AdminHourlyStatsModel) -> dict[str, Any]:
+        """Serialize one hourly admin statistics row.
+
+        Args:
+            row: Persisted hourly statistics snapshot.
+
+        Returns:
+            JSON-ready snapshot payload.
+        """
+
+        return {
+            "id": row.id,
+            "hour_start": _iso(row.hour_start),
+            "user_count": row.user_count,
+            "random_request_count": row.random_request_count,
+            "random_impression_count": row.random_impression_count,
+            "detail_open_count": row.detail_open_count,
+            "external_open_count": row.external_open_count,
+            "detail_ctr": row.detail_ctr,
+            "external_ctr": row.external_ctr,
+            "total_click_ctr": row.total_click_ctr,
+            "refreshed_at": _iso(row.refreshed_at),
+            "created_at": _iso(row.created_at),
+        }
+
+    def _refresh_admin_hourly_stats(self, session: Session, hour_start: datetime) -> AdminHourlyStatsModel:
+        """Refresh or create one admin statistics snapshot for a natural hour.
+
+        Args:
+            session: Active SQLAlchemy session.
+            hour_start: UTC natural-hour boundary to aggregate.
+
+        Returns:
+            Persisted snapshot row after source-table aggregation.
+        """
+
+        hour_end = hour_start + timedelta(hours=1)
+        user_count = int(
+            session.scalar(select(func.count(UserModel.id)).where(UserModel.is_active.is_(True))) or 0
+        )
+        random_request_count = int(
+            session.scalar(
+                select(func.count(RecommendationRequestModel.id)).where(
+                    RecommendationRequestModel.surface == RANDOM_RECOMMENDATION_SURFACE,
+                    RecommendationRequestModel.created_at >= hour_start,
+                    RecommendationRequestModel.created_at < hour_end,
+                )
+            )
+            or 0
+        )
+        random_impression_count = int(
+            session.scalar(
+                select(func.count(RecommendationImpressionModel.id))
+                .join(RecommendationRequestModel, RecommendationImpressionModel.request_id == RecommendationRequestModel.id)
+                .where(
+                    RecommendationRequestModel.surface == RANDOM_RECOMMENDATION_SURFACE,
+                    RecommendationImpressionModel.created_at >= hour_start,
+                    RecommendationImpressionModel.created_at < hour_end,
+                )
+            )
+            or 0
+        )
+        interaction_counts = {
+            str(event_type): int(count or 0)
+            for event_type, count in session.execute(
+                select(BlogInteractionModel.event_type, func.count(BlogInteractionModel.id))
+                .join(RecommendationRequestModel, BlogInteractionModel.request_id == RecommendationRequestModel.id)
+                .where(
+                    RecommendationRequestModel.surface == RANDOM_RECOMMENDATION_SURFACE,
+                    BlogInteractionModel.created_at >= hour_start,
+                    BlogInteractionModel.created_at < hour_end,
+                    BlogInteractionModel.event_type.in_(("detail_open", "external_open")),
+                )
+                .group_by(BlogInteractionModel.event_type)
+            ).all()
+        }
+        detail_open_count = int(interaction_counts.get("detail_open", 0))
+        external_open_count = int(interaction_counts.get("external_open", 0))
+        denominator = random_impression_count or 0
+        detail_ctr = detail_open_count / denominator if denominator else 0.0
+        external_ctr = external_open_count / denominator if denominator else 0.0
+        total_click_ctr = (detail_open_count + external_open_count) / denominator if denominator else 0.0
+        row = session.scalar(
+            select(AdminHourlyStatsModel).where(AdminHourlyStatsModel.hour_start == hour_start)
+        )
+        if row is None:
+            row = AdminHourlyStatsModel(hour_start=hour_start)
+            session.add(row)
+        row.user_count = user_count
+        row.random_request_count = random_request_count
+        row.random_impression_count = random_impression_count
+        row.detail_open_count = detail_open_count
+        row.external_open_count = external_open_count
+        row.detail_ctr = detail_ctr
+        row.external_ctr = external_ctr
+        row.total_click_ctr = total_click_ctr
+        row.refreshed_at = datetime.now(UTC)
+        session.flush()
+        return row
+
+    def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, Any]:
+        """Return hourly admin statistics and refresh the current hour.
+
+        Args:
+            limit: Maximum number of hourly snapshots to return.
+
+        Returns:
+            Admin statistics payload with latest/current snapshots first.
+        """
+
+        normalized_limit = max(1, min(int(limit), 168))
+        with session_scope(self.session_factory) as session:
+            current_hour = self._hour_start()
+            current = self._refresh_admin_hourly_stats(session, current_hour)
+            rows = list(
+                session.scalars(
+                    select(AdminHourlyStatsModel)
+                    .order_by(AdminHourlyStatsModel.hour_start.desc())
+                    .limit(normalized_limit)
+                )
+            )
+            latest = rows[0] if rows else current
+            return {
+                "current_hour": self._admin_hourly_stats_payload(current),
+                "latest": self._admin_hourly_stats_payload(latest),
+                "items": [self._admin_hourly_stats_payload(row) for row in rows],
             }
 
     def get_recommendation_strategy_stats(self) -> dict[str, Any]:

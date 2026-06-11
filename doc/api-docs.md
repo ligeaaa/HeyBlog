@@ -126,6 +126,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 - `POST /api/admin/blog-labeling/title-preview`
 - `PUT /api/admin/blog-labeling/labels/{blog_id}`
 - `GET /api/admin/recommendation-stats`
+- `GET /api/admin/hourly-stats`
 - `GET /api/admin/users`
 - `PATCH /api/admin/users/{user_id}/role`
 
@@ -689,6 +690,62 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
       "ctr": 0.0888888889
     }
   ]
+}
+```
+
+#### `GET /api/admin/hourly-stats`
+
+用途：返回后台统计小时快照，并在读取时刷新当前自然小时的数据。该接口位于 admin API 下，需要 `Authorization: Bearer <HEYBLOG_ADMIN_TOKEN>` 或已验证 admin 用户 session token。
+
+查询参数：
+
+- `limit`: 返回最近多少个自然小时快照，默认 `24`，最大 `168`
+
+统计语义：
+
+- 数据写入 `admin_hourly_stats` 表，每条记录对应一个 UTC 自然小时窗口 `[hour_start, hour_start + 1h)`
+- `user_count`: 当前 active 用户总数
+- `random_request_count`: 该小时内 random blog 推荐请求数
+- `random_impression_count`: 该小时内 random blog 推荐曝光数；随机页每次通常请求 9 个
+- `detail_open_count`: 该小时内 random blog 卡片详情打开次数
+- `external_open_count`: 该小时内 random blog 卡片外链打开次数
+- `detail_ctr`: `detail_open_count / random_impression_count`
+- `external_ctr`: `external_open_count / random_impression_count`
+- `total_click_ctr`: `(detail_open_count + external_open_count) / random_impression_count`
+
+成功响应示例：
+
+```json
+{
+  "current_hour": {
+    "id": 1,
+    "hour_start": "2026-06-11T10:00:00+00:00",
+    "user_count": 12,
+    "random_request_count": 3,
+    "random_impression_count": 27,
+    "detail_open_count": 4,
+    "external_open_count": 5,
+    "detail_ctr": 0.1481481481,
+    "external_ctr": 0.1851851852,
+    "total_click_ctr": 0.3333333333,
+    "refreshed_at": "2026-06-11T10:05:00+00:00",
+    "created_at": "2026-06-11T10:05:00+00:00"
+  },
+  "latest": {
+    "id": 1,
+    "hour_start": "2026-06-11T10:00:00+00:00",
+    "user_count": 12,
+    "random_request_count": 3,
+    "random_impression_count": 27,
+    "detail_open_count": 4,
+    "external_open_count": 5,
+    "detail_ctr": 0.1481481481,
+    "external_ctr": 0.1851851852,
+    "total_click_ctr": 0.3333333333,
+    "refreshed_at": "2026-06-11T10:05:00+00:00",
+    "created_at": "2026-06-11T10:05:00+00:00"
+  },
+  "items": []
 }
 ```
 

@@ -965,6 +965,7 @@ def test_persistence_http_client_can_manage_recommendation_data() -> None:
     )
     assert client.get_blog_recommendation_stats(42) == {"ok": True}
     assert client.get_recommendation_strategy_stats() == {"ok": True}
+    assert client.get_admin_hourly_stats(limit=6) == {"ok": True}
 
     assert stub.post_calls == [
         (
@@ -1002,6 +1003,7 @@ def test_persistence_http_client_can_manage_recommendation_data() -> None:
     assert stub.get_calls == [
         ("/internal/blogs/42/recommendation-stats", None),
         ("/internal/recommendation-stats", None),
+        ("/internal/admin/hourly-stats", {"limit": 6}),
     ]
 
 
@@ -1030,6 +1032,9 @@ def test_backend_routes_forward_recommendation_data_with_optional_user() -> None
 
         def get_recommendation_strategy_stats(self) -> dict[str, object]:
             return {"total_requests": 1, "by_strategy": []}
+
+        def get_admin_hourly_stats(self, *, limit: int = 24) -> dict[str, object]:
+            return {"limit": limit, "items": []}
 
     persistence = RecommendationPersistenceStub()
     app = create_backend_app(
@@ -1070,11 +1075,13 @@ def test_backend_routes_forward_recommendation_data_with_optional_user() -> None
     )
     blog_stats = client.get("/api/blogs/42/stats")
     admin_stats = client.get("/api/admin/recommendation-stats", headers=admin_headers())
+    admin_hourly_stats = client.get("/api/admin/hourly-stats?limit=6", headers=admin_headers())
 
     assert batch_response.status_code == 200
     assert event_response.status_code == 200
     assert blog_stats.json() == {"blog_id": 42, "impressions": 1}
     assert admin_stats.json() == {"total_requests": 1, "by_strategy": []}
+    assert admin_hourly_stats.json() == {"limit": 6, "items": []}
     assert persistence.batch_payload is not None
     assert persistence.batch_payload["user_id"] == 7
     assert persistence.batch_payload["visitor_id"] == "visitor-1"

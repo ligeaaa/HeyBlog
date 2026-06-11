@@ -5,6 +5,8 @@ import type {
   AdminBlogLabelParquetStatus,
   AdminRequeueFailedBlogsResult,
   AdminBlogLabelTag,
+  AdminHourlyStats,
+  AdminHourlyStatsRow,
   AdminRuntimeCurrent,
   AdminRuntimeStatus,
   BlogCatalogItem,
@@ -287,6 +289,27 @@ interface BackendRuntimePayload {
   maintenance_in_progress?: boolean;
 }
 
+interface BackendAdminHourlyStatsRow {
+  id: number;
+  hour_start: string | null;
+  user_count: number;
+  random_request_count: number;
+  random_impression_count: number;
+  detail_open_count: number;
+  external_open_count: number;
+  detail_ctr: number;
+  external_ctr: number;
+  total_click_ctr: number;
+  refreshed_at: string | null;
+  created_at: string | null;
+}
+
+interface BackendAdminHourlyStats {
+  current_hour: BackendAdminHourlyStatsRow;
+  latest: BackendAdminHourlyStatsRow;
+  items: BackendAdminHourlyStatsRow[];
+}
+
 interface BackendBlogLabelTag {
   id: number;
   name: string;
@@ -436,6 +459,43 @@ function toRandomRecommendationBatch(payload: BackendRandomRecommendationBatchPa
     servedCount: payload.served_count,
     createdAt: payload.created_at,
     items: payload.items.map(toBlogCatalogItem),
+  };
+}
+
+/**
+ * Convert one backend hourly admin stats row into frontend camelCase shape.
+ *
+ * @param row Raw backend admin stats row.
+ * @returns Normalized admin stats row.
+ */
+function toAdminHourlyStatsRow(row: BackendAdminHourlyStatsRow): AdminHourlyStatsRow {
+  return {
+    id: row.id,
+    hourStart: row.hour_start,
+    userCount: row.user_count,
+    randomRequestCount: row.random_request_count,
+    randomImpressionCount: row.random_impression_count,
+    detailOpenCount: row.detail_open_count,
+    externalOpenCount: row.external_open_count,
+    detailCtr: row.detail_ctr,
+    externalCtr: row.external_ctr,
+    totalClickCtr: row.total_click_ctr,
+    refreshedAt: row.refreshed_at,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Convert backend admin hourly stats payload into frontend shape.
+ *
+ * @param payload Raw backend admin stats payload.
+ * @returns Normalized hourly stats collection.
+ */
+function toAdminHourlyStats(payload: BackendAdminHourlyStats): AdminHourlyStats {
+  return {
+    currentHour: toAdminHourlyStatsRow(payload.current_hour),
+    latest: toAdminHourlyStatsRow(payload.latest),
+    items: payload.items.map(toAdminHourlyStatsRow),
   };
 }
 
@@ -1216,6 +1276,21 @@ export async function fetchAdminRuntimeCurrent(adminToken: string): Promise<Admi
     currentStage: normalized.currentStage,
     elapsedSeconds: normalized.elapsedSeconds,
   };
+}
+
+/**
+ * Fetch protected hourly admin dashboard statistics.
+ *
+ * @param adminToken Bearer token used for the protected endpoint.
+ * @param limit Maximum number of hourly rows to return.
+ * @returns Normalized hourly statistics payload.
+ */
+export async function fetchAdminHourlyStats(adminToken: string, limit = 24): Promise<AdminHourlyStats> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const payload = await apiJson<BackendAdminHourlyStats>(`/api/admin/hourly-stats?${params.toString()}`, {
+    headers: adminHeaders(adminToken),
+  });
+  return toAdminHourlyStats(payload);
 }
 
 /**
