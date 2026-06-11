@@ -189,6 +189,33 @@ class FailThenSucceedPipeline:
         return {}
 
 
+class IdleSchedulerPipeline:
+    """Pipeline stub that never has queued work but records start attempts."""
+
+    def __init__(self) -> None:
+        self.repository = QueueRepository([])
+        self.capacity_gate = CrawlerCapacityGate(self.repository, raw_discovered_url_limit=-1)
+        self.export_calls = 0
+
+    def process_blog_row(
+        self,
+        row: dict[str, object],
+        *,
+        on_blog_start=None,
+        on_blog_finish=None,
+        on_blog_error=None,
+    ) -> dict[str, int]:
+        if on_blog_start is not None:
+            on_blog_start(row)
+        if on_blog_finish is not None:
+            on_blog_finish(row, {"discovered": 0})
+        return {"processed": 1, "discovered": 0, "failed": 0}
+
+    def write_exports(self) -> dict[str, object]:
+        self.export_calls += 1
+        return {}
+
+
 def test_runtime_stop_waits_for_active_workers_to_finish_without_starting_more_blogs() -> None:
     """Stop should let the current worker set finish, then prevent any new blog from starting."""
     pipeline = BlockingQueuePipeline([1, 2, 3, 4, 5, 6], target_active_runs=3)
@@ -319,6 +346,92 @@ def test_runtime_rejects_start_when_raw_discovered_url_limit_is_reached() -> Non
     assert result["capacity"]["raw_count"] == 1_000_000
     assert pipeline.run_calls == 0
     assert runtime.status()["runner_status"] == "idle"
+
+
+def test_runtime_auto_scheduler_starts_idle_runtime() -> None:
+    """Hourly scheduler checks should wake an idle runtime by calling start."""
+    pipeline = IdleSchedulerPipeline()
+    runtime = CrawlerRuntimeService(
+        pipeline,
+        worker_count=1,
+        auto_start_interval_seconds=0.01,
+    )
+
+    runtime.start_auto_scheduler()
+    try:
+        assert runtime._scheduler_thread is not None  # noqa: SLF001 - test inspects scheduler thread.
+        assert runtime._scheduler_thread.is_alive()  # noqa: SLF001 - test inspects scheduler thread.
+        assert pipeline.export_calls == 0
+
+        runtime._scheduler_stop_event.wait(0.05)  # noqa: SLF001 - give the scheduler one tick window.
+
+        assert pipeline.export_calls >= 1
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
+        if runtime._thread is not None:
+            runtime._thread.join(timeout=2)
+        assert runtime.status()["runner_status"] == "idle"
+    finally:
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
+
+
+def test_runtime_auto_scheduler_skips_busy_runtime() -> None:
+    """Scheduler checks should not restart a runtime that is already running."""
+    pipeline = BlockingQueuePipeline([1], target_active_runs=1)
+    runtime = CrawlerRuntimeService(
+        pipeline,
+        worker_count=1,
+        auto_start_interval_seconds=0.01,
+    )
+
+    runtime.start()
+    assert pipeline.started.wait(timeout=1)
+
+    scheduler_result = runtime.start_auto_scheduler()
+    assert scheduler_result["accepted"] is True
+    runtime._scheduler_stop_event.wait(0.03)  # noqa: SLF001 - let the scheduler tick once.
+
+    assert pipeline.run_calls == 1
+    assert runtime.status()["runner_status"] in {"running", "stopping"}
+
+    pipeline.release.set()
+    runtime._thread.join(timeout=2)  # noqa: SLF001 - test waits for the background loop.
+    runtime.stop_auto_scheduler()
+    if runtime._scheduler_thread is not None:
+        runtime._scheduler_thread.join(timeout=2)
+
+
+def test_runtime_auto_scheduler_retries_after_error_state() -> None:
+    """Scheduler checks should treat an errored runtime as not working."""
+    pipeline = RecordingPipeline(QueueRepository([1, 2]))
+    runtime = CrawlerRuntimeService(
+        pipeline,
+        worker_count=1,
+        auto_start_interval_seconds=0.01,
+    )
+    with runtime._lock:  # noqa: SLF001 - test seeds a prior failed runtime state.
+        runtime._snapshot.runner_status = "error"
+        runtime._snapshot.last_error = "previous export failure"
+
+    runtime.start_auto_scheduler()
+    try:
+        runtime._scheduler_stop_event.wait(0.05)  # noqa: SLF001 - let the scheduler tick once.
+
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
+        if runtime._thread is not None:
+            runtime._thread.join(timeout=2)
+
+        assert pipeline.processed_ids == [1, 2]
+        assert runtime.status()["runner_status"] == "idle"
+    finally:
+        runtime.stop_auto_scheduler()
+        if runtime._scheduler_thread is not None:
+            runtime._scheduler_thread.join(timeout=2)
 
 
 def test_runtime_allows_start_when_raw_discovered_url_limit_is_disabled() -> None:

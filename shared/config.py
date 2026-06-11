@@ -14,6 +14,7 @@ DEFAULT_MAX_PATH_PROBES_PER_BLOG = 50
 DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE = 50
 DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY = 4
 DEFAULT_RUNTIME_WORKER_COUNT = 3
+DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS = 3600.0
 DEFAULT_MAX_FETCHED_PAGE_BYTES = 2_000_000
 DEFAULT_RAW_DISCOVERED_URL_LIMIT = 1_000_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -105,6 +106,7 @@ class Settings:
     max_candidate_links_per_page: int = DEFAULT_MAX_CANDIDATE_LINKS_PER_PAGE
     candidate_page_fetch_concurrency: int = DEFAULT_CANDIDATE_PAGE_FETCH_CONCURRENCY
     runtime_worker_count: int = DEFAULT_RUNTIME_WORKER_COUNT
+    runtime_auto_start_interval_seconds: float = DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS
     max_fetched_page_bytes: int = DEFAULT_MAX_FETCHED_PAGE_BYTES
     raw_discovered_url_limit: int = DEFAULT_RAW_DISCOVERED_URL_LIMIT
     friend_link_domain_blocklist: tuple[str, ...] = ()
@@ -208,6 +210,15 @@ class Settings:
                     os.getenv(
                         "HEYBLOG_RUNTIME_WORKER_COUNT",
                         str(DEFAULT_RUNTIME_WORKER_COUNT),
+                    )
+                ),
+            ),
+            runtime_auto_start_interval_seconds=max(
+                0.001,
+                float(
+                    os.getenv(
+                        "HEYBLOG_RUNTIME_AUTO_START_INTERVAL_SECONDS",
+                        str(DEFAULT_RUNTIME_AUTO_START_INTERVAL_SECONDS),
                     )
                 ),
             ),

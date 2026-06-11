@@ -46,6 +46,10 @@ class StubPipeline:
 class StubRuntime:
     """Return fixed payloads for runtime endpoints."""
 
+    def __init__(self) -> None:
+        self.scheduler_starts = 0
+        self.scheduler_stops = 0
+
     def status(self) -> dict[str, object]:
         return {
             "runner_status": "idle",
@@ -101,6 +105,14 @@ class StubRuntime:
             ],
         }
 
+    def start_auto_scheduler(self) -> dict[str, object]:
+        self.scheduler_starts += 1
+        return {"accepted": True, "interval_seconds": 3600.0}
+
+    def stop_auto_scheduler(self) -> dict[str, object]:
+        self.scheduler_stops += 1
+        return {"accepted": True}
+
     def start(self) -> dict[str, object]:
         payload = self.status()
         payload["runner_status"] = "running"
@@ -122,33 +134,35 @@ class StubRuntime:
 
 def test_crawler_service_routes_preserve_payload_shapes() -> None:
     """Crawler HTTP service should keep its public internal route contract stable."""
-    app = create_app(CrawlerState(pipeline=StubPipeline(), runtime=StubRuntime()))
-    client = TestClient(app)
-
-    assert client.get("/internal/health").json() == {"status": "ok"}
-    assert client.post("/internal/crawl/bootstrap").json() == {"seed_path": "seed.csv", "imported": 2}
-    assert client.post("/internal/crawl/run?max_nodes=5").json() == {
-        "processed": 5,
-        "discovered": 3,
-        "failed": 0,
-        "exports": {"graph_json": "graph.json"},
-    }
-    status = client.get("/internal/runtime/status").json()
-    assert status["runner_status"] == "idle"
-    assert status["worker_count"] == 3
-    current = client.get("/internal/runtime/current").json()
-    assert current["current_blog_id"] == 10
-    assert current["current_worker_id"] == "worker-1"
-    assert current["active_workers"] == 1
-    assert current["workers"][0]["worker_id"] == "worker-1"
-    assert client.post("/internal/runtime/start").json()["runner_status"] == "running"
-    assert client.post("/internal/runtime/stop").json()["runner_status"] == "stopping"
-    assert client.post("/internal/runtime/run-batch", json={"max_nodes": 4}).json()["result"] == {
-        "processed": 4,
-        "discovered": 1,
-        "failed": 0,
-        "exports": {},
-    }
+    runtime = StubRuntime()
+    app = create_app(CrawlerState(pipeline=StubPipeline(), runtime=runtime))
+    with TestClient(app) as client:
+        assert runtime.scheduler_starts == 1
+        assert client.get("/internal/health").json() == {"status": "ok"}
+        assert client.post("/internal/crawl/bootstrap").json() == {"seed_path": "seed.csv", "imported": 2}
+        assert client.post("/internal/crawl/run?max_nodes=5").json() == {
+            "processed": 5,
+            "discovered": 3,
+            "failed": 0,
+            "exports": {"graph_json": "graph.json"},
+        }
+        status = client.get("/internal/runtime/status").json()
+        assert status["runner_status"] == "idle"
+        assert status["worker_count"] == 3
+        current = client.get("/internal/runtime/current").json()
+        assert current["current_blog_id"] == 10
+        assert current["current_worker_id"] == "worker-1"
+        assert current["active_workers"] == 1
+        assert current["workers"][0]["worker_id"] == "worker-1"
+        assert client.post("/internal/runtime/start").json()["runner_status"] == "running"
+        assert client.post("/internal/runtime/stop").json()["runner_status"] == "stopping"
+        assert client.post("/internal/runtime/run-batch", json={"max_nodes": 4}).json()["result"] == {
+            "processed": 4,
+            "discovered": 1,
+            "failed": 0,
+            "exports": {},
+        }
+    assert runtime.scheduler_stops == 1
 
 
 def test_services_crawler_main_remains_a_compatibility_shim() -> None:

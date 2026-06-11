@@ -1115,6 +1115,42 @@ def test_settings_loads_candidate_link_page_limit(monkeypatch) -> None:
     assert settings.max_candidate_links_per_page == 17
 
 
+def test_settings_loads_runtime_auto_start_interval(monkeypatch) -> None:
+    """Environment loading should expose the crawler idle wakeup interval."""
+    monkeypatch.setenv("HEYBLOG_RUNTIME_AUTO_START_INTERVAL_SECONDS", "42.5")
+
+    settings = Settings.from_env()
+
+    assert settings.runtime_auto_start_interval_seconds == 42.5
+
+
+def test_persistence_http_client_export_reads_use_search_snapshot() -> None:
+    """Crawler export compatibility reads should use the split persistence snapshot route."""
+    seen_paths: list[str] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "blogs": [{"id": 1, "url": "https://blog.example.com/"}],
+                "edges": [{"id": 2, "from_blog_id": 1, "to_blog_id": 3}],
+                "logs": [],
+            },
+        )
+
+    client = PersistenceHttpClient("http://persistence.test")
+    client.client = httpx.Client(
+        base_url="http://persistence.test",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    assert client.list_blogs() == [{"id": 1, "url": "https://blog.example.com/"}]
+    assert client.list_edges() == [{"id": 2, "from_blog_id": 1, "to_blog_id": 3}]
+    assert seen_paths == ["/internal/search-snapshot", "/internal/search-snapshot"]
+
+
 def test_settings_loads_smtp_email_delivery_configuration(monkeypatch) -> None:
     """Environment loading should expose SMTP lifecycle email settings."""
     monkeypatch.setenv("HEYBLOG_EMAIL_PROVIDER", "smtp")

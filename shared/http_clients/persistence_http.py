@@ -743,6 +743,24 @@ class PersistenceHttpClient:
     def search_snapshot(self) -> dict[str, list[dict[str, Any]]]:
         return self._get("/internal/search-snapshot")
 
+    def list_blogs(self) -> list[dict[str, Any]]:
+        """Fetch all blog rows for graph export compatibility.
+
+        Returns:
+            Blog payloads from the persistence service search snapshot.
+        """
+
+        return self.search_snapshot()["blogs"]
+
+    def list_edges(self) -> list[dict[str, Any]]:
+        """Fetch all edge rows for graph export compatibility.
+
+        Returns:
+            Edge payloads from the persistence service search snapshot.
+        """
+
+        return self.search_snapshot()["edges"]
+
     def reset(self) -> dict[str, Any]:
         response = self.client.post("/internal/database/reset")
         response.raise_for_status()
