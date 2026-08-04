@@ -28,6 +28,7 @@ PAGE_KEYWORDS = (
     "朋友",
     "友人",
     "friend",
+    "左邻右舍",
 )
 NEGATIVE_KEYWORDS = (
     "about",

@@ -12,6 +12,8 @@ import pickle
 import sys
 from typing import Any
 
+import httpx
+
 from crawler.crawling.decisions.base import DECIDER_ROLE_SUCCESS
 from crawler.crawling.decisions.base import FilterDecision
 from crawler.crawling.decisions.base import StaticStatusUrlFilter
@@ -20,6 +22,7 @@ from crawler.crawling.normalization import normalize_url
 from crawler.domain.decision_outcome import DecisionOutcome
 from shared.observability import get_logger
 from shared.observability import log_event
+from shared.http_clients.model_api import ModelApiClient
 
 DEFAULT_MODEL_THRESHOLD = 0.5
 DEFAULT_MODEL_WEIGHT = 1.0
@@ -211,6 +214,7 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
     """
 
     model_root: Path
+    model_api_base_url: str | None = None
     strategy: str = "weighted_average"
     consensus_threshold: float = DEFAULT_MODEL_THRESHOLD
     kind: str = field(init=False, default="model_consensus")
@@ -218,6 +222,7 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
     filter_reason: str = field(init=False, default="model_consensus_all_non_blog")
     decider_role: str = field(init=False, default=DECIDER_ROLE_SUCCESS)
     loaded_models: tuple[LoadedConsensusModel, ...] | None = field(default=None, init=False, repr=False)
+    model_api: ModelApiClient | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Normalize and validate the configured model-consensus strategy."""
@@ -226,6 +231,8 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
             raise ValueError(f"unknown_model_consensus_strategy:{self.strategy}")
         self.strategy = normalized_strategy
         self.consensus_threshold = float(self.consensus_threshold)
+        if self.model_api_base_url:
+            self.model_api = ModelApiClient(self.model_api_base_url)
 
     def _ensure_models_loaded(self) -> tuple[LoadedConsensusModel, ...]:
         """Load and cache the latest available trainer models on demand.
@@ -348,6 +355,27 @@ class ModelConsensusFilter(StaticStatusUrlFilter):
 
     def apply(self, candidate: UrlCandidateContext) -> FilterDecision:
         """Keep or reject a URL using the configured model consensus strategy."""
+        if self.model_api is not None:
+            try:
+                prediction = self.model_api.classify_url(
+                    candidate.normalized_url,
+                    title=candidate.link_text or candidate.context_text,
+                )
+                if prediction.get("label") == "blog":
+                    return self.confirm(accepted_by="model")
+                return self.reject()
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                log_event(
+                    LOGGER,
+                    event="model.api.classify_failed",
+                    message="model API unavailable; candidate left undecided",
+                    level=logging.WARNING,
+                    stage="model_consensus",
+                    url=candidate.normalized_url,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                return self.accept()
         models = self._ensure_models_loaded()
         if not models:
             return self.accept()

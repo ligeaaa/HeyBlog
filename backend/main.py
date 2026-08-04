@@ -475,6 +475,13 @@ def create_app(state: BackendState | None = None) -> FastAPI:
         except httpx.HTTPStatusError as exc:
             _raise_upstream_http_error(exc, default="auth_required", detail_override="auth_required")
 
+    def optional_public_user(request: Request) -> dict[str, Any] | None:
+        """Treat an invalid optional session as anonymous for public routes."""
+        try:
+            return optional_user(request)
+        except HTTPException:
+            return None
+
     def require_user(request: Request) -> dict[str, Any]:
         user = optional_user(request)
         if user is None:
@@ -566,7 +573,7 @@ def create_app(state: BackendState | None = None) -> FastAPI:
     @app.post("/api/recommendations/random-blog-batches")
     def post_random_recommendation_batch(
         payload: CreateRandomRecommendationBatchRequest,
-        user: dict[str, Any] | None = Depends(optional_user),
+        user: dict[str, Any] | None = Depends(optional_public_user),
     ) -> dict[str, Any]:
         return _call_upstream_with_http_error_translation(
             lambda: get_state().persistence.create_random_recommendation_batch(

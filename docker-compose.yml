@@ -1,4 +1,27 @@
 services:
+  model-api:
+    build:
+      context: .
+      dockerfile: docker/model-api.Dockerfile
+    ports:
+      - "${HEYBLOG_MODEL_API_PORT:-8040}:${HEYBLOG_MODEL_API_PORT:-8040}"
+    environment:
+      HEYBLOG_MODEL_PATH: /app/runtime_resources/binary_classification_model/model.joblib
+      HEYBLOG_EMBEDDING_MODEL_PATH: /app/runtime_resources/embedding_model
+      HEYBLOG_DATABASE_PATH: /data/model-api.sqlite3
+      HEYBLOG_DEVICE: ${HEYBLOG_MODEL_DEVICE:-cpu}
+    volumes:
+      - ./volumes/model-api:/data
+      - ./runtime_resources:/app/runtime_resources:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8040/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - heyblog_net
+
   frontend:
     build: .
     ports:
@@ -72,6 +95,7 @@ services:
       - "${HEYBLOG_CRAWLER_PORT:-8010}:${HEYBLOG_CRAWLER_PORT:-8010}"
     environment:
       HEYBLOG_PERSISTENCE_BASE_URL: ${HEYBLOG_DOCKER_PERSISTENCE_BASE_URL:-http://persistence-api:8030}
+      HEYBLOG_MODEL_API_BASE_URL: ${HEYBLOG_DOCKER_MODEL_API_BASE_URL:-http://model-api:8040}
       HEYBLOG_SEED_PATH: ${HEYBLOG_DOCKER_SEED_PATH:-/data/seeds/seed.csv}
       HEYBLOG_EXPORT_DIR: ${HEYBLOG_DOCKER_EXPORT_DIR:-/data/exports}
       HEYBLOG_REQUEST_TIMEOUT_SECONDS: ${HEYBLOG_REQUEST_TIMEOUT_SECONDS:-10.0}
@@ -106,6 +130,8 @@ services:
       start_period: 10s
     depends_on:
       persistence-api:
+        condition: service_healthy
+      model-api:
         condition: service_healthy
     volumes:
       - ./volumes/exports:/data/exports

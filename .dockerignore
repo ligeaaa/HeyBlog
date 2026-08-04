@@ -14,3 +14,7 @@ frontend/vite.config.d.ts
 frontend/vite.config.js
 __pycache__
 *.pyc
+
+# The dedicated model-api image copies the checked-in runtime artifacts.
+!runtime_resources
+!runtime_resources/**

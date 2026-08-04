@@ -29,9 +29,10 @@
 | --- | --- | --- | --- | --- |
 | `frontend` | `3000` | [frontend/server.py](../frontend/server.py) | 浏览器 | `backend` |
 | `backend` | `8000` | [backend/main.py](../backend/main.py) | 前端与外部调用方 | `crawler`、`search`、`persistence-api` |
-| `crawler` | `8010` | [crawler/main.py](../crawler/main.py) | `backend` | `persistence-api` |
+| `crawler` | `8010` | [crawler/main.py](../crawler/main.py) | `backend` | `persistence-api`、`model-api` |
 | `search` | `8020` | [search/main.py](../search/main.py) | `backend` | `persistence-api` |
 | `persistence-api` | `8030` | [persistence_api/main.py](../persistence_api/main.py) | `backend`、`crawler`、`search` | SQLite 或 PostgreSQL |
+| `model-api` | `8040` | [HeyBlog_Model_API/app.py](../HeyBlog_Model_API/app.py) | `crawler` | URL 二分类模型、embedding 模型 |
 | `persistence-db` | `5432` | [docker-compose.yml](../docker-compose.yml) 中的 Postgres 服务 | `persistence-api` | 本地卷 `volumes/postgres` |
 
 ## 2. frontend
@@ -86,6 +87,7 @@
 - 从 `seed.csv` 导入种子
 - 抓取首页并发现友链页候选
 - 从候选页抽取友链链接并过滤
+- 通过 `model-api` 对候选 URL 执行 blog / non-blog 二分类
 - 将 blog / edge / log 写回 `persistence-api`
 - 导出 `nodes.csv`、`edges.csv`、`graph.json`
 - 提供同步执行与运行时控制两类能力
@@ -101,6 +103,7 @@
 - 抽取： [crawler/crawling/extraction.py](../crawler/crawling/extraction.py)
 - 过滤： [crawler/filters.py](../crawler/filters.py)
 - 归一化： [crawler/crawling/normalization.py](../crawler/crawling/normalization.py)
+- 模型服务 client： [shared/http_clients/model_api.py](../shared/http_clients/model_api.py)
 
 ### 4.3 什么时候改这里
 

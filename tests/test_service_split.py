@@ -1169,6 +1169,34 @@ def test_backend_routes_forward_recommendation_data_with_optional_user() -> None
     assert persistence.event_payload["entrance_url"] == "http://localhost/random"
 
 
+def test_random_recommendation_ignores_invalid_optional_session() -> None:
+    """Public random recommendations should fall back to anonymous access."""
+
+    class PersistenceStub:
+        def get_user_by_session_token(self, *, token: str) -> dict[str, object] | None:
+            response = httpx.Response(401, request=httpx.Request("GET", "http://persistence"))
+            raise httpx.HTTPStatusError("expired", request=response.request, response=response)
+
+        def create_random_recommendation_batch(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["user_id"] is None
+            return {"request_uuid": "request-1", "items": []}
+
+    app = create_backend_app(
+        BackendState(
+            persistence=PersistenceStub(),
+            crawler=StubCrawler(),
+            search=StubSearch(),
+        )
+    )
+    response = TestClient(app).post(
+        "/api/recommendations/random-blog-batches",
+        headers={"authorization": "Bearer expired-token"},
+        json={"count": 9, "visitor_id": "visitor-1", "session_id": "session-1"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_settings_can_enable_postgres_runtime(tmp_path: Path, monkeypatch) -> None:
     """Environment loading should allow the split runtime to point at Postgres."""
     monkeypatch.setenv("HEYBLOG_DB_DSN", "postgresql://heyblog:heyblog@persistence-db:5432/heyblog")
