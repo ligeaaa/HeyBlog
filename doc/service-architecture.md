@@ -22,6 +22,7 @@
 - [backend/main.py](../backend/main.py)
 - [crawler/runtime/service.py](../crawler/runtime/service.py)
 - [crawler/crawling/pipeline.py](../crawler/crawling/pipeline.py)
+- [shared/http_clients/model_api.py](../shared/http_clients/model_api.py)
 - [persistence_api/graph_service.py](../persistence_api/graph_service.py)
 
 ## 1. 总体拓扑
@@ -38,6 +39,7 @@
            -> SQLite 或 PostgreSQL
 
 crawler -> persistence-api
+crawler -> model-api
 search  -> persistence-api
 ```
 
@@ -59,6 +61,7 @@ search  -> persistence-api
 | `backend` | `search` | HTTP client | 搜索查询、重建索引 |
 | `backend` | `persistence-api` | HTTP client | 读取 blogs、edges、stats、graph、snapshot |
 | `crawler` | `persistence-api` | HTTP client | 领取任务、写 blog、写 edge、导出图 |
+| `crawler` | `model-api` | HTTP client | 对候选 URL 执行 blog / non-blog 二分类 |
 | `search` | `persistence-api` | HTTP client | 拉取搜索快照 |
 | `persistence-api` | SQLite / PostgreSQL | Repository | 持久化事实数据与聚合读模型 |
 
@@ -83,13 +86,19 @@ search  -> persistence-api
 
 它不直接 import crawler 业务逻辑，也不直接操作数据库。
 
-### 3.3 crawler / search -> persistence-api
+### 3.3 crawler -> model-api
+
+[shared/http_clients/model_api.py](../shared/http_clients/model_api.py) 调用
+`HeyBlog_Model_API` 的 `POST /v1/classify`，模型和 embedding 资源由独立
+`model-api` 容器加载；crawler 不再在默认路径中直接加载模型文件。
+
+### 3.4 crawler / search -> persistence-api
 
 `crawler` 和 `search` 都不直接访问数据库，它们都通过 `PersistenceHttpClient`
 调用 `persistence-api`。这让 SQLite / PostgreSQL 差异被集中收口在
 [persistence_api/repository.py](../persistence_api/repository.py)。
 
-### 3.4 persistence-api -> 存储后端
+### 3.5 persistence-api -> 存储后端
 
 `persistence-api` 内部根据 [shared/config.py](../shared/config.py) 选择后端：
 
@@ -131,6 +140,7 @@ search  -> persistence-api
   -> crawler -> persistence-api /internal/queue/next
   -> crawler 抓取首页并发现友链页
   -> crawler 抽取候选链接并过滤
+  -> crawler -> model-api /v1/classify
   -> crawler -> persistence-api /internal/blogs/upsert
   -> crawler -> persistence-api /internal/edges
   -> crawler -> persistence-api /internal/blogs/{id}/result

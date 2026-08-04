@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 from crawler.crawling.decisions.consensus import ModelConsensusDecider
+from crawler.crawling.decisions.consensus import ModelConsensusFilter
+from crawler.crawling.decisions.base import UrlCandidateContext
 from crawler.crawling.pipeline import CrawlPipeline
 from persistence_api.repository import Repository
 from shared.config import Settings
@@ -234,6 +236,27 @@ def test_model_consensus_skips_cleanly_when_no_models_exist(tmp_path: Path) -> N
 
     assert decision.accepted is True
     assert decision.reasons == ("model_consensus_skipped_no_models",)
+
+
+def test_model_api_consensus_uses_single_prediction(monkeypatch, tmp_path: Path) -> None:
+    """The configured runtime path delegates URL classification to Model API."""
+    monkeypatch.setattr(
+        "crawler.crawling.decisions.consensus.ModelApiClient.classify_url",
+        lambda self, url, title="": {"url": url, "label": "blog", "probability": 0.99},
+    )
+    decision = ModelConsensusFilter(
+        model_root=tmp_path / "unused",
+        model_api_base_url="http://model-api:8040",
+    ).apply(
+        UrlCandidateContext(
+            source_blog_id=1,
+            source_domain="source.example.com",
+            normalized_url="https://friend.example.com/",
+            link_text="My blog",
+        )
+    )
+    assert decision.confirmed is True
+    assert decision.accepted_by == "model"
 
 
 def test_pipeline_appends_model_consensus_step_when_enabled(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_DECISION_MODEL_ROOT = PROJECT_ROOT / "runtime_resources" / "models" / "url_decision" / "current"
 DEFAULT_FILTER_CHAIN_CONFIG_PATH = PROJECT_ROOT / "runtime_resources" / "filter_chain.toml"
 DEFAULT_PERSISTENCE_BASE_URL = "http://127.0.0.1:8030"
+DEFAULT_MODEL_API_BASE_URL = "http://127.0.0.1:8040"
 DEFAULT_CRAWLER_BASE_URL = "http://127.0.0.1:8010"
 DEFAULT_SEARCH_BASE_URL = "http://127.0.0.1:8020"
 DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8000"
@@ -95,6 +96,7 @@ class Settings:
     export_dir: Path
     db_dsn: str | None = None
     persistence_base_url: str = "http://127.0.0.1:8030"
+    model_api_base_url: str = DEFAULT_MODEL_API_BASE_URL
     crawler_base_url: str = "http://127.0.0.1:8010"
     search_base_url: str = "http://127.0.0.1:8020"
     backend_base_url: str = "http://127.0.0.1:8000"
@@ -159,6 +161,7 @@ class Settings:
             seed_path=seed_path,
             export_dir=export_dir,
             persistence_base_url=os.getenv("HEYBLOG_PERSISTENCE_BASE_URL", DEFAULT_PERSISTENCE_BASE_URL),
+            model_api_base_url=os.getenv("HEYBLOG_MODEL_API_BASE_URL", DEFAULT_MODEL_API_BASE_URL).rstrip("/"),
             crawler_base_url=os.getenv("HEYBLOG_CRAWLER_BASE_URL", DEFAULT_CRAWLER_BASE_URL),
             search_base_url=os.getenv("HEYBLOG_SEARCH_BASE_URL", DEFAULT_SEARCH_BASE_URL),
             backend_base_url=os.getenv("HEYBLOG_BACKEND_BASE_URL", DEFAULT_BACKEND_BASE_URL),

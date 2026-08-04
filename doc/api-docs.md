@@ -20,6 +20,7 @@
 
 - [backend/main.py](../backend/main.py)
 - [crawler/main.py](../crawler/main.py)
+- [HeyBlog_Model_API/app.py](../HeyBlog_Model_API/app.py)
 - [search/main.py](../search/main.py)
 - [persistence_api/main.py](../persistence_api/main.py)
 - [frontend/src/lib/api.ts](../frontend/src/lib/api.ts)
@@ -38,6 +39,7 @@
 - `frontend`：public discovery surface + protected admin surface
 - `backend`：统一对外 API 聚合层
 - `crawler`：爬虫执行与运行时控制
+- `model-api`：供 crawler 调用的 URL 二分类内部服务
 - `search`：搜索索引与查询
 - `persistence-api`：持久化读写接口
 - `persistence-db`：PostgreSQL 数据库
@@ -57,6 +59,7 @@
 - `crawler`: `8010`
 - `search`: `8020`
 - `persistence-api`: `8030`
+- `model-api`: `8040`
 - `persistence-db`: `5432`
 
 ## 2. API 分层总览
@@ -548,6 +551,7 @@ Admin API 同样由 `backend` 暴露，但统一位于 `/api/admin/*` 下，并�
 
 - 未登录也可调用；`visitor_id` 与 `session_id` 由前端本地生成，用于匿名统计。
 - 登录后可带 `Authorization: Bearer <session-token>`；backend 会把用户 ID 转发给 persistence 以便后续用户维度分析。
+- Authorization 是可选的；缺失、过期或无效 token 都按匿名用户处理，不会阻止随机博客加载。
 
 行为说明：
 

@@ -84,6 +84,7 @@ def _build_blocked_tld_filter(settings: Settings) -> BaseUrlFilter:
 def _build_model_consensus_filter(settings: Settings) -> BaseUrlFilter:
     return ModelConsensusFilter(
         model_root=settings.decision_model_root,
+        model_api_base_url=settings.model_api_base_url,
         strategy=settings.decision_model_consensus_strategy,
         consensus_threshold=settings.decision_model_consensus_threshold,
     )

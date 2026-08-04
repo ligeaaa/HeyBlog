@@ -59,6 +59,7 @@ Docker Compose 也会从仓库根目录的 `.env` 读取变量。
 | `HEYBLOG_CRAWLER_BASE_URL` | `http://127.0.0.1:8010` | `backend` | `backend` 调用 `crawler` 的内部地址 |
 | `HEYBLOG_SEARCH_BASE_URL` | `http://127.0.0.1:8020` | `backend` | `backend` 调用 `search` 的内部地址 |
 | `HEYBLOG_PERSISTENCE_BASE_URL` | `http://127.0.0.1:8030` | `backend`、`crawler`、`search` | 三个服务访问持久化边界的内部地址 |
+| `HEYBLOG_MODEL_API_BASE_URL` | `http://127.0.0.1:8040` | `crawler` | HeyBlog_Model_API URL 二分类服务地址 |
 | `HEYBLOG_USER_AGENT` | `HeyBlogBot/0.1 (+https://example.invalid/heyblog)` | `crawler` | 抓取请求使用的 User-Agent |
 | `HEYBLOG_REQUEST_TIMEOUT_SECONDS` | `10.0` | `backend`、`crawler`、`search` | 内部 HTTP client 默认超时 |
 | `HEYBLOG_MAX_NODES_PER_RUN` | `10` | `crawler` | 单次 crawl 默认节点上限 |
